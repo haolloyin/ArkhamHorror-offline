@@ -15,6 +15,7 @@ import Arkham.EnemyLocation.Types (enemyLocationAsEnemyId)
 import {-# SOURCE #-} Arkham.Game.Utils (maybeEnemyLocation)
 import Arkham.Helpers.Agenda (whenCurrentAgendaStepIs)
 import Arkham.Helpers.FlavorText
+import Arkham.Helpers.GameValue (perPlayer)
 import Arkham.Helpers.Modifiers (ModifierType (MetaModifier))
 import Arkham.Helpers.Query (getLead)
 import Arkham.Helpers.Xp
@@ -257,9 +258,10 @@ instance RunMessage HemlockHouse where
           pure s
     FailedSkillTest iid _ _ (ChaosTokenTarget token) _ _
       | token.face == Tablet -> do
+          n <- if isHardExpert attrs then perPlayer 1 else pure 1
           whenJustM (nearestEnemyLocationTo iid) \lid ->
             whenJustM (maybeEnemyLocation lid) \el ->
-              healDamage (enemyLocationAsEnemyId el) attrs 1
+              healDamage (enemyLocationAsEnemyId el) attrs n
           pure s
     AfterSkillTest (FailedSkillTest _ _ _ (ChaosTokenTarget token) _ _)
       | token.face == ElderThing -> do
@@ -374,22 +376,38 @@ instance RunMessage HemlockHouse where
                   incrementRecordCount WilliamHemlockRelationshipLevel 1
                   interludeXpAll (toBonus "bonus" 1)
                 else do
+                  codexFinished 4
                   eachInvestigator \iid' -> gainClues iid' source 1
                   sylvie <- selectJust $ assetIs Assets.littleSylvie
                   createAbilityEffect EffectGameWindow
                     $ restricted (SourceableWithCardCode Assets.littleSylvie sylvie) 3 OnSameLocation actionAbility
                   createAbilityEffect EffectGameWindow
                     $ skillTestAbility
+                    $ onlyOnce
                     $ restricted
                       (SourceableWithCardCode Assets.williamHemlockAspiringPoet william)
-                      2
+                      1
                       (OnSameLocation <> you (ControlsAsset (assetIs Assets.littleSylvie)))
                       parleyAction_
             Day2 ->
               if sameLoc
                 then scenarioSpecific "codex" (iid, source, Sigma)
-                else takeControlOfAsset iid william
-            Day3 -> takeControlOfAsset iid william
+                else do
+                  takeControlOfAsset iid william
+                  createAbilityEffect EffectGameWindow
+                    $ skillTestAbility
+                    $ onlyOnce
+                    $ restricted
+                      (SourceableWithCardCode Assets.williamHemlockAspiringPoet william)
+                      1
+                      ( OnSameLocation
+                          <> exists
+                            ( assetIs Assets.williamHemlockAspiringPoet
+                                <> AssetAt (LocationWithAsset $ assetIs Assets.judithParkTheMuscle)
+                            )
+                      )
+                      parleyAction_
+            Day3 -> pure ()
         6 -> do
           helping <- remembered YouAreHelpingGideon
           scope "gideon" $ flavor do
@@ -400,6 +418,7 @@ instance RunMessage HemlockHouse where
               p.validate (not helping) "otherwise"
           if helping
             then do
+              codexFinished 6
               incrementRecordCount GideonMizrahRelationshipLevel 1
               interludeXpAll (toBonus "bonus" 1)
             else do
@@ -433,16 +452,33 @@ instance RunMessage HemlockHouse where
             Day2 ->
               if sameLoc
                 then scenarioSpecific "codex" (iid, source, Sigma)
-                else takeControlOfAsset iid judith
+                else do
+                  codexFinished 7
+                  takeControlOfAsset iid judith
+                  createAbilityEffect EffectGameWindow
+                    $ skillTestAbility
+                    $ onlyOnce
+                    $ restricted
+                      (SourceableWithCardCode Assets.judithParkTheMuscle judith)
+                      1
+                      ( OnSameLocation
+                          <> exists
+                            ( assetIs Assets.judithParkTheMuscle
+                                <> AssetAt (LocationWithAsset $ assetIs Assets.williamHemlockAspiringPoet)
+                            )
+                      )
+                      (parleyAction $ ResourceCost 2)
             Day3 -> do
               takeControlOfAsset iid judith
               remember JudithIsRemodeling
-            _ -> takeControlOfAsset iid judith
+            _ -> pure ()
         8 -> do
+          codexFinished 8
           entry "theo"
           theo <- selectJust $ assetIs Assets.theoPetersJackOfAllTrades
           takeControlOfAsset iid theo
         Theta -> do
+          codexFinished Theta
           entry "marquez"
           drawCards iid source 3
           grid <- getGrid

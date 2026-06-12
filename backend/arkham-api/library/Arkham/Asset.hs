@@ -1421,6 +1421,19 @@ allAssets =
       , SomeAssetCard medicoDellaPeste
       , SomeAssetCard pantalone
       , SomeAssetCard gildedVolto
+      , -- Guardians of the Abyss
+        --- Abyssal Tribute
+        SomeAssetCard johnAndJessieBurke
+      , SomeAssetCard ancientAnkh
+      , --- Abyssal Gifts
+        SomeAssetCard khopeshOfTheAbyss
+      , SomeAssetCard summonedNightgaunt
+      , -- War of the Outer Gods
+        SomeAssetCard cloakOfTheOuterRealm
+      , SomeAssetCard pocketPortal
+      , SomeAssetCard dreadedEnd
+      , SomeAssetCard bladeOfArkat
+      , SomeAssetCard enchantedSkull
       , -- Murder at the Excelsior Hotel
         --- story [hotel]
         SomeAssetCard bloodstainedDagger
@@ -1598,4 +1611,30 @@ allAssets =
       , SomeAssetCard petOozeling
       , SomeAssetCard miGoWeapon
       , SomeAssetCard ltWilsonStewart
+      , -- The Labyrinths of Lunacy
+        SomeAssetCard eixodolonsNote
+      , SomeAssetCard keyOfMysteries
+      , SomeAssetCard mysteriousSyringe
+      , SomeAssetCard rotDiagram
+      , SomeAssetCard hungerDiagram
+      , SomeAssetCard decayDiagram
+      , -- Machinations Through Time
+        SomeAssetCard thomasCorriganPast
+      , SomeAssetCard maryZielinskiPast
+      , SomeAssetCard nikolaTesla
+      , SomeAssetCard thomasCorriganPresent
+      , SomeAssetCard maryZielinskiPresent
+      , SomeAssetCard ezraGraves
+      , SomeAssetCard thomasCorriganFuture
+      , SomeAssetCard maryZielinskiFuture
+      , SomeAssetCard dimensionalBeamMachine
+      , SomeAssetCard edwinBennetAstuteAssociate
+      , -- Relics of the Past
+        SomeAssetCard jadeCrocodile
+      , SomeAssetCard obsidianJaguar
+      , SomeAssetCard citrineSnake
+      , SomeAssetCard turquoiseEagle
+      , -- Red Tide Rising
+        SomeAssetCard mysteriousPhoto
+      , SomeAssetCard mysteriousPhotoBack
       ]

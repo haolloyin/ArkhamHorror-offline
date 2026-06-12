@@ -22,6 +22,8 @@ import Arkham.Asset.Cards.TheInnsmouthConspiracy as X
 import Arkham.Asset.Cards.ThePathToCarcosa as X
 import Arkham.Asset.Cards.TheScarletKeys as X
 import Arkham.Asset.Cards.TommyMuldoon2 as X
+import Arkham.Asset.Cards.RedTideRising as X
+import Arkham.Asset.Cards.RelicsOfThePast as X
 import Arkham.Card.CardCode
 import Arkham.Card.CardDef
 import Arkham.Prelude
@@ -54,6 +56,7 @@ allPlayerAssetCards =
       , ancestralKnowledge3
       , ancestralToken
       , anchorChain
+      , ancientAnkh
       , ancientCovenant2
       , ancientStone1
       , ancientStoneKnowledgeOfTheElders4
@@ -139,6 +142,7 @@ allPlayerAssetCards =
       , blackjack
       , blackjack2
       , blackmailFile
+      , bladeOfArkat
       , bladeOfYothTheFathersIre
       , blasphemousCovenant2
       , blessedBlade
@@ -211,6 +215,7 @@ allPlayerAssetCards =
       , cleaningKit3
       , clintonFreemanShouldHaveStayedHome
       , cloakOfResonance
+      , cloakOfTheOuterRealm
       , closeTheCircle1
       , collectedWorksOfPoe
       , coltVestPocket
@@ -268,6 +273,7 @@ allPlayerAssetCards =
       , digDeep
       , digDeep2
       , digDeep4
+      , dimensionalBeamMachine
       , directiveConsultExperts
       , directiveDueDiligence
       , directiveLeaveNoDoubt
@@ -303,6 +309,7 @@ allPlayerAssetCards =
       , dreamDiaryDreamsOfAMadman3
       , dreamDiaryDreamsOfAnExplorer3
       , dreadCurseOfAzathoth3
+      , dreadedEnd
       , dreamersChronicle
       , dreamEnhancingSerum
       , drDewiIrawanCryptozoologist
@@ -321,6 +328,8 @@ allPlayerAssetCards =
       , earlSawyer
       , earthlySerenity1
       , earthlySerenity4
+      , edwinBennetAstuteAssociate
+      , edwinBennetEsteemedColleague
       , eighteenDerringer
       , eighteenDerringer2
       , elderSignAmulet3
@@ -344,6 +353,7 @@ allPlayerAssetCards =
       , enchantedBladeGuardian3
       , enchantedBladeMystic3
       , enchantedBow2
+      , enchantedSkull
       , encyclopedia
       , encyclopedia2
       , endurance
@@ -359,6 +369,7 @@ allPlayerAssetCards =
       , experimentalPsychology
       , expeditedTicket
       , expeditionJournal
+      , ezraGraves
       , eyeOfChaos
       , eyeOfChaos4
       , eyeOfGhatanothoaArtifactOfTheDarkGod2
@@ -529,6 +540,7 @@ allPlayerAssetCards =
       , joeSargentRattletrapBusDriver
       , joeyTheRatVigil
       , joeyTheRatVigil3
+      , johnAndJessieBurke
       , johnnyValoneReadyToMakeADeal
       , johnnyValoneReadyToMakeADeal
       , jumpsuit
@@ -541,6 +553,7 @@ allPlayerAssetCards =
       , kenslersLog
       , kerosene1
       , keyOfYs
+      , khopeshOfTheAbyss
       , kleptomania
       , knife
       , knightOfSwords3
@@ -599,6 +612,9 @@ allPlayerAssetCards =
       , marinersCompass
       , marinersCompass2
       , martyrsVambraceRemnantOfTheUnknown3
+      , maryZielinskiFuture
+      , maryZielinskiPast
+      , maryZielinskiPresent
       , maskedCarnevaleGoer_17
       , maskedCarnevaleGoer_18
       , maskedCarnevaleGoer_19
@@ -663,6 +679,7 @@ allPlayerAssetCards =
       , newspaper
       , newspaper2
       , nightmareBauble3
+      , nikolaTesla
       , nineOfRods3
       , nkosiMabatiEnigmaticWarlock3
       , noseToTheGrindstone3
@@ -720,6 +737,7 @@ allPlayerAssetCards =
       , plucky3
       , pnakoticManuscripts5
       , pocketMultiTool
+      , pocketPortal
       , pocketTelescope
       , policeBadge2
       , policeDog
@@ -911,6 +929,7 @@ allPlayerAssetCards =
       , suggestion1
       , suggestion4
       , summonedHound1
+      , summonedNightgaunt
       , summonedServitor
       , surgicalKit3
       , survivalKnife
@@ -981,6 +1000,9 @@ allPlayerAssetCards =
       , thirtyFiveWinchester
       , thirtyTwoColt
       , thirtyTwoColt2
+      , thomasCorriganFuture
+      , thomasCorriganPast
+      , thomasCorriganPresent
       , thomasDawsonSoldierInANewWar
       , thomasOlney
       , thompsonSubmachineGun5
@@ -1063,16 +1085,25 @@ allEncounterAssetCards =
       [ adamLynch
       , alchemicalConcoction
       , bearTrap
+      , decayDiagramEpicMultiplayer
+      , decayDiagram
       , divingSuit
+      , eixodolonsNote
       , fishingNet
       , haroldWalsted
       , helplessPassenger
+      , hungerDiagramEpicMultiplayer
+      , hungerDiagram
       , jazzMulligan
+      , keyOfMysteries
       , keyToTheChamber
+      , mysteriousSyringe
       , peterClover
       , constanceDumaine
       , jordanPerry
       , ishimaruHaruko
+      , rotDiagramEpicMultiplayer
+      , rotDiagram
       , sebastienMoreau
       , ashleighClarke
       , mrPeabody
@@ -1139,6 +1170,13 @@ allEncounterAssetCards =
       , petOozeling
       , miGoWeapon
       , ltWilsonStewart
+      , mysteriousPhoto
+      , mysteriousPhotoBack
+      , --- Relics of the Past
+        jadeCrocodile
+      , obsidianJaguar
+      , citrineSnake
+      , turquoiseEagle
       ]
 
 allSpecialPlayerAssetCards :: Map CardCode CardDef

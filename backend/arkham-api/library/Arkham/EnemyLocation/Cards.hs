@@ -33,7 +33,7 @@ shapelessCellarDef =
     , cdKeywords = setFromList [Keyword.Massive, Keyword.Retaliate]
     , cdCardTraits = setFromList [Room, Monster, Elite]
     , cdRevealedCardTraits = setFromList [Room, Monster, Elite]
-    , cdVictoryPoints = Just 0
+    , cdVictoryPoints = Just 1
     , cdEncounterSet = Just HemlockHouse
     , cdEncounterSetQuantity = Just 1
     }
@@ -84,7 +84,10 @@ livingLibraryHemlockHouse40 :: CardDef
 livingLibraryHemlockHouse40 = enemyLocation "10540b" "Living Library"
 
 livingParlorHemlockHouse :: CardDef
-livingParlorHemlockHouse = enemyLocation "10541b" "Living Parlor"
+livingParlorHemlockHouse =
+  (enemyLocation "10541b" "Living Parlor")
+    { cdKeywords = setFromList [Keyword.Massive, Keyword.Retaliate]
+    }
 
 livingDiningRoomHemlockHouse :: CardDef
 livingDiningRoomHemlockHouse = enemyLocation "10542b" "Living Dining Room"

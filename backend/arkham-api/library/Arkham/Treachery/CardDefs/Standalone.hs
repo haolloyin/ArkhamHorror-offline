@@ -717,3 +717,212 @@ alienFoodChain =
   (treachery "85053" "Alien Food Chain" TheBlobThatAteEverything 2)
     { cdCardTraits = setFromList [Ooze, Power]
     }
+
+eclipse :: CardDef
+eclipse =
+  (treachery "83047" "Eclipse" SandsOfEgypt 3)
+    { cdCardTraits = singleton Trait.Power
+    }
+
+sandstorm :: CardDef
+sandstorm =
+  (treachery "83048" "Sandstorm" SandsOfEgypt 3)
+    { cdCardTraits = singleton Hazard
+    }
+
+terrorUnderThePyramids :: CardDef
+terrorUnderThePyramids =
+  (treachery "83049" "Terror Under the Pyramids" SandsOfEgypt 3)
+    { cdCardTraits = singleton Scheme
+    }
+
+swarmOfLocusts :: CardDef
+swarmOfLocusts =
+  (treachery "83050" "Swarm of Locusts" SandsOfEgypt 3)
+    { cdCardTraits = singleton Trait.Power
+    }
+
+slumber :: CardDef
+slumber =
+  (treachery "83051" "Slumber" SandsOfEgypt 2)
+    { cdCardTraits = setFromList [Trait.Curse, Trait.Abyss]
+    }
+
+darkSacrifice :: CardDef
+darkSacrifice =
+  (treachery "83052" "Dark Sacrifice" SandsOfEgypt 2)
+    { cdCardTraits = setFromList [Trait.Curse, Trait.Abyss]
+    }
+
+theBlackWind :: CardDef
+theBlackWind =
+  (treachery "83053" "The Black Wind" SandsOfEgypt 2)
+    { cdCardTraits = singleton Trait.Power
+    , cdKeywords = singleton Keyword.Peril
+    , cdVictoryPoints = Just 1
+    }
+
+abyssalReach :: CardDef
+abyssalReach =
+  (treachery "83054" "Abyssal Reach" SandsOfEgypt 3)
+    { cdCardTraits = setFromList [Trait.Curse, Trait.Abyss]
+    }
+
+deathAndDecay :: CardDef
+deathAndDecay =
+  (treachery "86026" "Death and Decay" WarOfTheOuterGods 2)
+    { cdCardTraits = singleton Hex
+    }
+
+predatorsCall :: CardDef
+predatorsCall =
+  (treachery "86028" "Predator's Call" WarOfTheOuterGods 2)
+    { cdCardTraits = singleton Scheme
+    }
+
+feastOfLocusts :: CardDef
+feastOfLocusts =
+  (treachery "86030" "Feast of Locusts" WarOfTheOuterGods 2)
+    { cdCardTraits = singleton Hazard
+    }
+
+hellfireWarOfTheOuterGods :: CardDef
+hellfireWarOfTheOuterGods =
+  (treachery "86031" "Hellfire" WarOfTheOuterGods 3)
+    { cdCardTraits = singleton Hazard
+    }
+
+ravagesOfWar :: CardDef
+ravagesOfWar =
+  (treachery "86032" "Ravages of War" WarOfTheOuterGods 2)
+    { cdCardTraits = singleton Terror
+    }
+
+whileTheySleep :: CardDef
+whileTheySleep =
+  (treachery "86033" "While They Sleep" WarOfTheOuterGods 2)
+    { cdCardTraits = singleton Omen
+    }
+
+inevitableEnd :: CardDef
+inevitableEnd =
+  (treachery "86039" "Inevitable End" DeathOfStars 3)
+    { cdCardTraits = singleton Hex
+    }
+
+huntDown :: CardDef
+huntDown =
+  (treachery "86045" "Hunt Down" ChildrenOfParadise 3)
+    { cdCardTraits = singleton Hazard
+    }
+
+transmogrify :: CardDef
+transmogrify =
+  (treachery "86050" "Transmogrify" SwarmOfAssimilation 2)
+    { cdCardTraits = singleton Curse
+    }
+
+aTearInTimeMachinationsThroughTime :: CardDef
+aTearInTimeMachinationsThroughTime =
+  (treachery "87048" "A Tear in Time" MachinationsThroughTime 2)
+    { cdCardTraits = singleton Hex
+    }
+
+abducted :: CardDef
+abducted =
+  (treachery "87049" "Abducted" MachinationsThroughTime 3)
+    { cdCardTraits = singleton Scheme
+    , cdKeywords = singleton Keyword.Peril
+    }
+
+brokenSpace :: CardDef
+brokenSpace =
+  (treachery "87050" "Broken Space" MachinationsThroughTime 3)
+    { cdCardTraits = singleton Hex
+    }
+
+dimensionalBreach :: CardDef
+dimensionalBreach =
+  (treachery "87051" "Dimensional Breach" MachinationsThroughTime 2)
+    { cdCardTraits = setFromList [Hazard, Power]
+    }
+
+fromAllAngles :: CardDef
+fromAllAngles =
+  (treachery "87052" "From All Angles" MachinationsThroughTime 3)
+    { cdCardTraits = singleton Terror
+    }
+
+lostInTimeMachinationsThroughTime :: CardDef
+lostInTimeMachinationsThroughTime =
+  (treachery "87053" "Lost in Time" MachinationsThroughTime 1)
+    { cdCardTraits = singleton Hex
+    }
+
+mergingTimelinesMachinationsThroughTime :: CardDef
+mergingTimelinesMachinationsThroughTime =
+  (treachery "87054" "Merging Timelines" MachinationsThroughTime 2)
+    { cdCardTraits = singleton Hex
+    }
+
+openPortal :: CardDef
+openPortal =
+  (treachery "87055" "Open Portal" MachinationsThroughTime 3)
+    { cdCardTraits = singleton Hazard
+    }
+
+temporalDistortion :: CardDef
+temporalDistortion =
+  (treachery "87056" "Temporal Distortion" MachinationsThroughTime 2)
+    { cdCardTraits = singleton Hazard
+    }
+
+vanishingHistory :: CardDef
+vanishingHistory =
+  (treachery "87057" "Vanishing History" MachinationsThroughTime 3)
+    { cdCardTraits = singleton Hex
+    }
+
+unnaturalWeariness :: CardDef
+unnaturalWeariness =
+  (treachery "70055" "Unnatural Weariness" TheLabyrinthsOfLunacy 3)
+    { cdCardTraits = setFromList [Trait.Injury, Trait.Poison]
+    , cdKeywords = setFromList [Keyword.Peril]
+    }
+
+poisonousGas :: CardDef
+poisonousGas =
+  (treachery "70056" "Poisonous Gas" TheLabyrinthsOfLunacy 3)
+    { cdCardTraits = setFromList [Trait.Trap, Trait.Poison]
+    }
+
+dreadfulMechanism :: CardDef
+dreadfulMechanism =
+  (treachery "70057" "Dreadful Mechanism" TheLabyrinthsOfLunacy 3)
+    { cdCardTraits = setFromList [Trait.Trap]
+    }
+
+bloodAndRust :: CardDef
+bloodAndRust =
+  (treachery "70058" "Blood and Rust" TheLabyrinthsOfLunacy 3)
+    { cdCardTraits = setFromList [Trait.Trap]
+    }
+
+paradoxEffectEpicMultiplayer :: CardDef
+paradoxEffectEpicMultiplayer =
+  (treachery "70059" "Paradox Effect" LabyrinthsOfLunacyEpicMultiplayer 3)
+    { cdCardTraits = setFromList [Trait.Hazard]
+    }
+
+paradoxEffect :: CardDef
+paradoxEffect =
+  (treachery "70060" "Paradox Effect" LabyrinthsOfLunacySingleGroup 3)
+    { cdCardTraits = setFromList [Trait.Hazard]
+    }
+
+harvestedPain :: CardDef
+harvestedPain =
+  (treachery "70061" "Harvested Pain" TheLabyrinthsOfLunacy 3)
+    { cdCardTraits = setFromList [Trait.Hex]
+    , cdKeywords = setFromList [Keyword.Peril]
+    }

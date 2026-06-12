@@ -687,11 +687,34 @@ addEntry({
 })
 
 // Computed
+const pendingScenarioDifficulty = ref<string | null>(null)
+const displayedScenarioDifficulty = computed(() => pendingScenarioDifficulty.value ?? props.scenario.difficulty)
+
+watch(() => props.scenario.difficulty, (difficulty) => {
+  if (pendingScenarioDifficulty.value === difficulty) pendingScenarioDifficulty.value = null
+})
+
 const scenarioGuide = computed(() => {
-  const { reference, difficulty } = props.scenario
+  const { reference } = props.scenario
+  const difficulty = displayedScenarioDifficulty.value
+  const referenceCode = reference.replace(/^c/, '')
+  const referenceBase = referenceCode.replace(/b$/, '')
+
+  if (props.scenario.id === 'c10501' || referenceBase === '10501' || referenceBase === '10502') {
+    const referenceSide = referenceCode.endsWith('b') ? 'b' : ''
+    const writtenInRockReference = difficulty === 'Hard' || difficulty === 'Expert' ? '10502' : '10501'
+    return cardCodeImage(`${writtenInRockReference}${referenceSide}`)
+  }
+
   const difficultySuffix = difficulty === 'Hard' || difficulty === 'Expert' ? 'b' : ''
   return cardCodeImage(reference, difficultySuffix)
 })
+
+const changeScenarioDifficulty = (event: Event) => {
+  const difficulty = (event.target as HTMLSelectElement).value
+  pendingScenarioDifficulty.value = difficulty
+  debug.send(props.game.id, { tag: 'SetScenarioDifficulty', contents: difficulty })
+}
 
 const additionalReferences = computed(() => {
   return props.scenario.additionalReferences.map((s) => cardCodeImage(s))
@@ -981,7 +1004,6 @@ const hollowed = computed(() => [...new Set(Object.values(props.game.investigato
 const outOfPlay = computed(() => props.scenario?.setAsideCards || [])
 const removedFromPlay = computed(() => props.game.removedFromPlay)
 const noCards = computed<Card[]>(() => [])
-const viewUnderScenarioReference = computed(() => t('cardsUnderneath', cardsUnderScenarioReference.value.length))
 const topOfEncounterDiscard = computed(() => {
   if (!props.scenario.discard[0]) return null
   return cardCodeImage(props.scenario.discard[0].cardCode)
@@ -1084,6 +1106,7 @@ const scraps = computed(() => props.scenario.tokens[TokenType.Scrap])
 const switches = computed(() => props.scenario.tokens[TokenType.Switch])
 const darknessLevel = computed(() => props.scenario.tokens[TokenType.DarknessLevel])
 const signOfTheGods = computed(() => props.scenario.counts["SignOfTheGods"])
+const strengthOfTheAbyss = computed(() => props.scenario.counts["StrengthOfTheAbyss"])
 const distortion = computed(() => props.scenario.counts["Distortion"])
 const gameOver = computed(() => props.game.gameState.tag === "IsOver")
 
@@ -1105,7 +1128,6 @@ const handleHollowedChoose = (idx: number) => {
   }
 }
 const hideCards = () => showCards.ref = noCards
-const showCardsUnderScenarioReference = () => doShowCards(cardsUnderScenarioReference, t('scenario.cardsUnderScenarioReference'), false)
 
 // Watchers
 watchEffect(() => {
@@ -1544,8 +1566,6 @@ const tarotCardAbility = (card: TarotCard) => {
 
 const victoryDisplay = computed(() => props.scenario.victoryDisplay)
 
-const showVictoryDisplay = () => doShowCards(victoryDisplay, t('scenario.victoryDisplay'), true)
-
 const isMinimized_SkillTest = ref(false)
 provide('isMinimized_SkillTest', isMinimized_SkillTest)
 function minimize_SkillTest(isMinimized:boolean){
@@ -1781,7 +1801,7 @@ async function addChaosToken(face: any){
           @choose="choose"
           @show="doShowCards"
         />
-        <VictoryDisplay :game="game" :victoryDisplay="victoryDisplay" @show="showVictoryDisplay" @choose="choose" :playerId="playerId" />
+        <VictoryDisplay :game="game" :victoryDisplay="victoryDisplay" @choose="choose" :playerId="playerId" />
         <div class="scenario-encounter-decks">
           <div v-if="topOfEncounterDiscard" class="discard" style="grid-area: encounterDiscard">
             <div class="discard-card">
@@ -1923,7 +1943,7 @@ async function addChaosToken(face: any){
         />
 
         <div class="scenario-guide">
-          <div class="scenario-guide-card">
+          <div class="scenario-guide-card-wrapper">
             <div class="scenario-guide-card">
               <img
                 class="card"
@@ -1946,6 +1966,7 @@ async function addChaosToken(face: any){
             </div>
             <PoolItem class="depth" v-if="currentDepth" type="resource" :amount="currentDepth" />
             <PoolItem class="civilians-slain" v-if="civiliansSlain" type="resource" :amount="civiliansSlain" />
+            <PoolItem class="strength-of-the-abyss" v-if="strengthOfTheAbyss !== undefined" type="resource" :amount="strengthOfTheAbyss" />
             <PoolItem class="targets" v-if="targets" type="resource" :amount="targets" />
             <PoolItem class="scraps" v-if="scraps" type="resource" :amount="scraps" />
             <PoolItem class="switches" v-if="switches" type="resource" :amount="switches" />
@@ -1967,15 +1988,33 @@ async function addChaosToken(face: any){
               tooltip="Distortion"
               :amount="distortion"
             />
-          </div>
-          <div class="pool" v-if="hasPool">
-            <PoolItem v-if="resources && resources > 0" type="resource" :amount="resources" />
-            <PoolItem v-if="damage && damage > 0" type="damage" :amount="damage" />
+            <div class="pool" v-if="hasPool">
+              <PoolItem v-if="resources && resources > 0" type="resource" :amount="resources" />
+              <PoolItem v-if="damage && damage > 0" type="damage" :amount="damage" />
+            </div>
           </div>
           <div class="keys" v-if="keys.length > 0">
             <KeyToken v-for="k in keys" :key="keyToId(k)" :keyToken="k" :game="game" :playerId="playerId" @choose="choose" />
           </div>
-          <button v-if="cardsUnderScenarioReference.length > 0" class="view-cards-under-button" @click="showCardsUnderScenarioReference">{{viewUnderScenarioReference}}</button>
+          <label v-if="debug.active" class="debug-difficulty">
+            <span>Difficulty</span>
+            <select :value="displayedScenarioDifficulty" @change="changeScenarioDifficulty">
+              <option value="Easy">Easy</option>
+              <option value="Standard">Standard</option>
+              <option value="Hard">Hard</option>
+              <option value="Expert">Expert</option>
+            </select>
+          </label>
+          <CardsUnderIndicator
+            v-if="cardsUnderScenarioReference.length > 0"
+            class="scenario-cards-under"
+            :cards="cardsUnderScenarioReference"
+            :game="game"
+            :playerId="playerId"
+            :label="$t('scenario.cardsUnderScenarioReference')"
+            full-width
+            @choose="choose"
+          />
         </div>
 
         <div v-if="hollowed.length > 0" class="discard">
@@ -2599,37 +2638,58 @@ async function addChaosToken(face: any){
   flex-direction: column;
   position: relative;
   isolation: isolate;
+}
 
-  .depth, .civilians-slain, .targets, .scraps, .switches, .darkness-level {
-    position: absolute;
-    bottom: 0;
-    right: 0;
+.scenario-cards-under {
+  align-self: center;
+  margin-top: 2px;
+}
+
+/* A single-cell grid: the card stack and every counter overlay share the same
+   cell, so tokens always land on the card no matter what siblings (pool, keys,
+   cards-underneath button) render around it. */
+.scenario-guide-card-wrapper {
+  display: grid;
+  width: fit-content;
+
+  > * {
+    grid-area: 1 / 1;
+  }
+
+  .depth, .civilians-slain, .targets, .scraps, .switches, .darkness-level, .strength-of-the-abyss {
+    align-self: end;
+    justify-self: end;
     pointer-events: none;
     z-index: 10;
   }
 
   .signOfTheGods {
-    z-index: 10;
-    position: absolute;
-    bottom: 0;
-    right: 0;
+    align-self: end;
+    justify-self: end;
     pointer-events: none;
+    z-index: 10;
   }
 
   .distortion {
-    z-index: 10;
-    position: absolute;
-    bottom: 0;
-    right: 0;
+    align-self: end;
+    justify-self: end;
     pointer-events: none;
+    z-index: 10;
   }
 
   .pool {
-    z-index: 10;
-    position: absolute;
-    bottom: 0;
-    right: 0;
+    align-self: end;
+    justify-self: end;
     pointer-events: none;
+    z-index: 10;
+  }
+
+  .spent-keys {
+    align-self: end;
+    justify-self: center;
+    margin-bottom: 20px;
+    pointer-events: none;
+    z-index: 10;
   }
 }
 
@@ -2829,15 +2889,34 @@ async function addChaosToken(face: any){
   position: relative;
 }
 
+.debug-difficulty {
+  display: flex;
+  flex-direction: column;
+  align-self: center;
+  gap: 2px;
+  margin-top: 2px;
+  width: var(--card-width);
+  color: white;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.debug-difficulty select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.65);
+  color: white;
+  font-size: 0.75rem;
+}
+
 .spent-keys {
   pointer-events: none;
   display: flex;
   flex-direction: row;
   gap: 2px;
-  position: absolute;
-  bottom: 20px;
-  inset-inline: 5px;
-  margin-inline: auto;
 
   &:deep(img) {
     width: 10px;

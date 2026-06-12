@@ -14,6 +14,14 @@ import Arkham.Act.CardDefs.TheForgottenAge as X
 import Arkham.Act.CardDefs.TheInnsmouthConspiracy as X
 import Arkham.Act.CardDefs.ThePathToCarcosa as X
 import Arkham.Act.CardDefs.TheScarletKeys as X
+import Arkham.Act.CardDefs.ByTheBook as X
+import Arkham.Act.CardDefs.AllOrNothing as X
+import Arkham.Act.CardDefs.BadBlood as X
+import Arkham.Act.CardDefs.LaidToRest as X
+import Arkham.Act.CardDefs.EnthrallingEncore as X
+import Arkham.Act.CardDefs.ReadOrDie as X
+import Arkham.Act.CardDefs.RedTideRising as X
+import Arkham.Act.CardDefs.RelicsOfThePast as X
 
 import Arkham.Card.CardCode
 import Arkham.Card.CardDef
@@ -64,11 +72,14 @@ allActCards =
       , cityOfTheDeepV1
       , cityOfTheDeepV2
       , cityOfTheDeepV3
+      , closeAllPortals
+      , closeThePortal
       , closeTheRift
       , cluesAndCapers
       , collapseThePylons
       , containingTheOutbreak
       , crossingTheThreshold
+      , curseOfEndlessSleep
       , curtainCall
       , darkKnowledgeV1
       , darkKnowledgeV2
@@ -83,6 +94,7 @@ allActCards =
       , discoveringTheTruth
       , discoveryOfALifetime
       , disruptingTheRitual
+      , distortionsInTimeGroupA
       , dormancy
       , enteringTheDreamlands
       , enteringTheUnderworldV1
@@ -95,6 +107,8 @@ allActCards =
       , exploringTheRainforest
       , eyesInTheTower
       , faceToCarapace
+      , sealedInGroupA
+      , seepingDeathGroupB
       , shatteredMemories
       , lostSelf
       , fateOfTheValeV1
@@ -143,6 +157,7 @@ allActCards =
       , intoTheBeyond
       , intoTheBeyondV2
       , intoTheDarkness
+      , intoTheGate
       , intoTheRuins
       , intoTheRuinsOnceAgain
       , investigatingTheTrail
@@ -201,6 +216,7 @@ allActCards =
       , searchForACampSite
       , searchForAlejandro
       , searchForTheBrotherhood
+      , searchForTheGate
       , searchForTheManuscript
       , searchForTheMeaning
       , searchForThePatient
@@ -218,6 +234,7 @@ allActCards =
       , secretsAndLiesV1
       , secretsAndLiesV2
       , secretsAndLiesV3
+      , secretsInTheSand
       , seekOutTheNight
       , seekingTroubleLoadingDocks
       , seekingTroubleSentFromAnotherTime
@@ -253,6 +270,8 @@ allActCards =
       , theDreamEaters
       , theEndlessStairs
       , theEscape
+      , theEscapeTheLabyrinthsOfLunacyEpicMultiplayer
+      , theEscapeTheLabyrinthsOfLunacy
       , theExit
       , theFinalErr
       , theFinalDescent
@@ -266,8 +285,11 @@ allActCards =
       , theGuardedRuins
       , theGuardiansInquiry
       , theHeartOfTheHouse
+      , theHourOfJudgment
       , theIsleOfOriab
       , theLadyWithTheRedParasol
+      , theLeversGroupCEpicMultiplayer
+      , theLeversGroupC
       , theLighthouse
       , theLongestNight
       , theLostExpedition
@@ -275,6 +297,7 @@ allActCards =
       , theKingsDecree
       , theMoonsCore
       , theMissingSibling
+      , theNightsUsurper
       , theOath
       , theOvergrownEstateClintonFreeman
       , theOvergrownEstateSentFromAnotherTime
@@ -283,6 +306,7 @@ allActCards =
       , thePath
       , thePathIsBarred
       , thePathToTheHill
+      , thePetGroupC
       , thePit
       , theReallyBadOnesV1
       , theReallyBadOnesV2
@@ -324,7 +348,10 @@ allActCards =
       , underAttack
       , unexpectedRescue
       , unrestrictedAccess
+      , walkingThroughTime
       , warmWelcome
+      , warOfTheOuterGods
+      , wateryGraveGroupB
       , whatHappened
       , whatHaveYouDone
       , whatMustBeDone
@@ -350,4 +377,21 @@ allActCards =
       , blackwatersBane
       , exposeTheAnomalyEpicMultiplayer
       , blackwatersBaneEpicMultiplayer
+      , --- By the Book
+        captureTheConspirators
+      , --- All or Nothing
+        playingCards
+      , hotOnYourTail
+      , --- Bad Blood
+        aWalkDownMemoryLane
+      , --- Laid to Rest
+        laidToRest
+      , --- Enthralling Encore
+        breakFreeFromThePast
+      , --- Read or Die
+        speedReading
+      , searchingForDad
+      , --- Relics of the Past
+        crumblingRuin
+      , findTheWayOut
       ]

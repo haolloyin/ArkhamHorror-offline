@@ -17,6 +17,7 @@ import Arkham.Treachery.CardDefs.TheForgottenAge as X
 import Arkham.Treachery.CardDefs.TheInnsmouthConspiracy as X
 import Arkham.Treachery.CardDefs.ThePathToCarcosa as X
 import Arkham.Treachery.CardDefs.TheScarletKeys as X
+import Arkham.Treachery.CardDefs.RelicsOfThePast as X
 
 import Arkham.Card.CardCode
 import Arkham.Card.CardDef
@@ -169,7 +170,9 @@ allEncounterTreacheryCards =
       [ aBalefulWelcome
       , abandonedByTheGods
       , abandonedToMadness
+      , abducted
       , abduction
+      , abyssalReach
       , accosted
       , acridMiasma
       , action
@@ -189,6 +192,7 @@ allEncounterTreacheryCards =
       , arousingSuspicions
       , arrowsFromTheTrees
       , aTearInTime
+      , aTearInTimeMachinationsThroughTime
       , attractingAttention
       , avalanche
       , avariceCallsA
@@ -211,6 +215,7 @@ allEncounterTreacheryCards =
       , bleedingWallsTheMidwinterGala
       , bleedingWallsTheMidwinterGala
       , blindsense
+      , bloodAndRust
       , bloodOnYourHands
       , bloodthirstySpirits
       , bloom
@@ -219,6 +224,7 @@ allEncounterTreacheryCards =
       , brazierEnchantment
       , breakALeg
       , brokenRails
+      , brokenSpace
       , bumpyRide
       , burdensOfThePast
       , calcification
@@ -267,6 +273,7 @@ allEncounterTreacheryCards =
       , danceOfTheYellowKing
       , darkAurora
       , darkBidding
+      , darkSacrifice
       , dawningOfTheTruth
       , deadlyFate
       , deathApproaches
@@ -283,6 +290,7 @@ allEncounterTreacheryCards =
       , despoiled
       , dholeTunnel
       , diabolicVoices
+      , dimensionalBreach
       , dimensionalHypnosisA
       , dimensionalHypnosisB
       , dimensionalHypnosisC
@@ -292,6 +300,7 @@ allEncounterTreacheryCards =
       , distortedReasoning
       , draggedUnder
       , draggedUnderDevilReef
+      , dreadfulMechanism
       , dreamersCurse
       , dreamlandsEclipse
       , dreamsOfRlyeh
@@ -299,11 +308,16 @@ allEncounterTreacheryCards =
       , eagerForDeath
       , eagerForDeath2
       , eagerForDeathUnionAndDisillusion
+      , eclipse
       , eldritchAccord
       , empyreanBrilliance
       , encephalonSignal
       , endlessDescent
       , endlessNight
+      , harvestedPain
+      , paradoxEffectEpicMultiplayer
+      , paradoxEffect
+      , poisonousGas
       , sublimation
       , fragmentation
       , euphoria
@@ -335,6 +349,7 @@ allEncounterTreacheryCards =
       , foundFootage
       , fracturedConsciousness
       , fragileThoughts
+      , fromAllAngles
       , fromAnotherTime
       , fromTheDepths
       , fromTheOtherSide
@@ -413,6 +428,7 @@ allEncounterTreacheryCards =
       , lostInTheWilds
       , lostInTheWoods
       , lostInTime
+      , lostInTimeMachinationsThroughTime
       , lostInVenice
       , lowOnSupplies
       , lunarPatrol
@@ -434,6 +450,7 @@ allEncounterTreacheryCards =
       , memoryOfOblivion
       , memoryVariant
       , mergingTimelines
+      , mergingTimelinesMachinationsThroughTime
       , mesmerize
       , miasmaticTorment
       , mindExtraction
@@ -460,6 +477,7 @@ allEncounterTreacheryCards =
       , onTheProwl
       , onWingsOfDarkness
       , oozeAndFilth
+      , openPortal
       , oppressiveMists
       , otherworldlyVisions
       , outOfTheWalls
@@ -513,6 +531,17 @@ allEncounterTreacheryCards =
       , rottingRemains
       , rottingRemainsBloodOnTheAltar
       , ruinAndDestruction
+      , sandstorm
+      , deathAndDecay
+      , predatorsCall
+      , feastOfLocusts
+      , hellfireWarOfTheOuterGods
+      , ravagesOfWar
+      , unnaturalWeariness
+      , whileTheySleep
+      , inevitableEnd
+      , huntDown
+      , transmogrify
       , secretDoor
       , secretDoorTheMidwinterGala
       , secretGathering
@@ -532,6 +561,7 @@ allEncounterTreacheryCards =
       , shockingDisplay
       , sickeningWebs
       , slitheringBehindYou
+      , slumber
       , snakeBite
       , snakescourge
       , snowfall
@@ -560,16 +590,20 @@ allEncounterTreacheryCards =
       , suspiciousGazeB
       , suspiciousGazeC
       , swarm
+      , swarmOfLocusts
       , swiftRetreat
       , syzygy
       , takenCaptive
       , tasteOfLifeblood
+      , temporalDistortion
       , tenebrousEclipse
       , terrorFromBeyond
       , terrorGate
       , terrorInTheNight
+      , terrorUnderThePyramids
       , terrorUnleashed
       , thalassophobia
+      , theBlackWind
       , theCreaturesTracks
       , theCultsSearch
       , theEndIsNigh
@@ -616,6 +650,7 @@ allEncounterTreacheryCards =
       , unstableEnergies
       , unnaturalGrowth
       , vampiresKiss
+      , vanishingHistory
       , vastExpanse
       , vaultOfEarthlyDemise
       , viceAndVillainy
@@ -702,4 +737,6 @@ allEncounterTreacheryCards =
       , replication
       , itsGotMe
       , alienFoodChain
+      , --- Relics of the Past
+        vengeantPast
       ]

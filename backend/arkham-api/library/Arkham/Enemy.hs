@@ -744,6 +744,45 @@ allEnemies =
       , SomeEnemyCard poleman
       , SomeEnemyCard carnevaleSentinel
       , SomeEnemyCard writhingAppendage
+      , -- The Eternal Slumber
+        SomeEnemyCard neith
+      , SomeEnemyCard humbleSupplicant
+      , SomeEnemyCard creatureFromTheAbyss
+      , -- The Night's Usurper
+        SomeEnemyCard xzharah
+      , SomeEnemyCard dreadedShantak
+      , SomeEnemyCard speakerForTheDarkPharaoh
+      , -- Brotherhood of the Beast
+        SomeEnemyCard drLaylaElMasri
+      , SomeEnemyCard drWentworthMoore
+      , SomeEnemyCard nadiaNimr
+      , SomeEnemyCard farid
+      , SomeEnemyCard nassor
+      , SomeEnemyCard professorNathanielTaylor
+      , -- Sands of Egypt
+        SomeEnemyCard abyssalRevenant
+      , SomeEnemyCard thingInTheSarcophagus
+      , -- War of the Outer Gods
+        SomeEnemyCard nihilisticStargazer
+      , SomeEnemyCard zealotOfParadise
+      , SomeEnemyCard discipleOfTheSwarm
+      , SomeEnemyCard etherealEntityWarOfTheOuterGods
+      , SomeEnemyCard bringerOfParadiseWarOfTheOuterGods
+      , SomeEnemyCard trylogogWarOfTheOuterGods
+      , -- Death of Stars
+        SomeEnemyCard silenus
+      , SomeEnemyCard theInescapableMaw
+      , SomeEnemyCard huneStitchedHerald
+      , SomeEnemyCard etherealEntity
+      , -- Children of Paradise
+        SomeEnemyCard maghanArkat
+      , SomeEnemyCard vileBroodmaster
+      , SomeEnemyCard horrificShoggoth
+      , SomeEnemyCard bringerOfParadise
+      , -- Swarm of Assimilation
+        SomeEnemyCard ezelZenRezl
+      , SomeEnemyCard droningHorde
+      , SomeEnemyCard trylogog
       , -- Murder at the Excelsior Hotel
         SomeEnemyCard arkhamOfficer
       , SomeEnemyCard mrTrombly
@@ -873,4 +912,36 @@ allEnemies =
       , SomeEnemyCard miGoHarvester
       , SomeEnemyCard miGoMeddler
       , SomeEnemyCard miGoAbductor
+      , -- The Labyrinths of Lunacy
+        SomeEnemyCard eixodolon
+      , SomeEnemyCard eixodolonsPet
+      , SomeEnemyCard facelessAbductor
+      , SomeEnemyCard torturedVictim
+      , SomeEnemyCard miGoGuard
+      , -- Machinations Through Time
+        SomeEnemyCard edwinBennetBitterAdversary
+      , SomeEnemyCard oldSadieSheldon
+      , SomeEnemyCard sheldonGang
+      , SomeEnemyCard tyrthrha
+      , SomeEnemyCard ghastlySatyr
+      , SomeEnemyCard houndOfTindalos
+      , SomeEnemyCard manyAngledThing
+      , SomeEnemyCard tindalosAlphaMachinationsThroughTime
+      , -- Read or Die
+        SomeEnemyCard namerOfTheDead
+      , -- All or Nothing
+        SomeEnemyCard siobhanRiley
+      , SomeEnemyCard cloverClubBouncer
+      , -- Bad Blood
+        SomeEnemyCard elspethBaudin
+      , -- By the Book
+        SomeEnemyCard mrGrey
+      , -- Laid to Rest
+        SomeEnemyCard jeanDevereuxSeekingClosure
+      , SomeEnemyCard jeanDevereuxPossessed
+      , SomeEnemyCard ravenousSpirit
+      , -- Enthralling Encore
+        SomeEnemyCard sinisterSoloist
+      , -- Relics of the Past
+        SomeEnemyCard dwellerInThePit
       ]

@@ -11,6 +11,7 @@
     "standalone": "Standalone",
     "sideStory": "Side Story",
 
+    "requiresInvestigator": "Requires {name}",
     "alphaWarning": "This is currently being worked on. It likely doesn't work yet and you should not file bugs against it.",
     "betaWarning": "This is ready for testing but expect your games to break frequently.",
     "betaWarningScenario": "This scenario is ready for testing but expect your games to break frequently.",
@@ -19,6 +20,8 @@
     "returnTo": "Return to...",
     
     "fullCampaign": "Full Campaign",
+    "bothScenarios": "Both Scenarios (Campaign)",
+    "scenarios": "Scenarios",
     "partialCampaign": "Partial Campaign",
     "multiplayerVariant": "Multiplayer Variant",
     "campaignType": "Campaign Type",
@@ -67,6 +70,8 @@
 
     "chapter1Heading": "Chapter 1",
     "chapter2Heading": "Chapter 2",
+    "sideStoriesHeading": "Side Stories",
+    "challengeScenariosHeading": "Challenge Scenarios",
 
     "asIfAtBehavior": "\"As If\" At Behavior",
     "asIfAtChapter1": "Chapter 1 Rules",

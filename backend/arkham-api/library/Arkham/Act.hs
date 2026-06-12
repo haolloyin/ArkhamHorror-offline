@@ -442,6 +442,18 @@ allActs =
       SomeActCard theCarnevaleConspiracy
     , SomeActCard getToTheBoats
     , SomeActCard row
+    , -- The Eternal Slumber
+      SomeActCard curseOfEndlessSleep
+    , SomeActCard secretsInTheSand
+    , SomeActCard theHourOfJudgment
+    , -- The Night's Usurper
+      SomeActCard searchForTheGate
+    , SomeActCard intoTheGate
+    , SomeActCard theNightsUsurper
+    , -- War of the Outer Gods
+      SomeActCard warOfTheOuterGods
+    , SomeActCard closeThePortal
+    , SomeActCard closeAllPortals
     , -- Murder at the Excelsior Hotel
       SomeActCard whatHappened
     , SomeActCard followingLeads
@@ -481,4 +493,32 @@ allActs =
     , SomeActCard blackwatersBane
     , SomeActCard exposeTheAnomalyEpicMultiplayer
     , SomeActCard blackwatersBaneEpicMultiplayer
+    , -- The Labyrinths of Lunacy
+      SomeActCard sealedInGroupA
+    , SomeActCard wateryGraveGroupB
+    , SomeActCard theLeversGroupC
+    , SomeActCard distortionsInTimeGroupA
+    , SomeActCard seepingDeathGroupB
+    , SomeActCard thePetGroupC
+    , SomeActCard theEscapeTheLabyrinthsOfLunacy
+    , -- Machinations Through Time
+      SomeActCard walkingThroughTime
+    , -- Read or Die
+      SomeActCard speedReading
+    , -- All or Nothing
+      SomeActCard playingCards
+    , SomeActCard hotOnYourTail
+    , -- Bad Blood
+      SomeActCard aWalkDownMemoryLane
+    , -- By the Book
+      SomeActCard captureTheConspirators
+    , -- Laid to Rest
+      SomeActCard laidToRest
+    , -- Red Tide Rising
+      SomeActCard searchingForDad
+    , -- Enthralling Encore
+      SomeActCard breakFreeFromThePast
+    , -- Relics of the Past
+      SomeActCard crumblingRuin
+    , SomeActCard findTheWayOut
     ]

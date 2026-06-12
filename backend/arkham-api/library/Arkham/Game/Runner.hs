@@ -412,6 +412,7 @@ runGameMessage msg g = case msg of
       & (inActionL .~ True)
       & (actionCanBeUndoneL .~ True)
       & (actionDiffL .~ [])
+      & (actionSnapshotL .~ Transient Nothing)
       & (undoActionStepL ?~ gameScenarioSteps g)
   FinishAction -> do
     iid <- getActiveInvestigatorId
@@ -425,6 +426,7 @@ runGameMessage msg g = case msg of
       & (inActionL .~ False)
       & (actionCanBeUndoneL .~ False)
       & (actionDiffL .~ [])
+      & (actionSnapshotL .~ Transient Nothing)
       & (inDiscardEntitiesL .~ mempty)
       & (phaseHistoryL %~ insertHistory iid historyItem)
       & setTurnHistory
@@ -460,6 +462,14 @@ runGameMessage msg g = case msg of
           & (activeAbilitiesL .~ mempty)
           & (actionRemovedEntitiesL .~ mempty)
           & (activeAbilitiesL .~ mempty)
+          -- A scenario-ending action (e.g. Resign) leaves the game "in action"
+          -- with a revert diff/snapshot pointing at the entities we just tore
+          -- down. Clear the action bookkeeping so we don't persist a stale diff
+          -- that fails to apply on reload (see handleActionDiff / unsafePatch).
+          & (inActionL .~ False)
+          & (actionDiffL .~ [])
+          & (actionCanBeUndoneL .~ False)
+          & (actionSnapshotL .~ Transient Nothing)
     case gameMode g of
       These c _ -> pure $ update $ g & (modeL .~ This c)
       _ -> pure $ update g
@@ -504,6 +514,12 @@ runGameMessage msg g = case msg of
       & (turnHistoryL .~ mempty)
       & (roundHistoryL .~ mempty)
       & (cardsL %~ if keepCardCache then id else const mempty)
+      -- See EndOfScenario: drop action bookkeeping so a reset never persists a
+      -- stale revert diff against torn-down entities.
+      & (inActionL .~ False)
+      & (actionDiffL .~ [])
+      & (actionCanBeUndoneL .~ False)
+      & (actionSnapshotL .~ Transient Nothing)
   StartScenario sid mopts -> do
     -- NOTE: The campaign log and player decks need to be copied over for
     -- standalones because we effectively reset it here when we `setScenario`.
@@ -624,6 +640,7 @@ runGameMessage msg g = case msg of
     let
       -- isMovement = abilityIs ability #move
       isInvestigate = abilityIs ability #investigate
+      isExplore = abilityIs ability #explore
       isResign = abilityIs ability #resign
 
     doDelayAdditionalCosts <- case abilityDelayAdditionalCosts ability of
@@ -638,6 +655,15 @@ runGameMessage msg g = case msg of
             Just lid -> do
               mods' <- getModifiers lid
               pure [c | AdditionalCostToInvestigate c <- mods']
+            _ -> pure []
+        else pure []
+    exploreCosts <-
+      if isExplore && not doDelayAdditionalCosts
+        then do
+          getMaybeLocation iid >>= \case
+            Just lid -> do
+              mods' <- getModifiers lid
+              pure [c | AdditionalCostToExplore c <- mods']
             _ -> pure []
         else pure []
     resignCosts <-
@@ -677,7 +703,7 @@ runGameMessage msg g = case msg of
               fixEnemy
                 $ mconcat
                   ( costF (abilityCost ability)
-                      : additionalCosts ++ investigateCosts ++ resignCosts ++ [ActionCost 0]
+                      : additionalCosts ++ investigateCosts ++ exploreCosts ++ resignCosts ++ [ActionCost 0]
                   )
           , activeCostPayments = Cost.NoPayment
           , activeCostTarget = ForAbility ability
@@ -864,6 +890,7 @@ runGameMessage msg g = case msg of
                       { locationId = locationId la
                       , locationCardId = locationCardId la
                       , locationTokens = locationTokens la
+                      , locationWithoutClues = Token.countTokens Token.Clue (locationTokens la) == 0
                       , locationLabel = locationLabel la
                       , locationPosition = locationPosition la
                       , locationPlacement = locationPlacement la
@@ -879,11 +906,12 @@ runGameMessage msg g = case msg of
 
     -- Surface the flip as a FlipLocation window so card-level forced/reactive
     -- abilities ("when this enemy-location is revealed") can hook in via the
-    -- existing FlipLocation matcher.
+    -- existing FlipLocation matcher. Deliberately no PlacedLocation: a flip is
+    -- not an enters-play event and must not re-place reveal clues or fire
+    -- enters-play windows ("keep all ... tokens on that location").
     lead <- getLead
     pushAll
-      [ PlacedLocation (toName el) (toCardCode el) lid
-      , Msg.CheckWindows [mkWhen (Window.FlipLocation lead lid)]
+      [ Msg.CheckWindows [mkWhen (Window.FlipLocation lead lid)]
       , Msg.CheckWindows [mkAfter (Window.FlipLocation lead lid)]
       ]
     pure
@@ -905,6 +933,7 @@ runGameMessage msg g = case msg of
                   { locationId = locationId la
                   , locationCardId = locationCardId la
                   , locationTokens = locationTokens la
+                  , locationWithoutClues = Token.countTokens Token.Clue (locationTokens la) == 0
                   , locationLabel = locationLabel la
                   , locationPosition = locationPosition la
                   , locationPlacement = locationPlacement la
@@ -918,11 +947,12 @@ runGameMessage msg g = case msg of
     replaceCard card.id (forceFlipCard card)
 
     -- Surface the flip as a FlipLocation window so card-level forced/reactive
-    -- abilities can hook in via the existing FlipLocation matcher.
+    -- abilities can hook in via the existing FlipLocation matcher. Deliberately
+    -- no PlacedLocation: a flip is not an enters-play event and must not
+    -- re-place reveal clues or fire enters-play windows.
     lead <- getLead
     pushAll
-      [ PlacedLocation (toName location) (toCardCode location) lid
-      , Msg.CheckWindows [mkWhen (Window.FlipLocation lead lid)]
+      [ Msg.CheckWindows [mkWhen (Window.FlipLocation lead lid)]
       , Msg.CheckWindows [mkAfter (Window.FlipLocation lead lid)]
       ]
     pure
@@ -930,7 +960,16 @@ runGameMessage msg g = case msg of
       & (entitiesL . enemyLocationsL %~ deleteMap lid)
       & (entitiesL . locationsL . at lid ?~ location)
   -- Remove an enemy-location from play (e.g. after defeat).
+  -- Investigators, story assets, and enemies that were here are relocated by
+  -- the scenario per the enemy-location defeat rules; everything else at the
+  -- location leaves play as it would when a location is removed.
   RemoveEnemyLocation lid -> do
+    treacheries <- select $ TreacheryAt $ LocationWithId lid
+    pushAll $ concatMap (resolve . toDiscard GameSource) treacheries
+    events <- select $ eventAt lid
+    pushAll $ concatMap (resolve . toDiscard GameSource) events
+    assets <- select $ assetAt lid <> NotAsset StoryAsset
+    pushAll $ concatMap (resolve . toDiscard GameSource) assets
     pure $ g & entitiesL . enemyLocationsL %~ deleteMap lid
   ReplaceLocation lid card replaceStrategy -> do
     -- if replaceStrategy is swap we also want to copy over revealed, all tokens
@@ -1000,6 +1039,8 @@ runGameMessage msg g = case msg of
                 , enemySpawnedBy = enemySpawnedBy oldAttrs
                 , enemyDiscardedBy = enemyDiscardedBy oldAttrs
                 , enemyCardsUnderneath = enemyCardsUnderneath oldAttrs
+                , enemyAttacking = enemyAttacking oldAttrs
+                , enemyWantsToAttack = enemyWantsToAttack oldAttrs
                 }
 
     pushWhen (replaceStrategy == DefaultReplace) $ EnemyCheckEngagement eid
@@ -1388,8 +1429,12 @@ runGameMessage msg g = case msg of
       & (focusedCardsL %~ map (filter (`notElem` cards)))
       . (foundCardsL . each %~ filter (`notElem` cards))
   ReturnToHand iid (SkillTarget skillId) -> do
-    card <- field SkillCard skillId
-    pushAll [RemoveFromPlay (toSource skillId), addToHand iid card]
+    -- If the skill is no longer in play (e.g. a doubled "if this test succeeds"
+    -- result from Double or Nothing tries to return Arrogance after it has
+    -- already been returned to hand), do nothing.
+    for_ (preview (entitiesL . skillsL . ix skillId) g) \_ -> do
+      card <- field SkillCard skillId
+      pushAll [RemoveFromPlay (toSource skillId), addToHand iid card]
     pure g
   ReturnToHand iid (CardIdTarget cardId) -> do
     -- We need to check skills specifically as they aren't covered by the skill
@@ -1936,6 +1981,9 @@ runGameMessage msg g = case msg of
                       prey <- select m
                       matches eid (#ready <> not_ (EnemyAt $ LocationWithInvestigator $ mapOneOf InvestigatorWithId prey))
                     _ -> matches eid (#ready <> #unengaged <> not_ (EnemyAt $ LocationWithInvestigator Anyone))
+                -- War of the Outer Gods: warring enemies move during this
+                -- step and are batched with hunters
+                Keyword.ScenarioKeyword "Warring" -> matches eid (ReadyEnemy <> UnengagedEnemy)
                 _ -> pure False
               pure (target, msgs)
           FailSkillTestGroup -> pure targetMap
@@ -1997,6 +2045,9 @@ runGameMessage msg g = case msg of
     let
       toUI msg' = case msg' of
         EnemyAttack details -> targetLabel (attackEnemy details) [msg']
+        -- scenario-specific attacks (e.g. warring) carry the attacking
+        -- enemy's id as their payload
+        ScenarioSpecific _ v | Just eid <- maybeResult @EnemyId v -> targetLabel eid [msg']
         _ -> error "unhandled"
       attackedInvestigator = \case
         EnemyAttack details -> details.investigator
@@ -2004,6 +2055,7 @@ runGameMessage msg g = case msg of
       attackingEnemies = nub $ mapMaybe attackingEnemy as
       attackingEnemy = \case
         EnemyAttack details -> Just details.enemy
+        ScenarioSpecific _ v -> maybeResult @EnemyId v
         _ -> Nothing
     case mNextMessage of
       Just (EnemyAttacks as2) -> do
@@ -2540,7 +2592,8 @@ runGameMessage msg g = case msg of
   ForInvestigator iid AllDrawEncounterCard -> do
     iid' <- fromMaybe iid <$> selectOne (InvestigatorWithModifier DrawsEachEncounterCard)
     whenM (not <$> isEliminated iid) do
-      push $ drawEncounterCard iid' GameSource
+      player <- getPlayer iid'
+      push $ chooseOne player [TargetLabel EncounterDeckTarget [drawEncounterCard iid' GameSource]]
     pure $ g & activeInvestigatorIdL .~ iid'
   EndMythos -> do
     pushAll
@@ -2654,7 +2707,13 @@ runGameMessage msg g = case msg of
               player
               [ targetLabel
                   (toCardId card)
-                  [StoryMessage (ResolveStory iid storyMode storyId), StoryMessage (ResolvedStory storyMode storyId)]
+                  [ StoryMessage (ResolveStory iid storyMode storyId)
+                  , -- If resolving the story kicks off a skill test while another
+                    -- test is active, the new test is relocated to after the current
+                    -- one. ResolvedStory (which removes the story) must travel with
+                    -- it, or the story is removed before its own test resolves.
+                    MoveWithSkillTest (StoryMessage (ResolvedStory storyMode storyId))
+                  ]
               ]
           ]
       _ ->
@@ -2663,7 +2722,9 @@ runGameMessage msg g = case msg of
             player
             [ targetLabel
                 (toTarget storyId)
-                [StoryMessage (ResolveStory iid storyMode storyId), StoryMessage (ResolvedStory storyMode storyId)]
+                [ StoryMessage (ResolveStory iid storyMode storyId)
+                , MoveWithSkillTest (StoryMessage (ResolvedStory storyMode storyId))
+                ]
             ]
     pure $ g & entitiesL . storiesL . at storyId ?~ story'
   StoryMessage (PlaceStory card placement) -> do
@@ -3674,10 +3735,37 @@ runPreGameMessage msg g = case msg of
   BeginRound -> pure $ g & undoRoundStepL ?~ (gameScenarioSteps g + 1)
   _ -> pure g
 
+{- | Maintain the revert information for the in-flight action.
+
+While an action resolves, 'gameActionDiff' holds a single lazy revert diff
+from the current state back to the snapshot the action started from (kept in
+the runtime-only 'gameActionSnapshot'). Replacing one unforced thunk per
+message costs nothing; the diff is only computed if the game is saved
+mid-action or the action is undone. This previously consed a fully-computed
+diff per processed message — two whole-game serializations plus a tree diff,
+times hundreds of messages, all forced at every mid-action save.
+
+The snapshot is reconstructed on the first message after a mid-action load by
+folding the saved revert patches into the just-loaded state — which also
+covers mid-action saves written by older builds (one patch per message), so
+'UndoAction' keeps working across the format change.
+-}
 handleActionDiff :: Game -> Game -> Game
 handleActionDiff old new
-  | gameInAction new = new & actionDiffL %~ (diff new old :)
-  | otherwise = new
+  | not (gameInAction new) = new
+  | otherwise = case getTransient (gameActionSnapshot new) of
+      Just snap -> new & actionDiffL .~ [diff new snap]
+      Nothing ->
+        let snap = case gameActionDiff new of
+              -- action began with this message; the pre-message state is the
+              -- action start
+              [] -> old
+              -- resumed from a mid-action save: fold the saved revert patches
+              -- into the just-loaded state to recover the action start
+              ps -> (foldl' unsafePatch old ps) {gameActionDiff = []}
+         in new
+              & (actionSnapshotL .~ Transient (Just snap))
+              & (actionDiffL .~ [diff new snap])
 
 rewriteUsedAbilityWindows
   :: (Window.WindowType -> Bool)

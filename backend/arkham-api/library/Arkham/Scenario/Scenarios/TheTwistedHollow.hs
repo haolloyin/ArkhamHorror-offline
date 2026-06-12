@@ -93,9 +93,9 @@ instance RunMessage TheTwistedHollow where
         li.nested "removeLocations" do
           li "oneOrTwoInvestigators"
           li "threeOrFourInvestigators"
-        li.nested "glimmeringMeadow.checkCampaignLog" do
-          li "glimmeringMeadow.showedTheWay"
-          li "glimmeringMeadow.lostThePath"
+        li.nested "glimmeringWoods.checkCampaignLog" do
+          li "glimmeringWoods.showedTheWay"
+          li "glimmeringWoods.lostThePath"
         li "woodsDeck"
         li.nested "residents" do
           li "theoPeters"
@@ -130,19 +130,19 @@ instance RunMessage TheTwistedHollow where
         questionLabeledCard lanternVersion
         portraits investigators (`takeControlOfAsset` lantern)
 
-      setAside [Locations.theTwistedHollow, Locations.glimmeringMeadow]
+      setAside [Locations.theTwistedHollow, Locations.glimmeringWoods]
       n <- getPlayerCount
       woods <-
         fmap (drop $ if n >= 3 then 1 else 2)
           . shuffle
-          . filterCards (not_ $ mapOneOf cardIs [Locations.theTwistedHollow, Locations.glimmeringMeadow])
+          . filterCards (not_ $ mapOneOf cardIs [Locations.theTwistedHollow, Locations.glimmeringWoods])
           =<< fromGathered (CardWithTitle "Western Woods")
 
-      glimmeringMeadow <- fromSetAside Locations.glimmeringMeadow
+      glimmeringWoods <- fromSetAside Locations.glimmeringWoods
 
       if showedTheWay
         then do
-          startAt =<< placeCardInGrid (Pos 0 0) glimmeringMeadow
+          startAt =<< placeCardInGrid (Pos 0 0) glimmeringWoods
           case woods of
             north : east : south : west : rest -> do
               for_
@@ -154,7 +154,7 @@ instance RunMessage TheTwistedHollow where
           case woods of
             start : rest -> do
               startAt =<< placeCardInGrid (Pos 0 0) start
-              shuffle (glimmeringMeadow : rest) >>= \case
+              shuffle (glimmeringWoods : rest) >>= \case
                 north : east : south : west : rest' -> do
                   for_
                     [(Pos 0 (-1), north), (Pos 1 0, east), (Pos 0 1, south), (Pos (-1) 0, west)]
@@ -209,16 +209,19 @@ instance RunMessage TheTwistedHollow where
       let entry x = scope x $ flavor $ setTitle "title" >> p.green "body"
       case n of
         7 -> do
+          codexFinished 7
           selectEach (assetIs Assets.judithParkTheMuscle) \aid ->
             dealAssetDamage aid ScenarioSource 2
           record JudithSavedYourAss
           entry "judithPark"
         8 -> do
+          codexFinished 8
           selectEach (assetIs Assets.theoPetersJackOfAllTrades) \aid ->
             dealAssetHorror aid ScenarioSource 2
           record TheoDistractedTheBear
           entry "theoPeters"
         Theta -> scope "drRosaMarquez" do
+          codexFinished Theta
           flavor $ setTitle "title" >> p.green "body"
           locations <- select UnrevealedLocation
           chooseOneM iid do
@@ -230,6 +233,7 @@ instance RunMessage TheTwistedHollow where
                 (CannotTriggerAbilityMatching $ AbilityIsForcedAbility <> AbilityOnLocation (LocationWithId loc))
                 (reveal loc)
         Omega -> scope "bertieMusgrave" do
+          codexFinished Omega
           flavor $ setTitle "title" >> p.green "body"
           chooseOneM iid do
             labeled' "gainClues" $ eachInvestigator \iid' -> gainClues iid' source 1

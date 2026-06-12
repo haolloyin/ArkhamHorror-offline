@@ -15,6 +15,13 @@ import Arkham.Enemy.CardDefs.TheForgottenAge as X
 import Arkham.Enemy.CardDefs.TheInnsmouthConspiracy as X
 import Arkham.Enemy.CardDefs.ThePathToCarcosa as X
 import Arkham.Enemy.CardDefs.TheScarletKeys as X
+import Arkham.Enemy.CardDefs.ByTheBook as X
+import Arkham.Enemy.CardDefs.AllOrNothing as X
+import Arkham.Enemy.CardDefs.BadBlood as X
+import Arkham.Enemy.CardDefs.LaidToRest as X
+import Arkham.Enemy.CardDefs.EnthrallingEncore as X
+import Arkham.Enemy.CardDefs.ReadOrDie as X
+import Arkham.Enemy.CardDefs.RelicsOfThePast as X
 
 import Arkham.Card.CardCode
 import Arkham.Card.CardDef
@@ -72,6 +79,7 @@ allEncounterEnemyCards =
       [ abarranArrigorriagakoaAbarranUnleashed
       , abarranArrigorriagakoaTheManWithTheRubyRing
       , abhorrentMoonBeast
+      , abyssalRevenant
       , acolyte
       , acolyteOfUmordhoth
       , agentOfTheKing
@@ -166,6 +174,7 @@ allEncounterEnemyCards =
       , covenInitiate
       , crazedGuest
       , crazedShoggoth
+      , creatureFromTheAbyss
       , creatureOutOfDemhe
       , crystalParasite
       , crustaceanHybridInTheDark
@@ -196,6 +205,13 @@ allEncounterEnemyCards =
       , dmitriKonstantinovTakingTheLongView
       , caldwellPhilipsCompelledByDreams
       , carlSanfordIntimidatingPresence
+      , eixodolon
+      , eixodolonsPetEpicMultiplayer
+      , eixodolonsPet
+      , theJailor
+      , facelessAbductor
+      , miGoGuard
+      , torturedVictim
       , valeriyaAntonovaDontMessWithHer
       , deepOneBull
       , deepOneHatchling
@@ -214,9 +230,14 @@ allEncounterEnemyCards =
       , discipleOfTheDevourer
       , donLagorio
       , drAmyKenslerProfessorOfBiology
+      , dreadedShantak
+      , drLaylaElMasri
       , drMalaSinhaDaringPhysician
       , dromaeosaurus
+      , drWentworthMoore
       , eaterOfTheDepths
+      , edwinBennetBitterAdversary
+      , edwinBennetEnviousRival
       , elderThingScavenger
       , elisabettaMagro
       , eliyahAshevakDogHandler
@@ -232,6 +253,7 @@ allEncounterEnemyCards =
       , eztliGuardian
       , fanatic
       , fangOfYig
+      , farid
       , featheredSerpent
       , fleshEater
       , forestWatcher
@@ -245,6 +267,7 @@ allEncounterEnemyCards =
       , frenziedMiner
       , furtiveZoog
       , gavriellaMizrah
+      , ghastlySatyr
       , ghostLight
       , ghoulFromTheDepths
       , ghoulMinion
@@ -280,12 +303,31 @@ allEncounterEnemyCards =
       , hitVan
       , hordeOfNight
       , horrifyingShade
+      , houndOfTindalos
       , hostOfInsanity
       , hotelGuest
       , hotelManager
       , hotelSecurity
       , houseDealerA
       , houseDealerB
+      , humbleSupplicant
+      , nihilisticStargazer
+      , zealotOfParadise
+      , discipleOfTheSwarm
+      , etherealEntityWarOfTheOuterGods
+      , bringerOfParadiseWarOfTheOuterGods
+      , trylogogWarOfTheOuterGods
+      , silenus
+      , theInescapableMaw
+      , huneStitchedHerald
+      , etherealEntity
+      , maghanArkat
+      , vileBroodmaster
+      , horrificShoggoth
+      , bringerOfParadise
+      , ezelZenRezl
+      , droningHorde
+      , trylogog
       , huntingDeepOne
       , huntingGhast
       , huntingHorror
@@ -346,6 +388,7 @@ allEncounterEnemyCards =
       , malformedSkeleton
       , maniac
       , manifestationOfMadness
+      , manyAngledThing
       , mariaDeSilvaKnowsMoreThanSheLetsOn
       , marshGug
       , memoryOfAHuntGoneAwry
@@ -380,11 +423,14 @@ allEncounterEnemyCards =
       , moonBeast
       , moonLizard
       , moonboundByakhee
+      , nadiaNimr
       , nahab
       , narogath
       , nasht
+      , nassor
       , nathanWickMasterOfIndoctrination
       , nathanWickMasterOfInitiation
+      , neith
       , netherMist
       , nightriders
       , nyarlathotepGodOfAThousandForms
@@ -394,6 +440,7 @@ allEncounterEnemyCards =
       , nyarlathotepTheFacelessWhisperer
       , oBannionsThug
       , oceirosMarsh
+      , oldSadieSheldon
       , otheraGilmanProprietessOfTheHotel
       , otherworldlyMeddler
       , otherworldlyMimic
@@ -419,6 +466,7 @@ allEncounterEnemyCards =
       , priestOfDagon
       , priestessOfTheCoven
       , primordialEvil
+      , professorNathanielTaylor
       , professorWilliamDyerProfessorOfGeology
       , protoplasmicMass
       , protoplasmicReassembler
@@ -465,6 +513,7 @@ allEncounterEnemyCards =
       , sethBishop
       , sethBishopThrallOfYogSothoth
       , shadowHound
+      , sheldonGang
       , silasBishop
       , sinisterAspirantA
       , sinisterAspirantB
@@ -476,6 +525,7 @@ allEncounterEnemyCards =
       , slitheringDhole
       , slitheringHybrid
       , spawnOfHali
+      , speakerForTheDarkPharaoh
       , specterOfDeath
       , spectralRaven
       , spiderOfLeng
@@ -527,12 +577,15 @@ allEncounterEnemyCards =
       , theWingedSerpent
       , theWingedSerpentTheFuryOfYig
       , thingInTheDepths
+      , thingInTheSarcophagus
       , thorneOpenToNegotiation
       , thorneTheOneWithTheRedCravat
       , thrall
       , thrallDeadHeat
       , tidalTerror
       , tindalosAlpha
+      , tindalosAlphaMachinationsThroughTime
+      , tyrthrha
       , tzuSanNiangAWhisperInYourEar
       , tzuSanNiangOutForBlood
       , tzuSanNiangTheLadyWithTheRedParasol
@@ -569,6 +622,7 @@ allEncounterEnemyCards =
       , wolfManDrew
       , wraith
       , writhingAppendage
+      , xzharah
       , yig
       , yithianObserver
       , yithianStarseeker
@@ -611,6 +665,23 @@ allEncounterEnemyCards =
       , miGoHarvester
       , miGoMeddler
       , miGoAbductor
+      , --- By the Book
+        mrGrey
+      , --- All or Nothing
+        siobhanRiley
+      , cloverClubBouncer
+      , --- Bad Blood
+        elspethBaudin
+      , --- Laid to Rest
+        jeanDevereuxSeekingClosure
+      , jeanDevereuxPossessed
+      , ravenousSpirit
+      , --- Enthralling Encore
+        sinisterSoloist
+      , --- Read or Die
+        namerOfTheDead
+      , --- Relics of the Past
+        dwellerInThePit
       ]
 
 allSpecialEnemyCards :: Map CardCode CardDef

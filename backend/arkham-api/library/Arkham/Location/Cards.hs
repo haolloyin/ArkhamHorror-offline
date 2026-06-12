@@ -14,6 +14,8 @@ import Arkham.Location.CardDefs.TheForgottenAge as X
 import Arkham.Location.CardDefs.TheInnsmouthConspiracy as X
 import Arkham.Location.CardDefs.ThePathToCarcosa as X
 import Arkham.Location.CardDefs.TheScarletKeys as X
+import Arkham.Location.CardDefs.ByTheBook as X
+import Arkham.Location.CardDefs.RelicsOfThePast as X
 
 import Arkham.Card.CardCode
 import Arkham.Card.CardDef
@@ -33,6 +35,7 @@ allLocationCards =
       , abandonedChapelSpectral
       , abandonedShack
       , abandonedSite
+      , abandonedWarehouse
       , abbeyChurch
       , abbeyTowerSpiresForbidden
       , abbeyTowerThePathIsOpen
@@ -40,6 +43,7 @@ allLocationCards =
       , administrationBuilding
       , administrationOffice_130
       , administrationOffice_131
+      , aDreamBetwixt
       , airfield
       , akwan
       , alaskanWilds
@@ -56,6 +60,9 @@ allLocationCards =
       , ancientHallRearrangedByTime
       , ancientPlanetarium
       , anotherDimension
+      , arkhamAdvertiserFuture
+      , arkhamAdvertiserPresent
+      , arkhamGazette
       , arkhamPoliceStation
       , arkhamWoodsBootleggingOperation
       , arkhamWoodsCliffside
@@ -151,6 +158,34 @@ allLocationCards =
       , burnedRuins_205
       , cafeLunaBastionOfRemembrance
       , cafeLunaCoterieHaunt
+      , cairoBazaar
+      , arkham
+      , chamberOfDecay
+      , chamberOfHunger
+      , chamberOfNightEpicMultiplayer
+      , chamberOfNight
+      , chamberOfPoison
+      , chamberOfRain
+      , chamberOfRegret
+      , chamberOfRot
+      , chamberOfSecretsBloodyPrison
+      , chamberOfSecretsEnshroudedPrison
+      , chamberOfSecretsMysteriousPrison
+      , chamberOfSorrowsEpicMultiplayer
+      , chamberOfSorrows
+      , labyrinthineHallsCorpseFilledPath
+      , labyrinthineHallsFoulSmellingPath
+      , labyrinthineHallsOvergrownPath
+      , streetsOfProvidence
+      , athenaeumOfTheEmptySky
+      , theArcade
+      , streetsOfMontreal
+      , chateauRamezay
+      , shrineOfMaghanArkat
+      , streetsOfNewYorkCity
+      , theBurningPit
+      , thePenthouse
+      , hubDimension
       , canalSaintMartin
       , canalSide
       , canalsOfTenochtitlan_180
@@ -190,6 +225,7 @@ allLocationCards =
       , chapultepecHill_178
       , chapultepecHill_179
       , chapultepecPark
+      , childhoodHome
       , choeurGothique_292
       , choeurGothique_293
       , chthonianDepths
@@ -224,6 +260,7 @@ allLocationCards =
       , controlStation
       , coop
       , corpseGrove
+      , corriganIndustries
       , cosmicGate
       , cosmicIngress
       , coterieLibraryLair
@@ -267,6 +304,7 @@ allLocationCards =
       , depthsOfDemheTheHeightOfTheDepths
       , descentToYoth
       , desertedStation
+      , desertOasis
       , desolateCoastline
       , desolateRoad_a
       , desolateRoad_b
@@ -295,6 +333,7 @@ allLocationCards =
       , dressingRoom
       , drKenslersOffice
       , dryBurrow
+      , dunesOfTheSahara
       , dunwichVillage_242
       , dunwichVillage_243
       , dyersClassroom
@@ -304,6 +343,7 @@ allLocationCards =
       , easttownArkhamPoliceStation
       , eerieGlade
       , elderChamber
+      , eldritchGate
       , elMalecon
       , emergencyRoom
       , enchantedWoodsFungalForest
@@ -333,8 +373,10 @@ allLocationCards =
       , exhibitHallRestrictedHall
       , exhibitHallTheArchives
       , expeditionCamp
+      , expeditionCampGuardiansOfTheAbyss
       , experimentalTherapiesWard
       , eztliExhibit
+      , facelessSphinx
       , facultyOfficesTheHourIsLate
       , facultyOfficesTheNightIsStillYoung
       , fairbanks
@@ -396,7 +438,7 @@ allLocationCards =
       , gilmanHouse
       , gilmanHouseInTooDeep
       , glacialGrotto
-      , glimmeringMeadow
+      , glimmeringWoods
       , gondola
       , gothicSet
       , grandBazaarBusyWalkway
@@ -581,7 +623,11 @@ allLocationCards =
       , miskatonicQuad
       , miskatonicRiver
       , miskatonicUniversity
+      , miskatonicUniversityFuture
       , miskatonicUniversityMiskatonicMuseum
+      , miskatonicUniversityPast
+      , miskatonicUniversityPresent
+      , mistFilledCaverns
       , mistPylon_174
       , mistPylon_175
       , mistPylon_176
@@ -609,6 +655,7 @@ allLocationCards =
       , muddyFen
       , museumEntrance
       , museumHalls
+      , museumOfEgyptianAntiquities
       , mushroomGrove
       , mysteriousStairs_183
       , mysteriousStairs_184
@@ -623,12 +670,14 @@ allLocationCards =
       , newChurchGreenInTooDeep
       , nexusOfNKai
       , nightmareBreach
+      , nileRiver
       , northside
       , northsideTrainStation
       , northTower_287
       , northTower_288
       , notreDame
       , obeliskOfTheodosius
+      , oMalleysWatchShop
       , office
       , officeMurderAtTheExcelsiorHotel
       , officeSpectral
@@ -658,6 +707,7 @@ allLocationCards =
       , outerWall_286
       , outsidersLair
       , outsidersLairWithoutATrace
+      , outskirtsOfCairo
       , overgrownCairns
       , overgrownRuins
       , overgrownTunnel
@@ -763,6 +813,9 @@ allLocationCards =
       , ritualSiteTeetawn
       , ritualSiteTothis
       , riverCanyon
+      , riverDocksFuture
+      , riverDocksPast
+      , riverDocksPresent
       , riversideTemple
       , rivertown
       , rivertown_292
@@ -797,6 +850,8 @@ allLocationCards =
       , saltMarshes
       , sanctumDoorwayCeremonyRoom
       , sanctumDoorwayHoldingCells
+      , sandsOfDashur
+      , sandsweptRuins
       , sanMarcoBasilica
       , sarnath
       , sawboneAlley
@@ -853,6 +908,7 @@ allLocationCards =
       , spaceSet
       , staffAccessHallway
       , stageOfTheWardTheatre
+      , stairwayToSarkomand
       , stairwell
       , standingStones
       , statuesInTheDeep
@@ -864,6 +920,7 @@ allLocationCards =
       , stoneArchways
       , stoneBridge
       , strangeGeometry
+      , streetsOfCairo
       , streetsOfVenice
       , studentUnion
       , study
@@ -892,6 +949,7 @@ allLocationCards =
       , tearThroughTime
       , teatroColon
       , teetawnPassage
+      , templeCourtyard
       , templeOfRlyeh
       , templeOfTheElderThings
       , templeOfTheFang
@@ -937,6 +995,7 @@ allLocationCards =
       , theGateOfYquaa
       , theGateToHell
       , theGeistTrap
+      , theGreatAbyss
       , theGreatWebCosmicWeb
       , theGreatWebPrisonOfCocoons
       , theGreatWebTangledWeb
@@ -968,12 +1027,15 @@ allLocationCards =
       , theWhiteShip
       , throneOfBloodRedAsBloodBlackAsNight
       , throneRoom
+      , tickTockClubFuture
+      , tickTockClubPresent
       , tidalPool
       , tightTurn_a
       , tightTurn_b
       , tightTurn_c
       , timeWrackedWoods
       , tinMine
+      , tindalos
       , titanicRamp_182
       , titanicRamp_183
       , titanicRamp_184
@@ -996,6 +1058,7 @@ allLocationCards =
       , treacherousPath
       , trophyRoom
       , trophyRoomSpectral
+      , tunnelsUnderNgranek
       , twilightAbyss
       , twistedUnderbrush
       , ulthar
@@ -1010,6 +1073,7 @@ allLocationCards =
       , universityHalls
       , unmarkedTomb
       , unstableVortex
+      , untouchedVault
       , unvisitedIsleDecayedWillow
       , unvisitedIsleForsakenWoods
       , unvisitedIsleHauntedSpring
@@ -1079,6 +1143,7 @@ allLocationCards =
       , witchHouseRuins
       , xochimilco
       , yard
+      , yeOldeMagickShoppe
       , yithianOrrery
       , yourHouse
       , yuggoth
@@ -1129,6 +1194,12 @@ allLocationCards =
       , oozyLakebed
       , slimyStreets
       , desiccatedFarmland
+      , --- By the Book
+        arkhamPoliceStationByTheBook
+      , --- Relics of the Past
+        secretPassageRelicsOfThePast
+      , innerChamber
+      , ancientHallRelicsOfThePast
       ]
 
 allSpecialLocationCards :: Map CardCode CardDef

@@ -668,3 +668,243 @@ ltWilsonStewart =
     , cdSlots = [#ally]
     , cdUnique = True
     }
+
+johnAndJessieBurke :: CardDef
+johnAndJessieBurke =
+  (storyAsset "83055" ("John & Jessie Burke" <:> "Relentless in Pursuit") 4 AbyssalTribute)
+    { cdSkills = [#combat, #agility, #wild]
+    , cdCardTraits = setFromList [Ally, Government]
+    , cdSlots = [#ally]
+    , cdDeckRestrictions = [PerDeckLimit 1]
+    }
+
+ancientAnkh :: CardDef
+ancientAnkh =
+  (storyAsset "83056" ("Ancient Ankh" <:> "Aegis of the Harbinger") 3 AbyssalTribute)
+    { cdSkills = [#willpower, #intellect, #wild]
+    , cdCardTraits = setFromList [Item, Relic]
+    , cdSlots = [#accessory]
+    , cdUses = uses Charge 4
+    , cdDeckRestrictions = [PerDeckLimit 1]
+    }
+
+khopeshOfTheAbyss :: CardDef
+khopeshOfTheAbyss =
+  (storyAsset "83057" ("Khopesh of the Abyss" <:> "Manifested Malice") 4 AbyssalGifts)
+    { cdSkills = [#willpower, #combat, #wild]
+    , cdCardTraits = setFromList [Item, Weapon, Relic, Melee]
+    , cdSlots = [#hand, #hand]
+    , cdUnique = True
+    , cdDeckRestrictions = [PerDeckLimit 1]
+    }
+
+summonedNightgaunt :: CardDef
+summonedNightgaunt =
+  (storyAsset "83058" ("Summoned Nightgaunt" <:> "Gift from Nodens") 4 AbyssalGifts)
+    { cdSkills = [#intellect, #agility, #wild]
+    , cdCardTraits = setFromList [Monster, Nightgaunt, Power]
+    , cdUses = uses Whistle 3
+    , cdDeckRestrictions = [PerDeckLimit 1]
+    }
+
+cloakOfTheOuterRealm :: CardDef
+cloakOfTheOuterRealm =
+  (storyAsset "86051" ("Cloak of the Outer Realm" <:> "Interwoven Distortion") 1 WarOfTheOuterGods)
+    { cdSkills = [#agility, #agility, #wild]
+    , cdCardTraits = setFromList [Item, Relic, Clothing]
+    , cdSlots = [#body]
+    , cdUses = uses Charge 4
+    , cdDeckRestrictions = [PerDeckLimit 1]
+    }
+
+pocketPortal :: CardDef
+pocketPortal =
+  fast
+    $ (storyAsset "86052" ("Pocket Portal" <:> "Doorway to Another World") 2 WarOfTheOuterGods)
+      { cdSkills = [#wild, #wild]
+      , cdCardTraits = setFromList [Spell]
+      , cdDeckRestrictions = [PerDeckLimit 1]
+      }
+
+dreadedEnd :: CardDef
+dreadedEnd =
+  (storyAsset "86053" ("Dreaded End" <:> "Gift of the Void") 1 WarOfTheOuterGods)
+    { cdSkills = [#willpower, #willpower, #wild]
+    , cdCardTraits = setFromList [Spell]
+    , cdSlots = [#arcane]
+    , cdUses = uses Charge 3
+    , cdDeckRestrictions = [PerDeckLimit 1]
+    }
+
+bladeOfArkat :: CardDef
+bladeOfArkat =
+  (storyAsset "86054" ("Blade of Ark'at" <:> "Shellblade Tribute") 1 WarOfTheOuterGods)
+    { cdSkills = [#combat, #combat, #wild]
+    , cdCardTraits = setFromList [Item, Relic, Weapon, Melee]
+    , cdSlots = [#hand]
+    , cdDeckRestrictions = [PerDeckLimit 1]
+    }
+
+enchantedSkull :: CardDef
+enchantedSkull =
+  (storyAsset "86055" ("Enchanted Skull" <:> "Mask of the Burning Pit") 1 WarOfTheOuterGods)
+    { cdSkills = [#intellect, #intellect, #wild]
+    , cdCardTraits = setFromList [Item, Relic]
+    , cdSlots = [#arcane, #accessory]
+    , cdDeckRestrictions = [PerDeckLimit 1]
+    }
+
+thomasCorriganPast :: CardDef
+thomasCorriganPast =
+  (storyAsset "87012" ("Thomas Corrigan" <:> "Physics Student") 0 MachinationsThroughTime)
+    { cdCardTraits = setFromList [Scientist, Ally, Past]
+    , cdCost = Nothing
+    }
+
+maryZielinskiPast :: CardDef
+maryZielinskiPast =
+  (storyAsset "87013" ("Mary Zielinski" <:> "Chemistry Student") 0 MachinationsThroughTime)
+    { cdCardTraits = setFromList [Scientist, Ally, Past]
+    , cdCost = Nothing
+    }
+
+nikolaTesla :: CardDef
+nikolaTesla =
+  (storyAsset "87014" ("Nikola Tesla" <:> "Renowned Inventor") 1 MachinationsThroughTime)
+    { cdCardTraits = setFromList [Scientist, Ally, Past]
+    , cdUnique = True
+    }
+
+thomasCorriganPresent :: CardDef
+thomasCorriganPresent =
+  (storyAsset "87021" ("Thomas Corrigan" <:> "Preeminent Astrophysicist") 0 MachinationsThroughTime)
+    { cdCardTraits = setFromList [Scientist, Ally, Present]
+    , cdCost = Nothing
+    }
+
+maryZielinskiPresent :: CardDef
+maryZielinskiPresent =
+  (storyAsset "87022" ("Mary Zielinski" <:> "Distinguished Chemist") 0 MachinationsThroughTime)
+    { cdCardTraits = setFromList [Scientist, Ally, Present]
+    , cdCost = Nothing
+    }
+
+ezraGraves :: CardDef
+ezraGraves =
+  (storyAsset "87023" ("Ezra Graves" <:> "Professor of the Arcane") 3 MachinationsThroughTime)
+    { cdCardTraits = setFromList [Scientist, Ally, Present]
+    , cdUnique = True
+    }
+
+thomasCorriganFuture :: CardDef
+thomasCorriganFuture =
+  (storyAsset "87030" ("Thomas Corrigan" <:> "Cofounder of Corrigan Industries") 0 MachinationsThroughTime)
+    { cdCardTraits = setFromList [Scientist, Ally, Future]
+    , cdCost = Nothing
+    }
+
+maryZielinskiFuture :: CardDef
+maryZielinskiFuture =
+  (storyAsset "87031" ("Mary Zielinski" <:> "Cofounder of Corrigan Industries") 0 MachinationsThroughTime)
+    { cdCardTraits = setFromList [Scientist, Ally, Future]
+    , cdCost = Nothing
+    }
+
+dimensionalBeamMachine :: CardDef
+dimensionalBeamMachine =
+  (storyAsset "87032" "Dimensional Beam Machine" 1 MachinationsThroughTime)
+    { cdCardTraits = setFromList [Item, Science, Tool, Future]
+    , cdUses = uses Charge 2
+    }
+
+edwinBennetAstuteAssociate :: CardDef
+edwinBennetAstuteAssociate =
+  (storyAsset "87036b" ("Edwin Bennet" <:> "Astute Associate") 0 MachinationsThroughTimeSingleGroup)
+    { cdCardTraits = setFromList [Scientist, Ally]
+    , cdCost = Nothing
+    , cdUnique = True
+    , cdDoubleSided = True
+    , cdOtherSide = Just "87036a"
+    }
+
+edwinBennetEsteemedColleague :: CardDef
+edwinBennetEsteemedColleague =
+  (storyAsset "87037b" ("Edwin Bennet" <:> "Esteemed Colleague") 0 MachinationsThroughTimeEpicMultiplayer)
+    { cdCardTraits = setFromList [Scientist, Ally]
+    , cdCost = Nothing
+    , cdUnique = True
+    , cdDoubleSided = True
+    , cdOtherSide = Just "87037a"
+    }
+
+eixodolonsNote :: CardDef
+eixodolonsNote =
+  (storyAsset "70039" "Eixodolon's Note" 0 TheLabyrinthsOfLunacy)
+    { cdCardTraits = setFromList [Item, Script]
+    , cdCost = Nothing
+    , cdCardType = EncounterAssetType
+    }
+
+keyOfMysteries :: CardDef
+keyOfMysteries =
+  (storyAsset "70040" "Key of Mysteries" 0 TheLabyrinthsOfLunacy)
+    { cdCardTraits = setFromList [Item, Key]
+    , cdCost = Nothing
+    , cdCardType = EncounterAssetType
+    }
+
+mysteriousSyringe :: CardDef
+mysteriousSyringe =
+  (storyAsset "70041" "Mysterious Syringe" 0 TheLabyrinthsOfLunacy)
+    { cdCardTraits = setFromList [Item]
+    , cdCost = Nothing
+    , cdCardType = EncounterAssetType
+    }
+
+rotDiagramEpicMultiplayer :: CardDef
+rotDiagramEpicMultiplayer =
+  (storyAsset "70042" "Rot Diagram" 0 LabyrinthsOfLunacyEpicMultiplayer)
+    { cdCardTraits = setFromList [Item, Script]
+    , cdCost = Nothing
+    , cdCardType = EncounterAssetType
+    }
+
+rotDiagram :: CardDef
+rotDiagram =
+  (storyAsset "70043" "Rot Diagram" 0 LabyrinthsOfLunacySingleGroup)
+    { cdCardTraits = setFromList [Item, Script]
+    , cdCost = Nothing
+    , cdCardType = EncounterAssetType
+    }
+
+hungerDiagramEpicMultiplayer :: CardDef
+hungerDiagramEpicMultiplayer =
+  (storyAsset "70044" "Hunger Diagram" 0 LabyrinthsOfLunacyEpicMultiplayer)
+    { cdCardTraits = setFromList [Item, Script]
+    , cdCost = Nothing
+    , cdCardType = EncounterAssetType
+    }
+
+hungerDiagram :: CardDef
+hungerDiagram =
+  (storyAsset "70045" "Hunger Diagram" 0 LabyrinthsOfLunacySingleGroup)
+    { cdCardTraits = setFromList [Item, Script]
+    , cdCost = Nothing
+    , cdCardType = EncounterAssetType
+    }
+
+decayDiagramEpicMultiplayer :: CardDef
+decayDiagramEpicMultiplayer =
+  (storyAsset "70046" "Decay Diagram" 0 LabyrinthsOfLunacyEpicMultiplayer)
+    { cdCardTraits = setFromList [Item, Script]
+    , cdCost = Nothing
+    , cdCardType = EncounterAssetType
+    }
+
+decayDiagram :: CardDef
+decayDiagram =
+  (storyAsset "70047" "Decay Diagram" 0 LabyrinthsOfLunacySingleGroup)
+    { cdCardTraits = setFromList [Item, Script]
+    , cdCost = Nothing
+    , cdCardType = EncounterAssetType
+    }
