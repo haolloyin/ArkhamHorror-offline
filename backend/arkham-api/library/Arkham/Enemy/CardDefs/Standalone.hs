@@ -764,3 +764,400 @@ miGoAbductor =
     { cdCardTraits = setFromList [Monster, MiGo, Elite]
     , cdVictoryPoints = Just 1
     }
+neith :: CardDef
+neith =
+  unique
+    $ (enemy "83013" ("Neith" <:> "Harbinger of the Abyss") TheEternalSlumber 1)
+      { cdCardTraits = setFromList [Humanoid, Brotherhood, Elite]
+      , cdKeywords = setFromList [Keyword.Hunter, Keyword.Retaliate]
+      , cdVictoryPoints = Just 1
+      }
+
+humbleSupplicant :: CardDef
+humbleSupplicant =
+  (enemy "83014" "Humble Supplicant" TheEternalSlumber 3)
+    { cdCardTraits = setFromList [Humanoid, Cultist]
+    , cdKeywords = setFromList [Keyword.Aloof]
+    }
+
+creatureFromTheAbyss :: CardDef
+creatureFromTheAbyss =
+  (enemy "83015" "Creature from the Abyss" TheEternalSlumber 2)
+    { cdCardTraits = setFromList [Monster, Dreamlands]
+    , cdKeywords = setFromList [Keyword.Retaliate]
+    }
+
+xzharah :: CardDef
+xzharah =
+  unique
+    $ doubleSided "83027b"
+    $ (enemy "83027a" ("Xzharah" <:> "Chosen of the Beast") TheNightsUsurper 1)
+      { cdCardTraits = setFromList [Servitor, Dreamlands, Conspirator, Elite]
+      , cdKeywords = setFromList [Keyword.Hunter, Keyword.Retaliate]
+      }
+
+dreadedShantak :: CardDef
+dreadedShantak =
+  (enemy "83029" "Dreaded Shantak" TheNightsUsurper 2)
+    { cdCardTraits = setFromList [Monster, Dreamlands, Shantak]
+    , cdKeywords = setFromList [Keyword.Hunter, Keyword.Massive]
+    }
+
+speakerForTheDarkPharaoh :: CardDef
+speakerForTheDarkPharaoh =
+  (enemy "83030" "Speaker for the Dark Pharaoh" TheNightsUsurper 2)
+    { cdCardTraits = setFromList [Humanoid, Cultist]
+    }
+
+drLaylaElMasri :: CardDef
+drLaylaElMasri =
+  unique
+    $ doubleSided "83031b"
+    $ (enemy "83031a" ("Dr. Layla El Masri" <:> "Hieratic Translator") BrotherhoodOfTheBeast 1)
+      { cdCardTraits = setFromList [Humanoid, Cultist, Brotherhood]
+      , cdVictoryPoints = Just 1
+      }
+
+drWentworthMoore :: CardDef
+drWentworthMoore =
+  unique
+    $ doubleSided "83032b"
+    $ (enemy "83032a" ("Dr. Wentworth Moore" <:> "Dark Supplicant") BrotherhoodOfTheBeast 1)
+      { cdCardTraits = setFromList [Humanoid, Cultist, Brotherhood]
+      , cdVictoryPoints = Just 1
+      }
+
+nadiaNimr :: CardDef
+nadiaNimr =
+  unique
+    $ doubleSided "83033b"
+    $ (enemy "83033a" ("Nadia Nimr" <:> "Priestess of the Beast") BrotherhoodOfTheBeast 1)
+      { cdCardTraits = setFromList [Humanoid, Cultist, Brotherhood]
+      , cdVictoryPoints = Just 1
+      }
+
+farid :: CardDef
+farid =
+  unique
+    $ doubleSided "83034b"
+    $ (enemy "83034a" ("Farid" <:> "Seedy Salesman") BrotherhoodOfTheBeast 1)
+      { cdCardTraits = setFromList [Humanoid, Cultist, Brotherhood]
+      , cdVictoryPoints = Just 1
+      }
+
+nassor :: CardDef
+nassor =
+  unique
+    $ doubleSided "83035b"
+    $ (enemy "83035a" ("Nassor" <:> "Brotherhood Operative") BrotherhoodOfTheBeast 1)
+      { cdCardTraits = setFromList [Humanoid, Cultist, Brotherhood]
+      , cdKeywords = setFromList [Keyword.Retaliate]
+      , cdVictoryPoints = Just 1
+      }
+
+professorNathanielTaylor :: CardDef
+professorNathanielTaylor =
+  unique
+    $ doubleSided "83036b"
+    $ (enemy "83036a" ("Professor Nathaniel Taylor" <:> "Keeper of Antiquities") BrotherhoodOfTheBeast 1)
+      { cdCardTraits = setFromList [Humanoid, Cultist, Brotherhood]
+      , cdVictoryPoints = Just 1
+      }
+
+abyssalRevenant :: CardDef
+abyssalRevenant =
+  (enemy "83045" "Abyssal Revenant" SandsOfEgypt 2)
+    { cdCardTraits = setFromList [Monster, Dreamlands]
+    , cdKeywords = setFromList [Keyword.Hunter]
+    }
+
+thingInTheSarcophagus :: CardDef
+thingInTheSarcophagus =
+  (enemy "83046" "Thing in the Sarcophagus" SandsOfEgypt 2)
+    { cdCardTraits = setFromList [Monster]
+    }
+
+nihilisticStargazer :: CardDef
+nihilisticStargazer =
+  (enemy "86025" "Nihilistic Stargazer" WarOfTheOuterGods 2)
+    { cdCardTraits = setFromList [Humanoid, Cultist]
+    , cdKeywords = setFromList [Keyword.Aloof, #warring]
+    }
+
+zealotOfParadise :: CardDef
+zealotOfParadise =
+  (enemy "86027" "Zealot of Paradise" WarOfTheOuterGods 2)
+    { cdCardTraits = setFromList [Humanoid, Cultist]
+    , cdKeywords = setFromList [Keyword.Aloof, #warring]
+    }
+
+discipleOfTheSwarm :: CardDef
+discipleOfTheSwarm =
+  (enemy "86029" "Disciple of the Swarm" WarOfTheOuterGods 2)
+    { cdCardTraits = setFromList [Humanoid, Cultist]
+    , cdKeywords = setFromList [Keyword.Aloof, #warring]
+    }
+
+etherealEntityWarOfTheOuterGods :: CardDef
+etherealEntityWarOfTheOuterGods =
+  (enemy "86038a" "Ethereal Entity" WarOfTheOuterGods 1)
+    { cdCardTraits = setFromList [Monster]
+    , cdKeywords = setFromList [#warring]
+    , cdArt = "86038"
+    }
+
+bringerOfParadiseWarOfTheOuterGods :: CardDef
+bringerOfParadiseWarOfTheOuterGods =
+  (enemy "86044a" "Bringer of Paradise" WarOfTheOuterGods 1)
+    { cdCardTraits = setFromList [Humanoid, Mutated]
+    , cdKeywords = setFromList [Keyword.Aloof, Keyword.Retaliate, #warring]
+    , cdArt = "86044"
+    }
+
+trylogogWarOfTheOuterGods :: CardDef
+trylogogWarOfTheOuterGods =
+  (enemy "86049a" "Trylogog" WarOfTheOuterGods 1)
+    { cdCardTraits = setFromList [Creature, Insect]
+    , cdKeywords = setFromList [Keyword.Swarming (Static 2), #warring]
+    , cdArt = "86049"
+    }
+
+silenus :: CardDef
+silenus =
+  unique
+    $ (enemy "86035" ("Silenus" <:> "The Empty Sky") DeathOfStars 1)
+      { cdCardTraits = setFromList [AncientOne, Elite]
+      , cdKeywords = setFromList [Keyword.Hunter, Keyword.Massive]
+      , cdVictoryPoints = Just 2
+      }
+
+theInescapableMaw :: CardDef
+theInescapableMaw =
+  unique
+    $ (enemy "86036" ("The Inescapable Maw" <:> "Servant of Silenus") DeathOfStars 1)
+      { cdCardTraits = setFromList [Humanoid, Servitor, Elite]
+      , cdKeywords = setFromList [Keyword.Hunter]
+      , cdVictoryPoints = Just 1
+      }
+
+huneStitchedHerald :: CardDef
+huneStitchedHerald =
+  (enemy "86037" "Hune-Stitched Herald" DeathOfStars 1)
+    { cdCardTraits = setFromList [Monster]
+    , cdKeywords = setFromList [#warring]
+    }
+
+etherealEntity :: CardDef
+etherealEntity =
+  (enemy "86038" "Ethereal Entity" DeathOfStars 2)
+    { cdCardTraits = setFromList [Monster]
+    , cdKeywords = setFromList [#warring]
+    }
+
+maghanArkat :: CardDef
+maghanArkat =
+  unique
+    $ (enemy "86041" ("Magh'an Ark'at" <:> "The Child of Paradise") ChildrenOfParadise 1)
+      { cdCardTraits = setFromList [AncientOne, Mutated, Elite]
+      , cdKeywords = setFromList [Keyword.Hunter, Keyword.Massive, Keyword.Retaliate]
+      , cdVictoryPoints = Just 2
+      }
+
+vileBroodmaster :: CardDef
+vileBroodmaster =
+  unique
+    $ (enemy "86042" ("Vile Broodmaster" <:> "Grotesque Abomination") ChildrenOfParadise 1)
+      { cdCardTraits = setFromList [Monster, Servitor, Mutated, Elite]
+      , cdKeywords = setFromList [Keyword.Hunter, Keyword.Retaliate]
+      , cdVictoryPoints = Just 1
+      }
+
+horrificShoggoth :: CardDef
+horrificShoggoth =
+  (enemy "86043" "Horrific Shoggoth" ChildrenOfParadise 1)
+    { cdCardTraits = setFromList [Monster, Shoggoth, Mutated]
+    , cdKeywords = setFromList [Keyword.Retaliate, #warring]
+    }
+
+bringerOfParadise :: CardDef
+bringerOfParadise =
+  (enemy "86044" "Bringer of Paradise" ChildrenOfParadise 2)
+    { cdCardTraits = setFromList [Humanoid, Mutated]
+    , cdKeywords = setFromList [Keyword.Aloof, Keyword.Retaliate, #warring]
+    }
+
+ezelZenRezl :: CardDef
+ezelZenRezl =
+  unique
+    $ (enemy "86047" ("Ezel-zen-rezl" <:> "The Lord of Swarms") SwarmOfAssimilation 1)
+      { cdCardTraits = setFromList [AncientOne, Elite]
+      , cdKeywords = setFromList [Keyword.Hunter, Keyword.Massive]
+      , cdVictoryPoints = Just 2
+      }
+
+droningHorde :: CardDef
+droningHorde =
+  (enemy "86048" "Droning Horde" SwarmOfAssimilation 1)
+    { cdCardTraits = setFromList [Monster, Insect, Servitor, Elite]
+    , cdKeywords = setFromList [Keyword.Hunter, Keyword.Swarming (Static 6)]
+    , cdVictoryPoints = Just 1
+    }
+
+trylogog :: CardDef
+trylogog =
+  (enemy "86049" "Trylogog" SwarmOfAssimilation 4)
+    { cdCardTraits = setFromList [Creature, Insect]
+    , cdKeywords = setFromList [Keyword.Swarming (Static 2), #warring]
+    }
+
+edwinBennetBitterAdversary :: CardDef
+edwinBennetBitterAdversary =
+  unique
+    $ (enemy "87036a" ("Edwin Bennet" <:> "Bitter Adversary") MachinationsThroughTimeSingleGroup 1)
+      { cdCardTraits = setFromList [Humanoid, Elite]
+      , cdKeywords =
+          setFromList [Keyword.Patrol (LocationWithAsset $ AssetWithTrait Scientist)]
+      , cdDoubleSided = True
+      , cdOtherSide = Just "87036b"
+      , cdArt = "87036"
+      }
+
+edwinBennetEnviousRival :: CardDef
+edwinBennetEnviousRival =
+  unique
+    $ (enemy "87037a" ("Edwin Bennet" <:> "Envious Rival") MachinationsThroughTimeEpicMultiplayer 1)
+      { cdCardTraits = setFromList [Humanoid, Elite]
+      , cdKeywords =
+          setFromList [Keyword.Patrol (LocationWithAsset $ AssetWithTrait Scientist)]
+      , cdDoubleSided = True
+      , cdOtherSide = Just "87037b"
+      , cdArt = "87037"
+      }
+
+oldSadieSheldon :: CardDef
+oldSadieSheldon =
+  unique
+    $ (enemy "87040" ("Old Sadie Sheldon" <:> "Bootlegging Kingpin") MachinationsThroughTime 1)
+      { cdCardTraits = setFromList [Humanoid, Criminal, Syndicate]
+      , cdKeywords = setFromList [Keyword.Aloof]
+      , cdVictoryPoints = Just 0
+      }
+
+sheldonGang :: CardDef
+sheldonGang =
+  (enemy "87041" "Sheldon Gang" MachinationsThroughTime 3)
+    { cdCardTraits = setFromList [Humanoid, Criminal, Syndicate, Elite]
+    , cdKeywords = setFromList [Keyword.Surge, Keyword.Hunter, Keyword.Massive]
+    , cdVictoryPoints = Just 0
+    }
+
+tyrthrha :: CardDef
+tyrthrha =
+  unique
+    $ (enemy "87043" ("Tyr'thrha" <:> "Arch-Lord of Tindalos") MachinationsThroughTime 1)
+      { cdCardTraits = setFromList [AncientOne, Tindalos, Elite]
+      , cdKeywords =
+          setFromList
+            [ Keyword.Massive
+            , Keyword.Retaliate
+            , Keyword.Patrol (LocationWithAsset $ AssetWithTrait Scientist)
+            ]
+      , cdVictoryPoints = Just 0
+      }
+
+ghastlySatyr :: CardDef
+ghastlySatyr =
+  (enemy "87044" "Ghastly Satyr" MachinationsThroughTime 3)
+    { cdCardTraits = setFromList [Monster, Extradimensional, Tindalos]
+    , cdKeywords =
+        setFromList [Keyword.Patrol (LocationWithAsset $ AssetWithTrait Scientist)]
+    }
+
+houndOfTindalos :: CardDef
+houndOfTindalos =
+  (enemy "87045" "Hound of Tindalos" MachinationsThroughTime 4)
+    { cdCardTraits = setFromList [Monster, Extradimensional, Tindalos]
+    , cdKeywords =
+        setFromList [Keyword.Patrol (LocationWithAsset $ AssetWithTrait Scientist)]
+    }
+
+manyAngledThing :: CardDef
+manyAngledThing =
+  (enemy "87046" "Many-Angled Thing" MachinationsThroughTime 1)
+    { cdCardTraits = setFromList [Monster, Extradimensional, Tindalos, Elite]
+    , cdKeywords = setFromList [Keyword.Hunter]
+    , cdVictoryPoints = Just 1
+    }
+
+tindalosAlphaMachinationsThroughTime :: CardDef
+tindalosAlphaMachinationsThroughTime =
+  (enemy "87047" "Tindalos Alpha" MachinationsThroughTime 1)
+    { cdCardTraits = setFromList [Monster, Extradimensional, Tindalos]
+    , cdKeywords = setFromList [Keyword.Alert, Keyword.Retaliate]
+    }
+
+eixodolon :: CardDef
+eixodolon =
+  unique
+    $ (enemy "70048" ("Eixodolon" <:> "Your Anguish Is My Power") TheLabyrinthsOfLunacy 1)
+      { cdCardTraits = setFromList [Humanoid, Servitor, Elite]
+      , cdKeywords = setFromList [Keyword.Hunter, Keyword.Retaliate]
+      , cdVictoryPoints = Just 3
+      }
+
+eixodolonsPetEpicMultiplayer :: CardDef
+eixodolonsPetEpicMultiplayer =
+  unique
+    $ ( enemy
+          "70049"
+          ("Eixodolon's Pet" <:> "You Are Not Its First Victim, Or Its Last")
+          LabyrinthsOfLunacyEpicMultiplayer
+          1
+      )
+      { cdCardTraits = setFromList [Monster, Elite]
+      , cdKeywords = setFromList [Keyword.Hunter, Keyword.Retaliate]
+      , cdVictoryPoints = Just 2
+      }
+
+eixodolonsPet :: CardDef
+eixodolonsPet =
+  unique
+    $ ( enemy
+          "70050"
+          ("Eixodolon's Pet" <:> "You Are Not Its First Victim, Or Its Last")
+          LabyrinthsOfLunacySingleGroup
+          1
+      )
+      { cdCardTraits = setFromList [Monster, Elite]
+      , cdKeywords = setFromList [Keyword.Hunter, Keyword.Retaliate]
+      , cdVictoryPoints = Just 2
+      }
+
+theJailor :: CardDef
+theJailor =
+  unique
+    $ (enemy "70051" "The Jailor" LabyrinthsOfLunacyEpicMultiplayer 1)
+      { cdCardTraits = setFromList [Monster, Elite]
+      , cdKeywords = setFromList [Keyword.Hunter]
+      , cdVictoryPoints = Just 5
+      }
+
+facelessAbductor :: CardDef
+facelessAbductor =
+  (enemy "70052" "Faceless Abductor" TheLabyrinthsOfLunacy 2)
+    { cdCardTraits = setFromList [Monster, Nightgaunt]
+    , cdKeywords = setFromList [Keyword.Hunter]
+    }
+
+torturedVictim :: CardDef
+torturedVictim =
+  (enemy "70053" "Tortured Victim" TheLabyrinthsOfLunacy 3)
+    { cdCardTraits = setFromList [Humanoid, Extradimensional]
+    , cdRevelation = IsRevelation
+    }
+
+miGoGuard :: CardDef
+miGoGuard =
+  (enemy "70054" "Mi-Go Guard" TheLabyrinthsOfLunacy 3)
+    { cdCardTraits = setFromList [Monster, MiGo]
+    }

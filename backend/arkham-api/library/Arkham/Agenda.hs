@@ -373,6 +373,29 @@ allAgendas =
       SomeAgendaCard theFestivitiesBegin
     , SomeAgendaCard theShadowOfTheEclipse
     , SomeAgendaCard chaosAtTheCarnevale
+    , -- The Eternal Slumber
+      SomeAgendaCard jessiesRequest
+    , SomeAgendaCard curseOfTheAbyss
+    , SomeAgendaCard gardenOfShadows
+    , -- The Night's Usurper
+      SomeAgendaCard theBrotherhoodBidesTheirTime
+    , SomeAgendaCard schemesInTheDarkBeyond
+    , -- War of the Outer Gods
+      SomeAgendaCard theSummoningOfSilenus
+    , SomeAgendaCard theSummoningProgresses
+    , SomeAgendaCard theSummoningNearsCompletion
+    , SomeAgendaCard theIncubationOfTheEgg
+    , SomeAgendaCard theIncubationProgresses
+    , SomeAgendaCard theIncubationNearsCompletion
+    , SomeAgendaCard theProliferationOfTheSwarm
+    , SomeAgendaCard theProliferationProgresses
+    , SomeAgendaCard theProliferationNearsCompletion
+    , -- Death of Stars
+      SomeAgendaCard silenusDescends
+    , -- Children of Paradise
+      SomeAgendaCard theEggHatches
+    , -- Swarm of Assimilation
+      SomeAgendaCard ezelZenRezlEmerges
     , -- Murder at the Excelsior Hotel
       SomeAgendaCard theMurder
     , SomeAgendaCard specialInvestigation
@@ -414,4 +437,30 @@ allAgendas =
       SomeAgendaCard theAnomalySpreads
     , SomeAgendaCard theAnomalySwells
     , SomeAgendaCard theAnomalyConsumes
+    , -- The Labyrinths of Lunacy
+      SomeAgendaCard awakeningTheLabyrinthsOfLunacy
+    , SomeAgendaCard agonyAndDespair
+    , SomeAgendaCard theMastermind
+    , -- Machinations Through Time
+      SomeAgendaCard intoTheVoid
+    , SomeAgendaCard timeMarchesOn
+    , -- Read or Die
+      SomeAgendaCard mortalInquiry
+    , -- All or Nothing
+      SomeAgendaCard eyesAllAroundYou
+    , -- Bad Blood
+      SomeAgendaCard hyperboreanBlood
+    , -- By the Book
+      SomeAgendaCard aCovertConspiracy
+    , SomeAgendaCard yourDeadlineNears
+    , -- Laid to Rest
+      SomeAgendaCard gatheringMists
+    , -- Red Tide Rising
+      SomeAgendaCard theNewGirl
+    , SomeAgendaCard trailGoesCold
+    , -- Enthralling Encore
+      SomeAgendaCard theHauntingOfTheWardTheatre
+    , -- Relics of the Past
+      SomeAgendaCard somethingElseStirs
+    , SomeAgendaCard guardianOfTheRelics
     ]

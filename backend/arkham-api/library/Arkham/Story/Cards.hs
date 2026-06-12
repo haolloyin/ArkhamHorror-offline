@@ -202,6 +202,34 @@ allStoryCards =
       , recoverTheSample
       , driveOffTheMiGo
       , defuseTheExplosives
+      , --- Guardians of the Abyss
+        toTheDreamlands
+      , fateOfTheDreamers
+      , prisonersOfConquest
+      , ruinsOfSarkomand
+      , effigyOfNodens
+      , usurpTheNight
+      , theTranslatorsEvidence
+      , theSupplicantsEvidence
+      , thePriestesssEvidence
+      , theSalesmansEvidence
+      , theAssassinsEvidence
+      , theProfessorsEvidence
+      , arcaneRunes
+      , theRift
+      , theVent
+      , theDilemma
+      , theGate
+      , encryptedGlyphs
+      , aNobleLegacyPast
+      , aNobleLegacyPresent
+      , aNobleLegacyFuture
+      , aBitterRivalry
+      , redeemAFormerColleague
+      , uneasyAlliance
+      , anomaliesInSpacetime
+      , mobTroubles
+      , unspeakableAbomination
       ]
 
 victory :: Int -> CardDef -> CardDef
@@ -567,7 +595,7 @@ dayOne :: CardDef
 dayOne = story "10675" "Day One" TheFirstDay & otherSideIs "10675b"
 
 nightOne :: CardDef
-nightOne = story "10675b" "Day One" TheFirstDay & otherSideIs "10675"
+nightOne = story "10675b" "Night One" TheFirstDay & otherSideIs "10675"
 
 dayTwo :: CardDef
 dayTwo = story "10677" "Day Two" TheSecondDay & otherSideIs "10677b"
@@ -696,3 +724,97 @@ driveOffTheMiGo =
 defuseTheExplosives :: CardDef
 defuseTheExplosives =
   victory 1 $ addTrait Part1 $ doubleSided $ story "85024" "Defuse the Explosives" MiGoIncursion
+
+toTheDreamlands :: CardDef
+toTheDreamlands = otherSideIs "83022a" $ story "83022b" "To the Dreamlands" TheNightsUsurper
+
+fateOfTheDreamers :: CardDef
+fateOfTheDreamers = otherSideIs "83023a" $ story "83023b" "Fate of the Dreamers" TheNightsUsurper
+
+prisonersOfConquest :: CardDef
+prisonersOfConquest = otherSideIs "83024a" $ story "83024b" "Prisoners of Conquest" TheNightsUsurper
+
+ruinsOfSarkomand :: CardDef
+ruinsOfSarkomand = otherSideIs "83025a" $ story "83025b" "Ruins of Sarkomand" TheNightsUsurper
+
+effigyOfNodens :: CardDef
+effigyOfNodens = otherSideIs "83026a" $ story "83026b" "Effigy of Nodens" TheNightsUsurper
+
+usurpTheNight :: CardDef
+usurpTheNight = otherSideIs "83027a" $ story "83027b" "Usurp the Night" TheNightsUsurper
+
+theTranslatorsEvidence :: CardDef
+theTranslatorsEvidence =
+  victory 1 $ addTrait Evidence $ otherSideIs "83031a" $ story "83031b" "The Translator's Evidence" BrotherhoodOfTheBeast
+
+theSupplicantsEvidence :: CardDef
+theSupplicantsEvidence =
+  victory 1 $ addTrait Evidence $ otherSideIs "83032a" $ story "83032b" "The Supplicant's Evidence" BrotherhoodOfTheBeast
+
+thePriestesssEvidence :: CardDef
+thePriestesssEvidence =
+  victory 1 $ addTrait Evidence $ otherSideIs "83033a" $ story "83033b" "The Priestess's Evidence" BrotherhoodOfTheBeast
+
+theSalesmansEvidence :: CardDef
+theSalesmansEvidence =
+  victory 1 $ addTrait Evidence $ otherSideIs "83034a" $ story "83034b" "The Salesman's Evidence" BrotherhoodOfTheBeast
+
+theAssassinsEvidence :: CardDef
+theAssassinsEvidence =
+  victory 1 $ addTrait Evidence $ otherSideIs "83035a" $ story "83035b" "The Assassin's Evidence" BrotherhoodOfTheBeast
+
+theProfessorsEvidence :: CardDef
+theProfessorsEvidence =
+  victory 1 $ addTrait Evidence $ otherSideIs "83036a" $ story "83036b" "The Professor's Evidence" BrotherhoodOfTheBeast
+
+arcaneRunes :: CardDef
+arcaneRunes = doubleSided $ story "70033" "Arcane Runes" LabyrinthsOfLunacyEpicMultiplayer
+
+theRift :: CardDef
+theRift = doubleSided $ story "70034" "The Rift" LabyrinthsOfLunacyEpicMultiplayer
+
+theVent :: CardDef
+theVent = doubleSided $ story "70035" "The Vent" LabyrinthsOfLunacyEpicMultiplayer
+
+theDilemma :: CardDef
+theDilemma = doubleSided $ story "70036" "The Dilemma" LabyrinthsOfLunacyEpicMultiplayer
+
+theGate :: CardDef
+theGate = doubleSided $ story "70037" "The Gate" LabyrinthsOfLunacyEpicMultiplayer
+
+encryptedGlyphs :: CardDef
+encryptedGlyphs = doubleSided $ story "70038" "Encrypted Glyphs" LabyrinthsOfLunacyEpicMultiplayer
+
+aNobleLegacyPast :: CardDef
+aNobleLegacyPast = doubleSided $ story "87006" "A Noble Legacy (Past)" MachinationsThroughTime
+
+aNobleLegacyPresent :: CardDef
+aNobleLegacyPresent = doubleSided $ story "87015" "A Noble Legacy (Present)" MachinationsThroughTime
+
+aNobleLegacyFuture :: CardDef
+aNobleLegacyFuture = doubleSided $ story "87024" "A Noble Legacy (Future)" MachinationsThroughTime
+
+aBitterRivalry :: CardDef
+aBitterRivalry =
+  doubleSided $ addTrait Machination $ story "87033" "A Bitter Rivalry" MachinationsThroughTime
+
+redeemAFormerColleague :: CardDef
+redeemAFormerColleague =
+  doubleSided
+    $ addTrait Machination
+    $ story "87034" "Redeem a Former Colleague" MachinationsThroughTime
+
+uneasyAlliance :: CardDef
+uneasyAlliance =
+  doubleSided $ addTrait Machination $ story "87035" "Uneasy Alliance" MachinationsThroughTime
+
+anomaliesInSpacetime :: CardDef
+anomaliesInSpacetime =
+  doubleSided $ addTrait Plot $ story "87038" "Anomalies in Spacetime" MachinationsThroughTime
+
+mobTroubles :: CardDef
+mobTroubles = doubleSided $ addTrait Plot $ story "87039" "Mob Troubles" MachinationsThroughTime
+
+unspeakableAbomination :: CardDef
+unspeakableAbomination =
+  doubleSided $ addTrait Plot $ story "87042" "Unspeakable Abomination" MachinationsThroughTime

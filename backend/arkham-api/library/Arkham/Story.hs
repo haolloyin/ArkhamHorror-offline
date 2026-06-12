@@ -213,4 +213,21 @@ allStories =
     , SomeStoryCard recoverTheSample
     , SomeStoryCard driveOffTheMiGo
     , SomeStoryCard defuseTheExplosives
+    , -- Guardians of the Abyss
+      SomeStoryCard toTheDreamlands
+    , SomeStoryCard fateOfTheDreamers
+    , SomeStoryCard prisonersOfConquest
+    , SomeStoryCard ruinsOfSarkomand
+    , SomeStoryCard effigyOfNodens
+    , SomeStoryCard usurpTheNight
+    , -- Machinations Through Time
+      SomeStoryCard aNobleLegacyPast
+    , SomeStoryCard aNobleLegacyPresent
+    , SomeStoryCard aNobleLegacyFuture
+    , SomeStoryCard aBitterRivalry
+    , SomeStoryCard redeemAFormerColleague
+    , SomeStoryCard uneasyAlliance
+    , SomeStoryCard anomaliesInSpacetime
+    , SomeStoryCard mobTroubles
+    , SomeStoryCard unspeakableAbomination
     ]

@@ -96,3 +96,75 @@ theAnomalySwells = agenda "85003" "The Anomaly Swells" 2 TheBlobThatAteEverythin
 
 theAnomalyConsumes :: CardDef
 theAnomalyConsumes = agenda "85004" "The Anomaly Consumes" 3 TheBlobThatAteEverything
+
+jessiesRequest :: CardDef
+jessiesRequest = agenda "83002" "Jessie's Request" 1 TheEternalSlumber
+
+curseOfTheAbyss :: CardDef
+curseOfTheAbyss = agenda "83003" "Curse of the Abyss" 2 TheEternalSlumber
+
+gardenOfShadows :: CardDef
+gardenOfShadows = agenda "83004" "Garden of Shadows" 3 TheEternalSlumber
+
+theBrotherhoodBidesTheirTime :: CardDef
+theBrotherhoodBidesTheirTime = agenda "83017" "The Brotherhood Bides Their Time" 1 TheNightsUsurper
+
+schemesInTheDarkBeyond :: CardDef
+schemesInTheDarkBeyond = agenda "83018" "Schemes in the Dark Beyond" 2 TheNightsUsurper
+
+theSummoningOfSilenus :: CardDef
+theSummoningOfSilenus = agenda "86002" "The Summoning of Silenus" 1 WarOfTheOuterGods
+
+theSummoningProgresses :: CardDef
+theSummoningProgresses = agenda "86003" "The Summoning Progresses" 2 WarOfTheOuterGods
+
+theSummoningNearsCompletion :: CardDef
+theSummoningNearsCompletion = agenda "86004" "The Summoning Nears Completion" 3 WarOfTheOuterGods
+
+theIncubationOfTheEgg :: CardDef
+theIncubationOfTheEgg = agenda "86005" "The Incubation of the Egg" 1 WarOfTheOuterGods
+
+theIncubationProgresses :: CardDef
+theIncubationProgresses = agenda "86006" "The Incubation Progresses" 2 WarOfTheOuterGods
+
+theIncubationNearsCompletion :: CardDef
+theIncubationNearsCompletion = agenda "86007" "The Incubation Nears Completion" 3 WarOfTheOuterGods
+
+theProliferationOfTheSwarm :: CardDef
+theProliferationOfTheSwarm = agenda "86008" "The Proliferation of the Swarm" 1 WarOfTheOuterGods
+
+theProliferationProgresses :: CardDef
+theProliferationProgresses = agenda "86009" "The Proliferation Progresses" 2 WarOfTheOuterGods
+
+theProliferationNearsCompletion :: CardDef
+theProliferationNearsCompletion = agenda "86010" "The Proliferation Nears Completion" 3 WarOfTheOuterGods
+
+silenusDescends :: CardDef
+silenusDescends = agenda "86034" "Silenus Descends" 4 DeathOfStars
+
+theEggHatches :: CardDef
+theEggHatches = agenda "86040" "The Egg Hatches" 4 ChildrenOfParadise
+
+ezelZenRezlEmerges :: CardDef
+ezelZenRezlEmerges = agenda "86046" "Ezel-zen-rezl Emerges" 4 SwarmOfAssimilation
+
+intoTheVoid :: CardDef
+intoTheVoid = agenda "87002" "Into the Void" 1 MachinationsThroughTime
+
+timeMarchesOn :: CardDef
+timeMarchesOn = agenda "87003" "Time Marches On" 2 MachinationsThroughTime
+
+awakeningTheLabyrinthsOfLunacyEpicMultiplayer :: CardDef
+awakeningTheLabyrinthsOfLunacyEpicMultiplayer = agenda "70002" "Awakening" 1 LabyrinthsOfLunacyEpicMultiplayer
+
+awakeningTheLabyrinthsOfLunacy :: CardDef
+awakeningTheLabyrinthsOfLunacy = agenda "70003" "Awakening" 1 LabyrinthsOfLunacySingleGroup
+
+agonyAndDespairEpicMultiplayer :: CardDef
+agonyAndDespairEpicMultiplayer = agenda "70004" "Agony and Despair" 2 LabyrinthsOfLunacyEpicMultiplayer
+
+agonyAndDespair :: CardDef
+agonyAndDespair = agenda "70005" "Agony and Despair" 2 LabyrinthsOfLunacySingleGroup
+
+theMastermind :: CardDef
+theMastermind = agenda "70006" "The Mastermind" 3 TheLabyrinthsOfLunacy

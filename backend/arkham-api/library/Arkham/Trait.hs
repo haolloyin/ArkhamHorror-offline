@@ -7,6 +7,7 @@ newtype EnemyTrait = EnemyTrait {unEnemyTrait :: Trait}
 data Trait
   = Abandoned
   | Abomination
+  | Abyss
   | Agency
   | Alchemy
   | Alexandria
@@ -38,9 +39,11 @@ data Trait
   | Boon
   | Bridge
   | Broken
+  | Brotherhood
   | BuenosAires
   | Byakhee
   | Bystander
+  | Cairo
   | Campsite
   | Carnevale
   | Cart
@@ -80,12 +83,14 @@ data Trait
   | DarkYoung
   | DeepOne
   | Depths
+  | Desert
   | Desperate
   | Detective
   | Developed
   | Dhole
   | Dilemma
   | Dinosaur
+  | Distortion
   | Dormant
   | Double
   | Dreamer
@@ -127,6 +132,7 @@ data Trait
   | Ghast
   | Ghoul
   | Glacier
+  | Government
   | Grant
   | Graveyard
   | GroundFloor
@@ -175,6 +181,7 @@ data Trait
   | Lodge
   | London
   | Lunatic
+  | Machination
   | Madness
   | Mainland
   | Manifold
@@ -191,12 +198,14 @@ data Trait
   | Miskatonic
   | Mnar
   | Monster
+  | Montreal
   | Mountain
   | Mountains
   | Mutated
   | Mutation
   | Mystery
   | NewOrleans
+  | NewYorkCity
   | Nightgaunt
   | Obstacle
   | Occult
@@ -213,19 +222,25 @@ data Trait
   | Paris
   | Part1
   | Passageway
+  | Past
   | Patron
   | Performer
+  | Plot
   | Pnakotus
   | Poison
   | Police
   | Port
+  | Portal
   | Possessed
   | Power
   | Practiced
+  | Present
+  | Prison
   | Profession
   | PresentDay
   | Private
   | Prop
+  | Providence
   | Public
   | Rail
   | Ranged
@@ -253,7 +268,9 @@ data Trait
   | Scheme
   | Scholar
   | Science
+  | Scientist
   | Scion
+  | Script
   | SecondFloor
   | SentinelHill
   | Serpent
@@ -299,6 +316,7 @@ data Trait
   | Tome
   | Tool
   | Tower
+  | Town
   | Train
   | Trap
   | Trick

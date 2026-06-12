@@ -870,6 +870,15 @@ allTreacheries =
       , SomeTreacheryCard mesmerize
       , SomeTreacheryCard abduction
       , SomeTreacheryCard acridMiasma
+      , --- Sands of Egypt
+        SomeTreacheryCard eclipse
+      , SomeTreacheryCard sandstorm
+      , SomeTreacheryCard terrorUnderThePyramids
+      , SomeTreacheryCard swarmOfLocusts
+      , SomeTreacheryCard slumber
+      , SomeTreacheryCard darkSacrifice
+      , SomeTreacheryCard theBlackWind
+      , SomeTreacheryCard abyssalReach
       , --- Murder at the Excelsior Hotel
         SomeTreacheryCard whatHaveYouDone
       , SomeTreacheryCard noxiousFumes
@@ -1018,4 +1027,37 @@ allTreacheries =
       , SomeTreacheryCard replication
       , SomeTreacheryCard itsGotMe
       , SomeTreacheryCard alienFoodChain
+      , -- War of the Outer Gods
+        SomeTreacheryCard deathAndDecay
+      , SomeTreacheryCard predatorsCall
+      , SomeTreacheryCard feastOfLocusts
+      , SomeTreacheryCard hellfireWarOfTheOuterGods
+      , SomeTreacheryCard ravagesOfWar
+      , SomeTreacheryCard whileTheySleep
+      , -- The Labyrinths of Lunacy
+        SomeTreacheryCard unnaturalWeariness
+      , SomeTreacheryCard poisonousGas
+      , SomeTreacheryCard dreadfulMechanism
+      , SomeTreacheryCard bloodAndRust
+      , SomeTreacheryCard paradoxEffect
+      , SomeTreacheryCard harvestedPain
+      , -- Machinations Through Time
+        SomeTreacheryCard aTearInTimeMachinationsThroughTime
+      , SomeTreacheryCard abducted
+      , SomeTreacheryCard brokenSpace
+      , SomeTreacheryCard dimensionalBreach
+      , SomeTreacheryCard fromAllAngles
+      , SomeTreacheryCard lostInTimeMachinationsThroughTime
+      , SomeTreacheryCard mergingTimelinesMachinationsThroughTime
+      , SomeTreacheryCard openPortal
+      , SomeTreacheryCard temporalDistortion
+      , SomeTreacheryCard vanishingHistory
+      , -- Death of Stars
+        SomeTreacheryCard inevitableEnd
+      , -- Children of Paradise
+        SomeTreacheryCard huntDown
+      , -- Swarm of Assimilation
+        SomeTreacheryCard transmogrify
+      , -- Relics of the Past
+        SomeTreacheryCard vengeantPast
       ]

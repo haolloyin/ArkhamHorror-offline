@@ -283,6 +283,19 @@ data EncounterSet
   | TheBayou
   | CurseOfTheRougarou
   | CarnevaleOfHorrors
+  | TheLabyrinthsOfLunacy
+  | LabyrinthsOfLunacySingleGroup
+  | LabyrinthsOfLunacyEpicMultiplayer
+  | TheEternalSlumber
+  | TheNightsUsurper
+  | BrotherhoodOfTheBeast
+  | SandsOfEgypt
+  | AbyssalTribute
+  | AbyssalGifts
+  | WarOfTheOuterGods
+  | DeathOfStars
+  | ChildrenOfParadise
+  | SwarmOfAssimilation
   | MurderAtTheExcelsiorHotel
   | AlienInterference
   | ExcelsiorManagement
@@ -298,6 +311,9 @@ data EncounterSet
   | FortunesChosen
   | PlanInShambles
   | TheMidwinterGala
+  | MachinationsThroughTime
+  | MachinationsThroughTimeSingleGroup
+  | MachinationsThroughTimeEpicMultiplayer
   | FilmFatale
   | CosmicJourney
   | ForgottenIsland
@@ -325,6 +341,14 @@ data EncounterSet
   | Sewers
   | SmokeAndMirrors
   | QueenOfAsh
+  | ReadOrDie
+  | AllOrNothing
+  | BadBlood
+  | ByTheBook
+  | RedTideRising
+  | LaidToRest
+  | RelicsOfThePast
+  | EnthrallingEncore
   | Test
   deriving stock (Show, Eq, Ord, Bounded, Enum, Data)
 

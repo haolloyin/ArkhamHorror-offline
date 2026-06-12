@@ -302,6 +302,7 @@ newGame scenarioOrCampaignId seed playerCount difficulty includeTarotReadings =
         , gameEnemyEvading = Nothing
         , gameActionCanBeUndone = False
         , gameActionDiff = []
+        , gameActionSnapshot = Transient Nothing
         , gameInAction = False
         , gameActiveCost = mempty
         , gameInSetup = True
@@ -548,7 +549,7 @@ withInvestigatorConnectionData
 withInvestigatorConnectionData inner@(With target _) = case target of
   WithDeckSize investigator' -> do
     additionalActions <- getAdditionalActions (toAttrs investigator')
-    engagedEnemies <- select (enemyEngagedWith $ toId investigator')
+    engagedEnemies <- select (EnemyIsEngagedWith $ IncludeEliminated $ InvestigatorWithId $ toId investigator')
     assets <- select (AssetWithPlacement $ InPlayArea $ toId investigator')
     assets' <- select (AssetWithPlacement $ InThreatArea $ toId investigator')
     skills <- select (SkillWithPlacement $ InPlayArea $ toId investigator')
@@ -687,6 +688,7 @@ instance ToJSON gid => ToJSON (PublicGame gid) where
       <> ("playerOrder" .= gamePlayerOrder)
       <> ("phase" .= gamePhase)
       <> ("phaseStep" .= gamePhaseStep)
+      <> ("inAction" .= gameInAction)
       <> ("skillTest" .= skillTest)
       <> ("skillTestChaosTokens" .= skillTestChaosTokens)
       <> ("focusedCards" .= fromMaybe [] (headMay gameFocusedCards))
@@ -821,6 +823,7 @@ instance ToJSON gid => ToJSON (PublicGame gid) where
         , "playerOrder" .= toJSON gamePlayerOrder
         , "phase" .= toJSON gamePhase
         , "phaseStep" .= toJSON gamePhaseStep
+        , "inAction" .= toJSON gameInAction
         , "skillTest" .= toJSON skillTest
         , "skillTestChaosTokens" .= toJSON skillTestChaosTokens
         , "focusedCards" .= toJSON (fromMaybe [] $ headMay gameFocusedCards)

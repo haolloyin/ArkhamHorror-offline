@@ -1,19 +1,18 @@
 module Arkham.Location.Cards.BoardingHouseDay (boardingHouseDay) where
 
 import Arkham.Ability
-import Arkham.Campaigns.TheFeastOfHemlockVale.Helpers (campaignI18n, codex)
+import Arkham.Campaigns.TheFeastOfHemlockVale.Helpers
 import Arkham.Helpers.Healing
 import Arkham.Location.Cards qualified as Cards
 import Arkham.Location.Import.Lifted
 import Arkham.Matcher
-import Arkham.Modifier
 
 newtype BoardingHouseDay = BoardingHouseDay LocationAttrs
   deriving anyclass (IsLocation, HasModifiersFor)
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
 
 boardingHouseDay :: LocationCard BoardingHouseDay
-boardingHouseDay = symbolLabel $ location BoardingHouseDay Cards.boardingHouseDay 0 (Static 0)
+boardingHouseDay = symbolLabel $ location BoardingHouseDay Cards.boardingHouseDay 3 (Static 0)
 
 instance HasAbilities BoardingHouseDay where
   getAbilities (BoardingHouseDay a) =
@@ -21,11 +20,7 @@ instance HasAbilities BoardingHouseDay where
       $ extendRevealed
         a
         [ withI18nTooltip "boardingHouse.day.codex"
-            $ restricted
-              a
-              1
-              (Here <> youExist (InvestigatorWithoutModifier $ ScenarioModifier "codex9"))
-              actionAbility
+            $ restricted a 1 (Here <> youCanTriggerCodex 9) actionAbility
         , playerLimit PerGame
             $ withI18nTooltip "boardingHouse.day.heal"
             $ withCriteria

@@ -149,6 +149,36 @@ data ScenarioLogKey
   | TheVentIsOpen
   | -- | Film Fatale
     TheInvestigatorsMadeTheirCallTime
+  | -- | Machinations Through Time
+    ThomasAndMaryHaveMet
+  | ThomasAndMaryAreInspiredByNikolaTesla
+  | FundingForAnObservatoryHasBegun
+  | TheObservatoryIsBuilt
+  | TeleportationResearchHasBegun
+  | CorriganIndustriesHasBeenFounded
+  | ThomasAndMaryHaveMadeAHistoricDiscovery
+  | ThomasAndMaryHaveWonANobelPrize
+  | ATreeSeedHasBeenPlanted
+  | ThomasAndMaryHaveMarried
+  | TheDebtHasBeenPaid
+  | -- | The Labyrinths of Lunacy
+    BeenInjected (Labeled InvestigatorId)
+  | PulledTheLeftLever (Labeled InvestigatorId)
+  | PulledTheMiddleLever (Labeled InvestigatorId)
+  | PulledTheRightLever (Labeled InvestigatorId)
+  | TurnedTheValve (Labeled InvestigatorId)
+  | -- | Guardians of the Abyss
+    FoundADoorMarkedWithBlood
+  | BoughtAnOddTrinket
+  | DiscoveredAnAncientTablet
+  | SabotagedTheTrain
+  | BrokenIntoADesertedTemple
+  | FreedTheNightgaunts
+  | ExecutedTheNightgaunts
+  | WarnedTheDenizensOfSarkomand
+  | CutOffAllEscape
+  | PledForHelp
+  | AffrontedTheRulerOfThisRealm
   | -- Investigator Cards
     YouOweBiancaResources (Labeled InvestigatorId) Int
   deriving stock (Eq, Show, Ord, Data)
@@ -159,6 +189,8 @@ data ScenarioCountKey
   | Distortion
   | Barriers LocationId LocationId
   | CiviliansSlain
+  | StrengthOfTheAbyss
+  | CluesAroundHubDimension
   deriving stock (Eq, Show, Ord, Data)
 
 instance ToGameLoggerFormat ScenarioLogKey where
@@ -184,6 +216,11 @@ instance ToGameLoggerFormat ScenarioLogKey where
     HadADrink (Labeled name iid) -> "{investigator:\"" <> display name <> "\":" <> tshow iid <> "} had a drink"
     Cheated (Labeled name iid) -> "{investigator:\"" <> display name <> "\":" <> tshow iid <> "} cheated"
     MeddledWithThePast (Labeled name iid) -> "{investigator:\"" <> display name <> "\":" <> tshow iid <> "} meddled with the past"
+    BeenInjected (Labeled name iid) -> "{investigator:\"" <> display name <> "\":" <> tshow iid <> "} has been injected"
+    PulledTheLeftLever (Labeled name iid) -> "{investigator:\"" <> display name <> "\":" <> tshow iid <> "} pulled the left lever"
+    PulledTheMiddleLever (Labeled name iid) -> "{investigator:\"" <> display name <> "\":" <> tshow iid <> "} pulled the middle lever"
+    PulledTheRightLever (Labeled name iid) -> "{investigator:\"" <> display name <> "\":" <> tshow iid <> "} pulled the right lever"
+    TurnedTheValve (Labeled name iid) -> "{investigator:\"" <> display name <> "\":" <> tshow iid <> "} turned the valve"
     other -> pack . go $ show other
    where
     go :: String -> String
@@ -215,6 +252,8 @@ instance FromJSON ScenarioCountKey where
     String "CurrentDepth" -> pure CurrentDepth
     String "SignOfTheGods" -> pure SignOfTheGods
     String "Distortion" -> pure Distortion
+    String "StrengthOfTheAbyss" -> pure StrengthOfTheAbyss
+    String "CluesAroundHubDimension" -> pure CluesAroundHubDimension
     Object o -> do
       tag :: Text <- o .: "tag"
       case tag of
@@ -225,6 +264,8 @@ instance FromJSON ScenarioCountKey where
         "SignOfTheGods" -> pure SignOfTheGods
         "Distortion" -> pure Distortion
         "CiviliansSlain" -> pure CiviliansSlain
+        "StrengthOfTheAbyss" -> pure StrengthOfTheAbyss
+        "CluesAroundHubDimension" -> pure CluesAroundHubDimension
         _ -> fail "Unknown tag"
     _ -> fail "Expected String or Object"
 

@@ -77,3 +77,60 @@ exposeTheAnomalyEpicMultiplayer = act "85005" "Expose the Anomaly" 1 BlobEpicMul
 
 blackwatersBaneEpicMultiplayer :: CardDef
 blackwatersBaneEpicMultiplayer = act "85008" "Blackwater's Bane" 3 BlobEpicMultiplayer
+
+curseOfEndlessSleep :: CardDef
+curseOfEndlessSleep = act "83005" "Curse of Endless Sleep" 1 TheEternalSlumber
+
+secretsInTheSand :: CardDef
+secretsInTheSand = act "83006" "Secrets in the Sand" 2 TheEternalSlumber
+
+theHourOfJudgment :: CardDef
+theHourOfJudgment = act "83007" "The Hour of Judgment" 3 TheEternalSlumber
+
+searchForTheGate :: CardDef
+searchForTheGate = act "83019" "Search for the Gate" 1 TheNightsUsurper
+
+intoTheGate :: CardDef
+intoTheGate = act "83020" "Into the Gate" 2 TheNightsUsurper
+
+theNightsUsurper :: CardDef
+theNightsUsurper = act "83021" "The Night's Usurper" 3 TheNightsUsurper
+
+warOfTheOuterGods :: CardDef
+warOfTheOuterGods = act "86011" "War of the Outer Gods" 1 WarOfTheOuterGods
+
+closeThePortal :: CardDef
+closeThePortal = act "86012" "Close the Portal" 2 WarOfTheOuterGods
+
+closeAllPortals :: CardDef
+closeAllPortals = act "86013" "Close All Portals" 3 WarOfTheOuterGods
+
+walkingThroughTime :: CardDef
+walkingThroughTime = act "87004" "Walking Through Time" 1 MachinationsThroughTime
+
+sealedInGroupA :: CardDef
+sealedInGroupA = act "70007" "Sealed In (Group A)" 1 TheLabyrinthsOfLunacy
+
+wateryGraveGroupB :: CardDef
+wateryGraveGroupB = act "70008" "Watery Grave (Group B)" 1 TheLabyrinthsOfLunacy
+
+theLeversGroupCEpicMultiplayer :: CardDef
+theLeversGroupCEpicMultiplayer = act "70009" "The Levers (Group C)" 1 LabyrinthsOfLunacyEpicMultiplayer
+
+theLeversGroupC :: CardDef
+theLeversGroupC = act "70010" "The Levers (Group C)" 1 LabyrinthsOfLunacySingleGroup
+
+distortionsInTimeGroupA :: CardDef
+distortionsInTimeGroupA = act "70011" "Distortions in Time (Group A)" 2 TheLabyrinthsOfLunacy
+
+seepingDeathGroupB :: CardDef
+seepingDeathGroupB = act "70012" "Seeping Death (Group B)" 2 TheLabyrinthsOfLunacy
+
+thePetGroupC :: CardDef
+thePetGroupC = act "70013" "The Pet (Group C)" 2 TheLabyrinthsOfLunacy
+
+theEscapeTheLabyrinthsOfLunacyEpicMultiplayer :: CardDef
+theEscapeTheLabyrinthsOfLunacyEpicMultiplayer = act "70014" "The Escape" 3 LabyrinthsOfLunacyEpicMultiplayer
+
+theEscapeTheLabyrinthsOfLunacy :: CardDef
+theEscapeTheLabyrinthsOfLunacy = act "70015" "The Escape" 3 LabyrinthsOfLunacySingleGroup

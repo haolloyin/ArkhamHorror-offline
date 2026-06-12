@@ -12,11 +12,11 @@ import type { GameMode, MultiplayerVariant, CampaignType } from '@/arkham/types/
 import campaignJSON from '@/arkham/data/campaigns'
 import scenarioJSON from '@/arkham/data/scenarios'
 import sideStoriesJSON from '@/arkham/data/side-stories'
+import { filterDisplayable, isDevBuild } from '@/arkham/displayRules'
 
 import ChooseMode from '@/arkham/components/NewCampaign/ChooseMode.vue'
 import GameOptions from '@/arkham/components/NewCampaign/GameOptions.vue'
 
-type Gateable = { alpha?: boolean; beta?: boolean; dev?: boolean }
 type Step = 'ChooseMode' | 'GameOptions'
 
 const store = useUserStore()
@@ -25,17 +25,12 @@ const { currentUser } = storeToRefs(store)
 const route = useRoute()
 const router = useRouter()
 
-const dev = import.meta.env.PROD ? false : true
+const dev = isDevBuild()
 const alpha = ref(false)
 const isBetaUser = computed(() => !!currentUser.value?.beta)
-
-const gate = <T extends Gateable>(items: T[]) =>
-  items.filter((x) => {
-    if (x.dev) return dev && alpha.value
-    if (x.beta) return isBetaUser.value
-    if (x.alpha) return alpha.value
-    return true
-  })
+const displayRuleOptions = computed(() => ({ alpha: alpha.value, beta: isBetaUser.value, dev }))
+const gate = <T extends { alpha?: boolean; beta?: boolean; dev?: boolean }>(items: T[]) =>
+  filterDisplayable(items, displayRuleOptions.value)
 
 const step = ref<Step>('ChooseMode')
 const gameMode = ref<GameMode>('Campaign')
@@ -49,6 +44,7 @@ const selectedDifficulty = ref<Difficulty>('Easy')
 const deckIds = ref<(string | null)[]>([null, null, null, null])
 
 const fullCampaign = ref<CampaignType>('FullCampaign')
+const sideStoryMode = ref<string>('campaign')
 const selectedCampaign = ref<string | null>(null)
 const selectedScenario = ref<string | null>(null)
 const campaignName = ref<string | null>(null)
@@ -114,6 +110,10 @@ const defaultCampaignName = computed(() => {
   }
 
   if (gameMode.value === 'SideStory' && scenario.value) {
+    if (scenario.value.scenarios && sideStoryMode.value !== 'campaign') {
+      const part = scenario.value.scenarios.find((s) => s.id === sideStoryMode.value)
+      if (part) return part.name
+    }
     return `${scenario.value.name}`
   }
 
@@ -195,6 +195,7 @@ watch(difficulties, (ds) => {
 watch(gameMode, (mode) => {
   returnTo.value = false
   campaignName.value = null
+  sideStoryMode.value = 'campaign'
 
   if (mode === 'SideStory') {
     selectedCampaign.value = null
@@ -204,6 +205,10 @@ watch(gameMode, (mode) => {
   }
 
   step.value = 'ChooseMode'
+})
+
+watch(selectedScenario, () => {
+  if (gameMode.value === 'SideStory') sideStoryMode.value = 'campaign'
 })
 
 watch(selectedCampaign, (id) => {
@@ -256,13 +261,23 @@ async function start() {
 
   if (fullCampaign.value === 'Standalone' || gameMode.value === 'SideStory') {
     if (scenario.value && currentCampaignName.value) {
-      const scenarioId =
+      let scenarioId: string | null =
         returnTo.value && (scenario.value as any).returnTo ? (scenario.value as any).returnTo : scenario.value.id
+      let campaignId: string | null = null
+
+      if (gameMode.value === 'SideStory' && scenario.value.scenarios) {
+        if (sideStoryMode.value === 'campaign' && scenario.value.campaign) {
+          campaignId = scenario.value.campaign
+          scenarioId = null
+        } else {
+          scenarioId = sideStoryMode.value
+        }
+      }
 
       newGame(
         deckIds.value,
         playerCount.value,
-        null,
+        campaignId,
         scenarioId,
         selectedDifficulty.value,
         currentCampaignName.value,
@@ -317,6 +332,7 @@ async function start() {
         <GameOptions
           v-else
           v-model:playerCount="playerCount"
+          v-model:sideStoryMode="sideStoryMode"
           v-model:multiplayerVariant="multiplayerVariant"
           v-model:returnTo="returnTo"
           v-model:fullCampaign="fullCampaign"

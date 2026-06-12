@@ -14,6 +14,14 @@ import Arkham.Agenda.CardDefs.TheFeastOfHemlockVale as X
 import Arkham.Agenda.CardDefs.Core2026 as X
 import Arkham.Agenda.CardDefs.ReturnTo as X
 import Arkham.Agenda.CardDefs.Standalone as X
+import Arkham.Agenda.CardDefs.ByTheBook as X
+import Arkham.Agenda.CardDefs.AllOrNothing as X
+import Arkham.Agenda.CardDefs.BadBlood as X
+import Arkham.Agenda.CardDefs.LaidToRest as X
+import Arkham.Agenda.CardDefs.EnthrallingEncore as X
+import Arkham.Agenda.CardDefs.ReadOrDie as X
+import Arkham.Agenda.CardDefs.RedTideRising as X
+import Arkham.Agenda.CardDefs.RelicsOfThePast as X
 
 import Arkham.Card.CardCode
 import Arkham.Card.CardDef
@@ -28,6 +36,8 @@ allAgendaCards =
       , aCreatureOfTheBayou
       , agentsOfTheDark
       , agentsOfTheOuterGods
+      , agonyAndDespairEpicMultiplayer
+      , agonyAndDespair
       , aHarshWindBlows
       , aKillerParty
       , allBetsDown
@@ -41,6 +51,8 @@ allAgendaCards =
       , aTearInRealityV2
       , aTrailOfTwists
       , awakening
+      , awakeningTheLabyrinthsOfLunacyEpicMultiplayer
+      , awakeningTheLabyrinthsOfLunacy
       , backToTheVale
       , barricadedStreets
       , beckoningForPower
@@ -65,6 +77,7 @@ allAgendaCards =
       , collidingRealities
       , confluxOfConsequence
       , crossroadsOfFate
+      , curseOfTheAbyss
       , dangerousRide
       , darknessClosesIn
       , darkClouds
@@ -99,6 +112,7 @@ allAgendaCards =
       , forbiddenPeaks
       , franticPursuit
       , furyThatShakesTheEarth
+      , gardenOfShadows
       , gnashingTeeth
       , growingSuspicion
       , hallsOfStMarys
@@ -112,9 +126,24 @@ allAgendaCards =
       , icyDepths
       , inEveryShadow
       , intoTheCaves
+      , intoTheVoid
       , intoTheWhite
       , intruders
       , itAwaits
+      , jessiesRequest
+      , theMastermind
+      , theSummoningOfSilenus
+      , theSummoningProgresses
+      , theSummoningNearsCompletion
+      , theIncubationOfTheEgg
+      , theIncubationProgresses
+      , theIncubationNearsCompletion
+      , theProliferationOfTheSwarm
+      , theProliferationProgresses
+      , theProliferationNearsCompletion
+      , silenusDescends
+      , theEggHatches
+      , ezelZenRezlEmerges
       , journeyAcrossTheDreamlands
       , journeyThroughTheGates
       , judgementXX
@@ -158,6 +187,7 @@ allAgendaCards =
       , runningOutOfTime
       , runningRed
       , sacrificeForTheDeep
+      , schemesInTheDarkBeyond
       , secretsBetterLeftHidden
       , secretsOfTheSeaV1
       , secretsOfTheSeaV2
@@ -184,6 +214,7 @@ allAgendaCards =
       , theBeatingHeart
       , theBoundaryBroken
       , theBridgeOfWebs
+      , theBrotherhoodBidesTheirTime
       , theChariotVII
       , theChase
       , theChaseIsOnV1
@@ -266,6 +297,7 @@ allAgendaCards =
       , threeFates
       , timeCollapsing
       , timeIsRunningShort
+      , timeMarchesOn
       , torturousDescent
       , unchangingAsTheSea
       , undergroundMuscle
@@ -299,4 +331,22 @@ allAgendaCards =
         theAnomalySpreads
       , theAnomalySwells
       , theAnomalyConsumes
+      , --- By the Book
+        aCovertConspiracy
+      , yourDeadlineNears
+      , --- All or Nothing
+        eyesAllAroundYou
+      , --- Bad Blood
+        hyperboreanBlood
+      , --- Laid to Rest
+        gatheringMists
+      , --- Enthralling Encore
+        theHauntingOfTheWardTheatre
+      , --- Read or Die
+        mortalInquiry
+      , theNewGirl
+      , trailGoesCold
+      , --- Relics of the Past
+        somethingElseStirs
+      , guardianOfTheRelics
       ]
