@@ -861,9 +861,12 @@ const mapData = computed(() => {
 /* ── Page ────────────────────────────────────────────────── */
 
 .content {
-  overflow: auto;
+  flex: 1;
+  min-height: 0;
   width: 100%;
+  overflow: auto;
   padding-bottom: 60px;
+  box-sizing: border-box;
 }
 
 /* ── Tabs ────────────────────────────────────────────────── */
@@ -897,7 +900,7 @@ const mapData = computed(() => {
 
 .log-tabs button.active {
   color: var(--title);
-  border-bottom-color: var(--select, #6E8640);
+  border-bottom-color: var(--select, var(--button-1));
 }
 
 /* ── Investigators ───────────────────────────────────────── */

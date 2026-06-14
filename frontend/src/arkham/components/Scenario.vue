@@ -102,6 +102,7 @@ const encounterDiscardPopoverShown = ref(false)
 const locationMap = ref<Element | null>(null)
 const scrollerRef = ref<HTMLElement | null>(null)
 const viewingDiscard = ref(false)
+const revealingCards = ref(false)
 const cardRowTitle = ref("")
 // Atlach Nacha specific refs
 const previousRotation = ref(0)
@@ -522,11 +523,47 @@ const onCosmicEmissarySettingChange = (event: Event) => {
   if (detail?.key === cosmicEmissaryAnimationSettingKey) updateCosmicEmissaryAnimationSetting(detail.value ?? null)
 }
 
+function proxyClippedLocationClick(event: MouseEvent) {
+  if (event.defaultPrevented || event.button !== 0) return
+
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.location-cell, .draggable, button, a, input, select, textarea, [role="button"]')) return
+
+  const cell = [...document.querySelectorAll<HTMLElement>('.location-cell--can-interact')]
+    .find((el) => {
+      const rects = [el, ...el.querySelectorAll<HTMLElement>('.location-wrapper, .location, .card-frame')]
+        .map((node) => node.getBoundingClientRect())
+        .filter((rect) => rect.width > 0 && rect.height > 0)
+
+      return rects.some((rect) => event.clientX >= rect.left
+        && event.clientX <= rect.right
+        && event.clientY >= rect.top
+        && event.clientY <= rect.bottom)
+    })
+
+  if (!cell) return
+
+  const clickTarget = cell.querySelector<HTMLElement>('.card-frame') ?? cell.querySelector<HTMLElement>('.location') ?? cell
+  event.preventDefault()
+  event.stopPropagation()
+  clickTarget.dispatchEvent(new MouseEvent('click', {
+    bubbles: true,
+    cancelable: true,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    ctrlKey: event.ctrlKey,
+    shiftKey: event.shiftKey,
+    altKey: event.altKey,
+    metaKey: event.metaKey,
+  }))
+}
+
 // callbacks
 onMounted(() => {
   setGameId(props.game.id)
   window.addEventListener('storage', onCosmicEmissaryStorage)
   window.addEventListener('arkham-setting-change', onCosmicEmissarySettingChange)
+  document.addEventListener('click', proxyClippedLocationClick, true)
   updateScrollMargins()
   updateCellDimensions()
   updateLayoutPadding()
@@ -620,6 +657,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('storage', onCosmicEmissaryStorage)
   window.removeEventListener('arkham-setting-change', onCosmicEmissarySettingChange)
+  document.removeEventListener('click', proxyClippedLocationClick, true)
   legObserver?.disconnect()
   legObserver = null
   cosmicEmissaryObserver?.disconnect()
@@ -1112,10 +1150,11 @@ const gameOver = computed(() => props.game.gameState.tag === "IsOver")
 
 // Reactive
 const showCards = reactive<RefWrapper<any>>({ ref: noCards })
-const doShowCards = (cards: ComputedRef<Card[]>, title: string, isDiscards: boolean) => {
+const doShowCards = (cards: ComputedRef<Card[]>, title: string, isDiscards: boolean, revealed = false) => {
   cardRowTitle.value = title
   showCards.ref = cards
   viewingDiscard.value = isDiscards
+  revealingCards.value = revealed
 }
 const showRemovedFromPlay = () => doShowCards(removedFromPlay, t('scenario.removedFromPlay'), true)
 const showDiscards = () => doShowCards(discards, t('scenario.discards'), true)
@@ -1127,7 +1166,10 @@ const handleHollowedChoose = (idx: number) => {
     choose(idx)
   }
 }
-const hideCards = () => showCards.ref = noCards
+const hideCards = () => {
+  showCards.ref = noCards
+  revealingCards.value = false
+}
 
 // Watchers
 watchEffect(() => {
@@ -1720,6 +1762,7 @@ async function addChaosToken(face: any){
         :isDiscards="viewingDiscard"
         :title="cardRowTitle"
         :playerId="playerId"
+        :revealed="revealingCards"
         @choose="choose"
         @close="hideCards"
       />
@@ -2592,7 +2635,7 @@ async function addChaosToken(face: any){
       position: absolute;
       right: 100%;
       z-index: 100000;
-      background: #222;
+      background: var(--neutral-extra-dark);
       height: 100%;
       display: flex;
       align-items: center;
@@ -2873,7 +2916,7 @@ async function addChaosToken(face: any){
   color: #fff;
   cursor: pointer;
   border-radius: 4px;
-  background-color: #555;
+  background-color: var(--button);
   z-index: 1000;
   width: 100%;
   min-width: max-content;
@@ -2981,9 +3024,14 @@ async function addChaosToken(face: any){
 .location-cell {
   /* Grid placement + TransitionGroup FLIP target. The inner .location carries
      the user's drag offset transform, so rotation reshuffles (which FLIP-
-     animate the wrapper) don't wipe that offset. */
+     animate the wrapper) don't wipe that offset.
+
+     The cell's untransformed grid box can overlap a different translated
+     location. Do not let that invisible/original box win hit-testing; only the
+     translated visible wrapper should receive pointer events. */
   display: block;
   position: relative;
+  pointer-events: none;
 }
 
 .location-cell--can-interact {
@@ -3010,6 +3058,8 @@ async function addChaosToken(face: any){
 }
 
 .location-cell > .location-wrapper {
+  pointer-events: auto;
+
   /* Animate the offset along with the wrapper's FLIP move during rotation so
      the offset doesn't snap to its rotated value before the wrapper slides
      into place. Same easing/duration as .map-move keeps them in sync. */
@@ -3168,7 +3218,7 @@ async function addChaosToken(face: any){
 }
 
 .tri-button {
-  background-color: #555;
+  background-color: var(--button);
   color: white;
   padding: 0;
   display: flex;
