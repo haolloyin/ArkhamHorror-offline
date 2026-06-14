@@ -7,6 +7,7 @@ import { imgsrc, type InvestigatorClass } from '@/arkham/helpers'
 import { portraitImage as portraitImageHelper } from '@/arkham/cardImages'
 import * as Arkham from '@/arkham/types/Deck'
 import {deckClass} from '@/arkham/types/Deck'
+import { deckInvestigatorCode, deckRequirementDescriptions, deckRestrictionError, type SelectableDeckList } from '@/arkham/deckRestrictions'
 import type { ArkhamDbDecklist } from '@/arkham/types/Deck'
 import type { Investigator } from '@/arkham/types/Investigator'
 import Question from '@/arkham/components/Question.vue';
@@ -20,24 +21,20 @@ const unsavedDeckList = ref<ArkhamDbDecklist | null>(null)
 const createdPortrait = ref<string | null>(null)
 
 type DeckType = "UseExistingDeck" | "LoadNewDeck" | "UnsavedDeck"
+
 const deckType = ref<DeckType>("UseExistingDeck")
 
 const searchText = ref('')
 const filterClasses = ref<InvestigatorClass[]>([])
 const sortBy = ref<'name' | 'class'>('name')
+const validOnly = ref(false)
 const CLASS_ORDER: Record<string, number> = {
   guardian: 0, seeker: 1, rogue: 2, mystic: 3, survivor: 4, neutral: 5
 }
 const allClasses: InvestigatorClass[] = ["guardian", "seeker", "rogue", "mystic", "survivor", "neutral"]
 
-function deckInvestigatorCode(deck: Arkham.Deck): string {
-  if (deck.list.meta) {
-    try {
-      const result = JSON.parse(deck.list.meta)
-      if (result?.alternate_front) return result.alternate_front.replace('c', '')
-    } catch (e) {}
-  }
-  return deck.list.investigator_code.replace('c', '')
+function deckPortraitCode(deck: Arkham.Deck): string {
+  return deckInvestigatorCode(deck.list)
 }
 
 function deckTaboo(deck: Arkham.Deck): string | null {
@@ -51,7 +48,8 @@ const filteredDecks = computed(() => {
       filterClasses.value.some((k) => cls[k])
     const matchesSearch = !searchText.value ||
       deck.name.toLowerCase().includes(searchText.value.toLowerCase())
-    return matchesClass && matchesSearch
+    const matchesValidity = !validOnly.value || deckError(deck.list) === null
+    return matchesClass && matchesSearch && matchesValidity
   })
 
   if (sortBy.value === 'name') {
@@ -75,6 +73,7 @@ const props = defineProps<{
 const chooseDeck = inject<(deckId: string) => Promise<void>>('chooseDeck')
 const chooseDeckList = inject<(deckList: ArkhamDbDecklist) => Promise<void>>('chooseDeckList')
 const question = computed(() => props.game.question[props.playerId])
+const deckRequirements = computed(() => deckRequirementDescriptions(props.game.scenario?.id))
 
 const questionLabel = computed(() => {
   if (question.value)
@@ -98,18 +97,14 @@ async function addUnsavedDeck(dl: ArkhamDbDecklist) {
   deckType.value = "UnsavedDeck"
 }
 
-const error = computed(() => {
-  if(!deckId.value) {
-    return null
-  }
+function deckError(deckList: SelectableDeckList): string | null {
+  const chosenInvestigatorCodes = Object.values(props.game.investigators).map((i) => i.cardCode)
+  const scenarioError = deckRestrictionError(props.game.scenario?.id, deckList, chosenInvestigatorCodes)
+  if (scenarioError) return scenarioError
 
-  const deck = decks.value.find((d) => d.id === deckId.value)
-  if (!deck) {
-    return null
-  }
-
+  const investigator = deckInvestigatorCode(deckList)
   const alreadyTaken = Object.values(props.game.investigators).some((i) => {
-    return i.id === deck.list.investigator_code
+    return i.id === investigator
   })
 
   if (alreadyTaken) {
@@ -117,7 +112,7 @@ const error = computed(() => {
   }
 
   const inOtherScenario = Object.values(props.game.otherInvestigators).some((i) => {
-    return i.id === deck.list.investigator_code
+    return i.id === investigator
   })
 
   if (inOtherScenario) {
@@ -125,6 +120,19 @@ const error = computed(() => {
   }
 
   return null
+}
+
+const error = computed(() => {
+  if(!deckId.value) {
+    return null
+  }
+
+  const deck = decks.value.find((d) => d.id === deckId.value)
+  return deck ? deckError(deck.list) : null
+})
+
+const unsavedDeckError = computed(() => {
+  return unsavedDeckList.value ? deckError(unsavedDeckList.value) : null
 })
 
 const investigators = computed(() => props.game.investigators)
@@ -142,7 +150,7 @@ const emit = defineEmits(['choose'])
 const chooseChoice = (idx: number) => emit('choose', idx)
 
 async function choose() {
-  if (unsavedDeckList.value && chooseDeckList) {
+  if (unsavedDeckList.value && chooseDeckList && unsavedDeckError.value === null) {
     await chooseDeckList(unsavedDeckList.value)
   } else if (deckId.value && error.value === null) {
     if (chooseDeck) {
@@ -213,6 +221,22 @@ const needsReply = computed(() => {
           </template>
           <template v-else>
             <div v-if="needsReply && player.id == playerId" class="deck-main">
+              <div v-if="deckRequirements.length" class="deck-requirements-card">
+                <div class="deck-requirements-title">Deck Requirements</div>
+                <div class="deck-requirements-body">
+                  <ul class="deck-requirements">
+                    <li v-for="requirement in deckRequirements" :key="requirement">{{ requirement }}</li>
+                  </ul>
+                  <button
+                    type="button"
+                    class="valid-filter"
+                    :class="{ active: validOnly }"
+                    @click.prevent="validOnly = !validOnly"
+                  >
+                    {{ validOnly ? 'Showing Valid Decks' : 'Filter Valid Decks' }}
+                  </button>
+                </div>
+              </div>
               <div class="deck-tabs">
                 <button @click.prevent="deckType = 'UseExistingDeck'" :class="{ current: deckType == 'UseExistingDeck'}" :disabled="decks.length == 0">
                   {{$t('create.useExistingDeck')}}
@@ -238,7 +262,7 @@ const needsReply = computed(() => {
                     :class="[deckClass(deck), { selected: deckId === deck.id, 'has-error': deckId === deck.id && error }]"
                     @click.prevent="deckId = deck.id"
                   >
-                    <img class="deck-item-portrait" :src="imgsrc(`cards/${deckInvestigatorCode(deck)}.avif`)" />
+                    <img class="deck-item-portrait" :src="imgsrc(`cards/${deckPortraitCode(deck)}.avif`)" />
                     <div class="deck-item-info">
                       <span class="deck-item-name">{{ deck.name }}</span>
                       <span v-if="deckTaboo(deck)" class="deck-item-taboo">
@@ -264,7 +288,8 @@ const needsReply = computed(() => {
                 <div class="load-deck-content">
                   <form v-if="deckType == 'UnsavedDeck'" class="deck-form" @submit.prevent="choose">
                     <p class="unsaved-deck-name">{{ unsavedDeckList?.name }}</p>
-                    <button type="submit" class="primary-action">{{$t('create.choose')}}</button>
+                    <p v-if="unsavedDeckError" class="deck-form-error">{{ unsavedDeckError }}</p>
+                    <button type="submit" class="primary-action" :disabled="!!unsavedDeckError">{{$t('create.choose')}}</button>
                   </form>
                   <NewDeck v-else @new-deck="addDeck" @new-deck-list="addUnsavedDeck" :no-portrait="true" :set-portrait="setPortrait" />
                 </div>
@@ -301,7 +326,7 @@ const needsReply = computed(() => {
   margin: 0 0 12px 0;
   padding: 0;
   text-transform: uppercase;
-  color: #cecece;
+  color: var(--title);
   font-family: Teutonic;
   font-size: 1.8em;
   letter-spacing: 0.04em;
@@ -388,6 +413,67 @@ const needsReply = computed(() => {
   gap: 10px;
 }
 
+.deck-requirements-card {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 211, 112, 0.18);
+  background: rgba(95, 65, 10, 0.24);
+}
+
+.deck-requirements-title {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 0.72em;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.deck-requirements-body {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.valid-filter {
+  width: auto;
+  min-width: 150px;
+  padding: 9px 13px;
+  font-size: 0.74em;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: rgba(255, 240, 196, 0.98);
+  background: rgba(143, 98, 22, 0.62);
+  border: 1px solid rgba(255, 211, 112, 0.34);
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.24);
+  transition: transform 120ms ease, background 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+
+  &:hover {
+    transform: translateY(-1px);
+    background: rgba(162, 112, 28, 0.78);
+    border-color: rgba(255, 211, 112, 0.48);
+    box-shadow: 0 7px 18px rgba(0,0,0,0.32);
+  }
+
+  &.active {
+    background: rgba(178, 126, 36, 0.86);
+    border-color: rgba(255, 211, 112, 0.58);
+  }
+}
+
+.deck-requirements {
+  flex: 1;
+  margin: 0;
+  padding-left: 18px;
+  color: rgba(255, 226, 154, 0.95);
+  line-height: 1.35;
+  font-size: 0.82em;
+}
+
 /* Tab buttons — segmented control */
 .deck-tabs {
   display: grid;
@@ -451,7 +537,7 @@ const needsReply = computed(() => {
 .deck-list-empty {
   padding: 24px;
   text-align: center;
-  color: #555;
+  color: var(--button);
   font-size: 0.85em;
 }
 
@@ -590,6 +676,18 @@ const needsReply = computed(() => {
     font-weight: 600;
     letter-spacing: 0.04em;
     font-size: 0.92em;
+  }
+
+  p.deck-form-error {
+    color: #ff8080;
+    padding: 10px 12px;
+    background: rgba(160, 25, 25, 0.15);
+    border: 1px solid rgba(200, 50, 50, 0.5);
+    border-radius: 6px;
+    font-size: 0.82em;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
 }
 

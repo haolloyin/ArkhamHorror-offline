@@ -51,6 +51,8 @@ const sideStoryScenarios = computed(() =>
   props.gameMode === 'SideStory' ? props.scenario?.scenarios ?? [] : []
 )
 
+const deckRequirements = computed(() => props.scenario?.deckRequirements ?? [])
+
 const showAlphaWarning = computed(() => {
   if (props.gameMode === 'Campaign' && props.campaign) {
     return props.campaign.alpha
@@ -257,6 +259,13 @@ function setOptEnabled(o: RecommendedToggle, enabled: boolean) {
     </aside>
 
     <section class="config">
+      <div v-if="deckRequirements.length" class="card deck-requirements-card">
+        <div class="card-title">Deck Requirements</div>
+        <ul class="deck-requirements">
+          <li v-for="requirement in deckRequirements" :key="requirement">{{ requirement }}</li>
+        </ul>
+      </div>
+
       <div class="card">
         <div class="card-title">{{ $t('create.gameName') }}</div>
         <input class="text" type="text" v-model="campaignName" :placeholder="currentCampaignName" />
@@ -606,6 +615,19 @@ function setOptEnabled(o: RecommendedToggle, enabled: boolean) {
   opacity: 0.85;
 }
 
+.deck-requirements-card {
+  border-color: rgba(255, 211, 112, 0.18);
+  background: rgba(95, 65, 10, 0.24);
+}
+
+.deck-requirements {
+  margin: 0;
+  padding-left: 20px;
+  color: rgba(255, 226, 154, 0.95);
+  line-height: 1.35;
+  font-size: 13px;
+}
+
 /* Text input */
 .text {
   width: 100%;
@@ -759,11 +781,11 @@ input[type='radio']:checked + label {
 @keyframes glow {
   from {
     color: #000;
-    text-shadow: 0 0 0px #ff00ff;
+    text-shadow: 0 0 0px var(--select);
   }
   to {
-    color: #ff00ff; /* Glowing color */
-    text-shadow: 0 0 10px #ff00ff;
+    color: var(--select); /* Glowing color */
+    text-shadow: 0 0 10px var(--select);
   }
 }
 
