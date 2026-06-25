@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 env:
-  BRANCH: offline-sync
+  BRANCH: contrib/offline-sync
   UPSTREAM_URL: https://github.com/halogenandtoast/ArkhamHorror.git
   UPSTREAM_BRANCH: main
   TZ: Asia/Shanghai
