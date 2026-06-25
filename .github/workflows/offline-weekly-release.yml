@@ -1,0 +1,44 @@
+name: Offline Weekly Release
+on:
+  schedule:
+    - cron: '0 9 * * 5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BRANCH: offline-weekly-release
+  UPSTREAM_URL: https://github.com/halogenandtoast/ArkhamHorror.git
+  UPSTREAM_BRANCH: main
+  TZ: Asia/Shanghai
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Merge upstream (prefer ours on conflict)
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch upstream "$UPSTREAM_BRANCH"
+          git merge --no-edit --no-ff -X ours "upstream/$UPSTREAM_BRANCH"
+          git push origin "$BRANCH"
+
+      - name: Tag and push
+        run: |
+          DATE="$(date +%Y%m%d)"
+          LAST_N="$(git tag --list "v${DATE}.*" \
+              | sed -nE "s/^v${DATE}\.([0-9]+)$/\1/p" \
+              | sort -n | tail -1)"
+          TAG="v${DATE}.$(( ${LAST_N:-0} + 1 ))"
+          git tag -a "$TAG" -m "Weekly release $TAG"
+          git push origin "$TAG"
+          echo "Pushed tag: $TAG"

@@ -1718,6 +1718,13 @@ echo "    Arkham Horror LCG — Update"
 echo "  ============================================"
 echo ""
 
+
+# ── 0. Trying download latest release version ───────────────────────────────
+if [ -f "${GAME_DIR}/download_update.sh" ]; then
+    bash "${GAME_DIR}/download_update.sh" 2>/dev/null || true
+fi
+
+
 # ── 1. Stop running services ────────────────────────────────────────────────
 if [ -f "${GAME_DIR}/start.sh" ]; then
     info "Stopping running services ..."
@@ -1878,6 +1885,10 @@ UPDATESCRIPT
 
     chmod +x "${PKG_DIR}/game/update.sh"
     info "  ✓ game/update.sh generated"
+
+    cp "${SCRIPT_DIR}/download_update.sh" "${PKG_DIR}/game/download_update.sh"
+    chmod +x "${PKG_DIR}/game/download_update.sh"
+    info "  ✓ game/download_update.sh generated"
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2245,7 +2256,7 @@ main() {
     # Verification
     echo ""
     substep "Verifying distribution integrity ..."
-    local required=("game/bin/arkham-api" "game/bin/nginx" "game/pgsql/bin/postgres" "game/pgsql/bin/initdb" "game/pgsql/bin/pg_ctl" "game/pgsql/bin/pg_dump" "game/pgsql/bin/pg_restore" "game/frontend/dist/index.html" "game/start.sh" "game/update.sh")
+    local required=("game/bin/arkham-api" "game/bin/nginx" "game/pgsql/bin/postgres" "game/pgsql/bin/initdb" "game/pgsql/bin/pg_ctl" "game/pgsql/bin/pg_dump" "game/pgsql/bin/pg_restore" "game/frontend/dist/index.html" "game/start.sh" "game/update.sh" "game/download_update.sh")
     if [ "$OS" = "linux" ]; then
         required+=("Start-ArkhamHorror.bat" "Update-ArkhamHorror.bat")
     elif [ "$OS" = "macos" ]; then
