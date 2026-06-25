@@ -52,6 +52,91 @@ const close = (a: number, b: number) => Math.abs(a - b) < EPS
 const linesByConn = new Map<string, SVGLineElement>()
 const chevronsByConn = new Map<string, SVGPathElement>()
 
+type GridDirection = 'North' | 'East' | 'South' | 'West'
+
+const mineCart = computed(() =>
+  Object.values(props.game.assets).find((asset) => asset.cardCode === 'c10507' && asset.placement.tag === 'AtLocation')
+)
+
+const isWrittenInRockAct2 = computed(() =>
+  (props.game.scenario?.id === 'c10501' || props.game.scenario?.id === 'c10502') &&
+  Object.values(props.game.acts).some((act) => act.sequence.number === 2)
+)
+
+function mineCartDirection(): GridDirection {
+  let degrees = 0
+  const modifiers = mineCart.value?.modifiers ?? []
+  for (let i = modifiers.length - 1; i >= 0; i--) {
+    const t: any = modifiers[i]?.type
+    if (t?.tag === 'UIModifier' && t?.contents?.tag === 'Rotated') {
+      degrees = t.contents.contents
+      break
+    }
+  }
+  switch ((degrees + 360) % 360) {
+    case 90: return 'South'
+    case 180: return 'West'
+    case 270: return 'North'
+    default: return 'East'
+  }
+}
+
+function locationInDirection(locationId: string, direction: GridDirection): string | null {
+  const location = props.game.locations[locationId]
+  const match = location?.label.match(/^pos(\d{2})(\d{2})$/)
+  if (!match) return null
+
+  let x = Number(match[1])
+  let y = Number(match[2])
+  switch (direction) {
+    case 'North': y += 1; break
+    case 'East': x += 1; break
+    case 'South': y -= 1; break
+    case 'West': x -= 1; break
+  }
+
+  const label = `pos${String(x).padStart(2, '0')}${String(y).padStart(2, '0')}`
+  return Object.values(props.game.locations).find((loc) => loc.label === label)?.id ?? null
+}
+
+function connectionKey(id1: string, id2: string): string {
+  const [left, right] = [id1, id2].sort()
+  return `${left}:${right}`
+}
+
+function mineCartNextConnection(): string | null {
+  const cart = mineCart.value
+  if ((props.game.scenario?.id !== 'c10501' && props.game.scenario?.id !== 'c10502') || cart?.placement.tag !== 'AtLocation') {
+    return null
+  }
+
+  const src = props.game.locations[cart.placement.contents]
+  const dst = locationInDirection(cart.placement.contents, mineCartDirection())
+  return dst && src?.connectedLocations.includes(dst) ? connectionKey(cart.placement.contents, dst) : null
+}
+
+function mineCartInvalidDirection(): { locationId: string; direction: GridDirection } | null {
+  const cart = mineCart.value
+  if (!isWrittenInRockAct2.value || cart?.placement.tag !== 'AtLocation') {
+    return null
+  }
+
+  const direction = mineCartDirection()
+  const src = props.game.locations[cart.placement.contents]
+  const dst = locationInDirection(cart.placement.contents, direction)
+  if (dst && src?.connectedLocations.includes(dst)) return null
+  return { locationId: cart.placement.contents, direction }
+}
+
+function directionVector(direction: GridDirection): { x: number; y: number } {
+  switch (direction) {
+    case 'North': return { x: 0, y: -1 }
+    case 'East': return { x: 1, y: 0 }
+    case 'South': return { x: 0, y: 1 }
+    case 'West': return { x: -1, y: 0 }
+  }
+}
+
 function makeOrUpdateLine(div1: HTMLElement, div2: HTMLElement, className?: string, preserveDirection = false) {
   const [leftDiv, rightDiv] = preserveDirection ? [div1, div2] : [div1, div2].sort(sortByDataId)
   const leftDivId = leftDiv.dataset.id
@@ -63,10 +148,16 @@ function makeOrUpdateLine(div1: HTMLElement, div2: HTMLElement, className?: stri
   const lRect = leftDiv.getBoundingClientRect()
   const rRect = rightDiv.getBoundingClientRect()
 
-  const x1 = (lRect.left - svgRect.left) + (lRect.width / 2)
-  const y1 = (lRect.top - svgRect.top) + (lRect.height / 2)
-  const x2 = (rRect.left - svgRect.left) + (rRect.width / 2)
-  const y2 = (rRect.top - svgRect.top) + (rRect.height / 2)
+  const lCenterX = (lRect.left - svgRect.left) + (lRect.width / 2)
+  const lCenterY = (lRect.top - svgRect.top) + (lRect.height / 2)
+  const rCenterX = (rRect.left - svgRect.left) + (rRect.width / 2)
+  const rCenterY = (rRect.top - svgRect.top) + (rRect.height / 2)
+  const offsetTrackLine = !className && isWrittenInRockAct2.value
+  const vertical = Math.abs(rCenterY - lCenterY) > Math.abs(rCenterX - lCenterX)
+  const x1 = offsetTrackLine && vertical ? (lRect.left - svgRect.left) + (lRect.width * 0.78) : lCenterX
+  const y1 = offsetTrackLine && !vertical ? (lRect.top - svgRect.top) + (lRect.height * 0.8) : lCenterY
+  const x2 = offsetTrackLine && vertical ? (rRect.left - svgRect.left) + (rRect.width * 0.78) : rCenterX
+  const y2 = offsetTrackLine && !vertical ? (rRect.top - svgRect.top) + (rRect.height * 0.8) : rCenterY
 
   const investigator = Object.values(props.game.investigators).find(i => i.playerId === props.playerId)
   const activeLine =
@@ -98,6 +189,9 @@ function makeOrUpdateLine(div1: HTMLElement, div2: HTMLElement, className?: stri
   if (!close(ex2, x2)) line.setAttribute('x2', String(x2))
   if (!close(ey2, y2)) line.setAttribute('y2', String(y2))
 
+  if (!className && connection === mineCartNextConnection()) line.classList.add('mine-cart-next-line')
+  else line.classList.remove('mine-cart-next-line')
+
   if (className === 'fate-of-the-vale-enemy-line') {
     if (props.enableCosmicEmissaryAnimation === false) {
       line.removeAttribute('style')
@@ -108,6 +202,70 @@ function makeOrUpdateLine(div1: HTMLElement, div2: HTMLElement, className?: stri
 
   if (activeLine) line.classList.add('active')
   else line.classList.remove('active')
+}
+
+function makeOrUpdateMineCartInvalidLine(locationDiv: HTMLElement, direction: GridDirection): string[] {
+  if (!svgEl || !lineProto || !chevronProto) return []
+  const locationId = locationDiv.dataset.id
+  if (!locationId) return []
+
+  const svgRect = svgEl.getBoundingClientRect()
+  const rect = locationDiv.getBoundingClientRect()
+  const { x: dx, y: dy } = directionVector(direction)
+  const vertical = direction === 'North' || direction === 'South'
+  const x1 = (rect.left - svgRect.left) + (vertical ? rect.width * 0.78 : rect.width / 2)
+  const y1 = (rect.top - svgRect.top) + (vertical ? rect.height / 2 : rect.height * 0.8)
+  const lineDistance = 65
+  const xDistance = 76
+  const x2 = x1 + dx * lineDistance
+  const y2 = y1 + dy * lineDistance
+  const xMarkCenter = x1 + dx * xDistance
+  const yMarkCenter = y1 + dy * xDistance
+  const lineConnection = `mine-cart-invalid-line:${locationId}:${direction}`
+  const xConnection = `mine-cart-invalid-x:${locationId}:${direction}`
+
+  let line = linesByConn.get(lineConnection)
+  if (!line) {
+    line = lineProto.cloneNode(true) as SVGLineElement
+    line.classList.remove('original')
+    line.classList.add('connection', 'mine-cart-invalid-line')
+    line.removeAttribute('id')
+    line.dataset.connection = lineConnection
+    svgEl.appendChild(line)
+    linesByConn.set(lineConnection, line)
+  }
+
+  line.setAttribute('x1', String(x1))
+  line.setAttribute('y1', String(y1))
+  line.setAttribute('x2', String(x2))
+  line.setAttribute('y2', String(y2))
+
+  let xMark = chevronsByConn.get(xConnection)
+  if (!xMark) {
+    xMark = chevronProto.cloneNode(true) as SVGPathElement
+    xMark.classList.remove('original')
+    xMark.classList.add('mine-cart-invalid-x')
+    xMark.removeAttribute('id')
+    xMark.dataset.connection = xConnection
+    svgEl.appendChild(xMark)
+    chevronsByConn.set(xConnection, xMark)
+  }
+
+  const size = 7
+  const thickness = 3
+  xMark.setAttribute('d', [
+    `M${xMarkCenter - size},${yMarkCenter - size + thickness}`,
+    `L${xMarkCenter - size + thickness},${yMarkCenter - size}`,
+    `L${xMarkCenter + size},${yMarkCenter + size - thickness}`,
+    `L${xMarkCenter + size - thickness},${yMarkCenter + size}`,
+    'Z',
+    `M${xMarkCenter + size - thickness},${yMarkCenter - size}`,
+    `L${xMarkCenter + size},${yMarkCenter - size + thickness}`,
+    `L${xMarkCenter - size + thickness},${yMarkCenter + size}`,
+    `L${xMarkCenter - size},${yMarkCenter + size - thickness}`,
+    'Z',
+  ].join(' '))
+  return [lineConnection, xConnection]
 }
 
 function updateFateOfTheValeEnemyLineGradient(line: SVGLineElement, connection: string, x1: number, y1: number, x2: number, y2: number) {
@@ -299,6 +457,14 @@ function handleConnections(includeFateOfTheVale = true) {
     }
   }
 
+  const invalidMineCart = mineCartInvalidDirection()
+  if (invalidMineCart) {
+    const start = document.querySelector<HTMLElement>(`[data-id="${invalidMineCart.locationId}"]`)
+    if (start) {
+      for (const conn of makeOrUpdateMineCartInvalidLine(start, invalidMineCart.direction)) live.add(conn)
+    }
+  }
+
   const isFateOfTheVale = props.game.scenario?.id === 'c10651'
   if (includeFateOfTheVale && isFateOfTheVale) {
     for (const [enemyLabel, locationLabel] of Object.entries(fateOfTheValeEnemyLocations)) {
@@ -386,7 +552,7 @@ onMounted(async () => {
   requestId.value = window.requestAnimationFrame(tick)
 
   window.addEventListener('resize', requestConnectionUpdate)
-  window.addEventListener('scroll', requestConnectionUpdate, true)
+  window.addEventListener('scroll', requestConnectionUpdate, { capture: true, passive: true })
   window.addEventListener('arkham-location-layout-change', requestConnectionUpdate)
 
   const locationCards = document.querySelector('.location-cards') as HTMLElement | null
@@ -407,12 +573,14 @@ onMounted(async () => {
 
 // keep lines fresh if the set of locations changes
 watch(locations, ()=> { requestConnectionUpdate() }, { flush: 'post' })
+watch(mineCart, ()=> { requestConnectionUpdate() }, { flush: 'post' })
+watch(isWrittenInRockAct2, ()=> { requestConnectionUpdate() }, { flush: 'post' })
 watch(enemies, ()=> { requestConnectionUpdate() }, { flush: 'post' })
 watch(() => props.enableCosmicEmissaryAnimation, () => { requestConnectionUpdate() }, { flush: 'post' })
 
 onBeforeUnmount(()=> {
   window.removeEventListener('resize', requestConnectionUpdate)
-  window.removeEventListener('scroll', requestConnectionUpdate, true)
+  window.removeEventListener('scroll', requestConnectionUpdate, { capture: true })
   window.removeEventListener('arkham-location-layout-change', requestConnectionUpdate)
   connectionObserver?.disconnect()
   connectionObserver = null
@@ -460,15 +628,15 @@ onBeforeUnmount(()=> {
   left: 0;
   width: 100%;
   height: 100%;
-  z-index:-1;
-  overflow: visible !important;
+  z-index: 0;
+  overflow: hidden;
 }
 
 .line{
   stroke-width: 6px;
   stroke: rgba(255, 255, 255, 0.2);
 }
-.line.active{
+.line.active:not(.mine-cart-next-line){
   stroke: rgba(255, 255, 255, 0.7) !important;
 }
 
@@ -483,6 +651,22 @@ onBeforeUnmount(()=> {
 .enemy-line{
   stroke: rgba(255 0 0 / 0.4);
   stroke-dasharray: unset;
+}
+
+.mine-cart-next-line{
+  stroke: rgba(74 190 111 / 0.85);
+  filter: drop-shadow(0 0 2px rgba(74 190 111 / 0.35));
+}
+
+.mine-cart-invalid-line{
+  stroke: rgba(220 48 48 / 0.85);
+  filter: drop-shadow(0 0 2px rgba(220 48 48 / 0.45));
+}
+
+.mine-cart-invalid-x{
+  fill: rgba(220 48 48 / 0.95);
+  stroke: none;
+  filter: drop-shadow(0 0 2px rgba(220 48 48 / 0.45));
 }
 
 .fate-of-the-vale-enemy-line{

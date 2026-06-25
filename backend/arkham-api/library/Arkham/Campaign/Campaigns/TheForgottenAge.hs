@@ -22,7 +22,6 @@ import Arkham.Investigator.Types (Field (..))
 import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
-import Arkham.Modifier (setActiveDuringSetup)
 import Arkham.Projection
 import Arkham.Source
 import Arkham.Target
@@ -78,8 +77,17 @@ initialResupplyPoints = getPlayerCountValue (ByPlayerCount 8 5 4 3)
 
 getPoisonedInvestigators :: CampaignAttrs -> [InvestigatorId]
 getPoisonedInvestigators attrs =
-  mapToList attrs.decks & mapMaybe \(iid, Deck cards) -> do
-    guard (any (`cardMatch` CardWithTitle "Poisoned") cards) $> iid
+  nub $ deckPoisoned <> storyPoisoned
+ where
+  -- Poisoned is a permanent weakness stored in storyCards (via
+  -- addCampaignCardToDeck); campaignDecks only holds the ArkhamDB decklist and
+  -- never contains it, so we have to check both.
+  deckPoisoned =
+    mapToList attrs.decks & mapMaybe \(iid, Deck cards) ->
+      guard (any (`cardMatch` CardWithTitle "Poisoned") cards) $> iid
+  storyPoisoned =
+    mapToList attrs.storyCards & mapMaybe \(iid, cards) ->
+      guard (any (`cardMatch` CardWithTitle "Poisoned") cards) $> iid
 
 instance RunMessage TheForgottenAge where
   runMessage msg c@(TheForgottenAge attrs) = runQueueT $ campaignI18n do
@@ -281,7 +289,10 @@ instance RunMessage TheForgottenAge where
             }
       DoStep 2 msg'@(ForInvestigator iid (CampaignStep ResupplyPoint)) -> scope "resupplyPoint" do
         let extraXp = Map.findWithDefault 0 iid (bonusXp metadata)
-        isPoisoned <- getIsPoisoned iid
+        -- During the interlude there is no scenario in play, so the Poisoned
+        -- weakness lives in the investigator's campaign cards rather than their
+        -- threat area; use the campaign-attrs check instead of getIsPoisoned.
+        let isPoisoned = iid `elem` getPoisonedInvestigators attrs
         xp <- field InvestigatorXp iid
         let hasXp = xp + extraXp >= 3
         let toSpend = max 0 (3 - extraXp)

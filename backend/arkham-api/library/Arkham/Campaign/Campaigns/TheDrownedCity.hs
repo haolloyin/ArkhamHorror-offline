@@ -41,7 +41,10 @@ tasks =
 instance RunMessage TheDrownedCity where
   runMessage msg c = runQueueT $ campaignI18n $ case msg of
     CampaignStep PrologueStep -> do
-      scope "prologue" $ flavor $ setTitle "title" >> p "body"
+      -- Intro: the epigraph and the April 15 journal entry that open the campaign.
+      scope "intro" $ flavor $ setTitle "title" >> p "body"
+      -- The Prologue, as its own thing after the intro: the campaign's additional
+      -- rules and new keywords, before the first scenario.
       scope "additionalRulesAndClarifications" do
         flavor $ setTitle "title" >> p "floodTokens"
         flavor $ setTitle "title" >> p "artifacts"
@@ -89,5 +92,15 @@ instance RunMessage TheDrownedCity where
           -- TODO: swap a chaos token (remove 1 / add 1) for the remainder of the
           -- campaign, per the Eastern Expedition setup.
           setNextCampaignStep ObsidianCanyons
+      pure c
+    -- Interlude III: The Awakening — the Sleeper rises; both expeditions reunite.
+    CampaignStep (InterludeStep 3 _) -> scope "theAwakening" do
+      flavor $ setTitle "title" >> p "body"
+      setNextCampaignStep ReturnToArkham
+      pure c
+    -- Interlude IV: Return to Arkham — the voyage home and the dreams that follow.
+    CampaignStep (InterludeStep 4 _) -> scope "returnToArkham" do
+      flavor $ setTitle "title" >> p "body"
+      setNextCampaignStep TheDoomOfArkhamPartI
       pure c
     _ -> lift $ defaultCampaignRunner msg c

@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import { displayTabooList } from '@/arkham/taboo';
 import { ref, computed, inject } from 'vue';
-import { fetchDeckList, upgradeDeck } from '@/arkham/api';
+import { upgradeDeck } from '@/arkham/api';
 import { imgsrc, localizeArkhamDBBaseUrl, processArkhamBuildDeck } from '@/arkham/helpers';
 import { ArkhamDbDecklist } from '@/arkham/types/Deck';
 import { Game } from '@/arkham/types/Game';
@@ -12,12 +12,16 @@ import XpBreakdown from '@/arkham/components/XpBreakdown.vue';
 import type { XpBreakdownStep } from '@/arkham/types/Xp';
 import Question from '@/arkham/components/Question.vue';
 import { loadUpgradeDeckFromJsonText } from '@/arkham/upgradeDeckUpload';
+import { deckRestrictionError } from '@/arkham/deckRestrictions';
+import { useI18n } from 'vue-i18n';
 
 // TODO should we pass in the investigator
 export interface Props {
   game: Game
   playerId: string
 }
+
+const { t } = useI18n()
 
 const question = computed(() => props.game.question[props.playerId])
 const questionLabel = computed(() => {
@@ -62,20 +66,28 @@ const killedInvestigators = computed(() => {
 })
 
 const error = computed(() => {
-  if(!deckInvestigator.value) return null
+  if(deckInvestigator.value) {
+    const alreadyTaken = Object.values(props.game.investigators).some((i) => {
+      return i.id === `c${deckInvestigator.value}` && i.playerId !== props.playerId
+    })
 
-  const alreadyTaken = Object.values(props.game.investigators).some((i) => {
-    return i.id === `c${deckInvestigator.value}` && i.playerId !== props.playerId
-  })
+    if (alreadyTaken) {
+      return 'This investigator is already taken'
+    }
 
-  if (alreadyTaken) {
-    return 'This investigator is already taken'
+    const killedOrInsane = killedInvestigators.value.includes(`c${deckInvestigator.value}`)
+
+    if (killedOrInsane) {
+      return 'This investigator was killed or driven insane'
+    }
   }
 
-  const killedOrInsane = killedInvestigators.value.includes(`c${deckInvestigator.value}`)
-
-  if (killedOrInsane) {
-    return 'This investigator was killed or driven insane'
+  if (deckList.value) {
+    const restrictionError = deckRestrictionError(props.game.scenario?.id, deckList.value, [], {
+      campaignId: props.game.campaign?.id,
+      campaignLog: props.game.campaign?.log,
+    }, t)
+    if (restrictionError) return restrictionError
   }
 
   return null
@@ -202,8 +214,8 @@ function loadDeck() {
   deckList.value = null
 
   const arkhamDbRegex = /https:\/\/(?:[a-zA-Z0-9-]+\.)?arkhamdb\.com\/(deck(list)?)(\/view)?\/([^/]+)/
-  const arkhamBuildRegex = /https:\/\/arkham\.build\/(?:deck\/view|share)\/([^/]+)/
-  const arkhamBuildDecklistRegex = /https:\/\/arkham\.build\/decklist(?:\/view)?\/([^/]+)/
+  const arkhamBuildRegex = /https:\/\/arkham\.build\/(?:deck\/view|share)\/([^/?]+)/
+  const arkhamBuildDecklistRegex = /https:\/\/arkham\.build\/decklist(?:\/view)?\/([^/?]+)/
 
   let matches
   let isArkhamBuild = false
@@ -216,17 +228,15 @@ function loadDeck() {
     fetchUrl = deckUrl.value
     isArkhamBuild = true
   } else if ((matches = deck.value.match(arkhamBuildDecklistRegex))) {
-    deckUrl.value = null
-    fetchUrl = deck.value
+    deckUrl.value = `https://api.arkham.build/v1/public/share/${matches[1]}?type=decklist`
+    fetchUrl = deckUrl.value
     isArkhamBuild = true
   } else {
     return
   }
 
   const url = deckUrl.value
-  const request = deck.value.match(arkhamBuildDecklistRegex)
-    ? fetchDeckList(fetchUrl)
-    : fetch(fetchUrl).then((response) => response.json() as Promise<ArkhamDbDecklist>)
+  const request = fetch(fetchUrl).then((response) => response.json() as Promise<ArkhamDbDecklist>)
 
   request
     .then((data) => {

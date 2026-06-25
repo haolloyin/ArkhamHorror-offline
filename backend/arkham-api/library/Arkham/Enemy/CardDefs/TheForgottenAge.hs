@@ -6,7 +6,12 @@ import Arkham.Keyword qualified as Keyword
 serpentsOfYig :: CardDef
 serpentsOfYig =
   (weakness "04014" "Serpents of Yig")
-    { cdCardTraits = setFromList [Humanoid, Monster, Serpent]
+    { cdHealthDamage = healthDamage 1
+    , cdSanityDamage = sanityDamage 1
+    , cdFight = fight 2
+    , cdEvade = evade 2
+    , cdHealth = health 3
+    , cdCardTraits = setFromList [Humanoid, Monster, Serpent]
     , cdKeywords = singleton Keyword.Hunter
     , cdRevelation = IsRevelation
     }
@@ -15,7 +20,11 @@ ichtaca :: CardDef
 ichtaca =
   unique
     $ (enemy "04052" ("Ichtaca" <:> "Keeper of the Eztli") TheUntamedWilds 1)
-      { cdCardTraits = setFromList [Humanoid, Eztli, Elite]
+      { cdHealthDamage = healthDamage 2
+      , cdFight = fight 5
+      , cdEvade = evade 4
+      , cdHealth = health 4
+      , cdCardTraits = setFromList [Humanoid, Eztli, Elite]
       , cdKeywords = setFromList [Keyword.Alert, Keyword.Retaliate]
       , cdVictoryPoints = Just 1
       }
@@ -29,7 +38,12 @@ harbingerOfValusia =
           TheDoomOfEztli
           1
       )
-      { cdCardTraits = setFromList [Humanoid, Serpent, Monster, Elite]
+      { cdHealthDamage = healthDamage 2
+      , cdSanityDamage = sanityDamage 2
+      , cdFight = fight 3
+      , cdEvade = evade 3
+      , cdHealth = healthPerInvestigator 10
+      , cdCardTraits = setFromList [Humanoid, Serpent, Monster, Elite]
       , cdKeywords = setFromList [Keyword.Alert, Keyword.Hunter, Keyword.Retaliate]
       , cdVengeancePoints = Just 5
       }
@@ -37,14 +51,23 @@ harbingerOfValusia =
 pitViper :: CardDef
 pitViper =
   (enemy "04078" "Pit Viper" Serpents 3)
-    { cdCardTraits = setFromList [Creature, Serpent]
+    { cdHealthDamage = healthDamage 1
+    , cdFight = fight 3
+    , cdEvade = evade 3
+    , cdHealth = health 1
+    , cdCardTraits = setFromList [Creature, Serpent]
     , cdVengeancePoints = Just 1
     }
 
 boaConstrictor :: CardDef
 boaConstrictor =
   (enemy "04079" "Boa Constrictor" Serpents 1)
-    { cdCardTraits = setFromList [Creature, Serpent]
+    { cdHealthDamage = healthDamage 1
+    , cdSanityDamage = sanityDamage 1
+    , cdFight = fight 4
+    , cdEvade = evade 2
+    , cdHealth = health 4
+    , cdCardTraits = setFromList [Creature, Serpent]
     , cdKeywords = singleton Keyword.Hunter
     , cdVengeancePoints = Just 2
     }
@@ -52,35 +75,58 @@ boaConstrictor =
 broodOfYig :: CardDef
 broodOfYig =
   (enemy "04083" "Brood of Yig" AgentsOfYig 3)
-    { cdCardTraits = setFromList [Humanoid, Monster, Serpent]
+    { cdHealthDamage = healthDamage 1
+    , cdSanityDamage = sanityDamage 1
+    , cdFight = fight 2
+    , cdEvade = evade 2
+    , cdHealth = health 3
+    , cdCardTraits = setFromList [Humanoid, Monster, Serpent]
     , cdKeywords = singleton Keyword.Hunter
     }
 
 serpentFromYoth :: CardDef
 serpentFromYoth =
   (enemy "04084" "Serpent from Yoth" AgentsOfYig 1)
-    { cdCardTraits = setFromList [Humanoid, Monster, Serpent]
+    { cdHealthDamage = healthDamage 1
+    , cdSanityDamage = sanityDamage 2
+    , cdFight = fight 3
+    , cdEvade = evade 3
+    , cdHealth = health 5
+    , cdCardTraits = setFromList [Humanoid, Monster, Serpent]
     , cdVictoryPoints = Just 1
     }
 
 eztliGuardian :: CardDef
 eztliGuardian =
   (enemy "04086" "Eztli Guardian" GuardiansOfTime 2)
-    { cdCardTraits = setFromList [Humanoid, Eztli]
+    { cdHealthDamage = healthDamage 1
+    , cdFight = fight 4
+    , cdEvade = evade 2
+    , cdHealth = health 2
+    , cdCardTraits = setFromList [Humanoid, Eztli]
     , cdKeywords = setFromList [Keyword.Alert, Keyword.Aloof]
     }
 
 brotherhoodCultist :: CardDef
 brotherhoodCultist =
   (enemy "04095" "Brotherhood Cultist" PnakoticBrotherhood 2)
-    { cdCardTraits = setFromList [Humanoid, Cultist]
+    { cdSanityDamage = sanityDamage 1
+    , cdFight = fight 2
+    , cdEvade = evade 2
+    , cdHealth = health 3
+    , cdCardTraits = setFromList [Humanoid, Cultist]
     , cdKeywords = singleton Keyword.Hunter
     }
 
 fangOfYig :: CardDef
 fangOfYig =
   (enemy "04098" "Fang of Yig" YigsVenom 2)
-    { cdCardTraits = setFromList [Humanoid, Monster, Serpent]
+    { cdHealthDamage = healthDamage 1
+    , cdSanityDamage = sanityDamage 1
+    , cdFight = fight 3
+    , cdEvade = evade 3
+    , cdHealth = health 3
+    , cdCardTraits = setFromList [Humanoid, Monster, Serpent]
     , cdKeywords = singleton Keyword.Retaliate
     }
 
@@ -89,7 +135,12 @@ harlanEarnstoneCrazedByTheCurse =
   unique
     $ doubleSided "04122"
     $ (enemy "04122b" ("Harlan Earnstone" <:> "Crazed by the Curse") ThreadsOfFate 1)
-      { cdCardTraits = setFromList [Humanoid, Cursed, Elite]
+      { cdHealthDamage = healthDamage 1
+      , cdSanityDamage = sanityDamage 1
+      , cdFight = fight 4
+      , cdEvade = evade 3
+      , cdHealth = health 2
+      , cdCardTraits = setFromList [Humanoid, Cursed, Elite]
       , cdVictoryPoints = Just 1
       }
 
@@ -98,7 +149,12 @@ henryDeveauAlejandrosKidnapper =
   unique
     $ doubleSided "04130"
     $ (enemy "04130b" ("Henry Deveau" <:> "Alejandro's Kidnapper") ThreadsOfFate 1)
-      { cdCardTraits = setFromList [Humanoid, Conspirator, Elite]
+      { cdHealthDamage = healthDamage 1
+      , cdSanityDamage = sanityDamage 1
+      , cdFight = fight 4
+      , cdEvade = evade 2
+      , cdHealth = health 3
+      , cdCardTraits = setFromList [Humanoid, Conspirator, Elite]
       , cdVictoryPoints = Just 1
       , cdKeywords = singleton Keyword.Retaliate
       }
@@ -108,7 +164,12 @@ mariaDeSilvaKnowsMoreThanSheLetsOn =
   unique
     $ doubleSided "04137"
     $ (enemy "04137b" ("Maria DeSilva" <:> "Knows More Than She Lets On") ThreadsOfFate 1)
-      { cdCardTraits = setFromList [Humanoid, Conspirator, Elite]
+      { cdHealthDamage = healthDamage 1
+      , cdSanityDamage = sanityDamage 1
+      , cdFight = fight 3
+      , cdEvade = evade 2
+      , cdHealth = health 4
+      , cdCardTraits = setFromList [Humanoid, Conspirator, Elite]
       , cdVictoryPoints = Just 1
       , cdKeywords = singleton Keyword.Retaliate
       }
@@ -117,7 +178,10 @@ padmaAmrita :: CardDef
 padmaAmrita =
   unique
     $ (enemy "04186" ("Padma Amrita" <:> "Cold-Blooded Charmer") TheBoundaryBeyond 1)
-      { cdCardTraits = setFromList [Humanoid, Serpent, Servitor, Elite]
+      { cdFight = fight 5
+      , cdEvade = evade 3
+      , cdHealth = healthPerInvestigator 3
+      , cdCardTraits = setFromList [Humanoid, Serpent, Servitor, Elite]
       , cdVictoryPoints = Just 2
       , cdVengeancePoints = Just 2
       , cdKeywords = setFromList [Keyword.Alert, Keyword.Retaliate, Keyword.Hunter]
@@ -126,7 +190,12 @@ padmaAmrita =
 serpentOfTenochtitlan :: CardDef
 serpentOfTenochtitlan =
   (enemy "04187" "Serpent of Tenochtitlán" TheBoundaryBeyond 1)
-    { cdCardTraits = setFromList [Humanoid, Monster, Serpent]
+    { cdHealthDamage = healthDamage 1
+    , cdSanityDamage = sanityDamage 1
+    , cdFight = fight 3
+    , cdEvade = evade 3
+    , cdHealth = health 5
+    , cdCardTraits = setFromList [Humanoid, Monster, Serpent]
     , cdVictoryPoints = Just 1
     , cdVengeancePoints = Just 1
     }
@@ -134,21 +203,34 @@ serpentOfTenochtitlan =
 handOfTheBrotherhood :: CardDef
 handOfTheBrotherhood =
   (enemy "04188" "Hand of the Brotherhood" TheBoundaryBeyond 2)
-    { cdCardTraits = setFromList [Humanoid, Cultist]
+    { cdSanityDamage = sanityDamage 1
+    , cdFight = fight 2
+    , cdEvade = evade 2
+    , cdHealth = health 2
+    , cdCardTraits = setFromList [Humanoid, Cultist]
     }
 
 theWingedSerpent :: CardDef
 theWingedSerpent =
   doubleSided "04209"
     $ (enemy "04209b" ("The Winged Serpent" <:> "The Wrath of Yig") PillarsOfJudgement 1)
-      { cdCardTraits = setFromList [Monster, Serpent, Elite]
+      { cdHealthDamage = healthDamage 1
+      , cdSanityDamage = sanityDamage 1
+      , cdFight = fight 8
+      , cdEvade = evade 5
+      , cdCardTraits = setFromList [Monster, Serpent, Elite]
       , cdKeywords = setFromList [Keyword.Alert, Keyword.Hunter, Keyword.Massive]
       }
 
 apexStrangleweed :: CardDef
 apexStrangleweed =
   (enemy "04219" "Apex Strangleweed" PillarsOfJudgement 2)
-    { cdCardTraits = setFromList [Creature, Flora]
+    { cdHealthDamage = healthDamage 1
+    , cdSanityDamage = sanityDamage 1
+    , cdFight = fight 3
+    , cdEvade = evade 3
+    , cdHealth = health 6
+    , cdCardTraits = setFromList [Creature, Flora]
     , cdKeywords = setFromList [Keyword.Alert, Keyword.Retaliate]
     , cdVictoryPoints = Just 1
     }
@@ -156,7 +238,11 @@ apexStrangleweed =
 basilisk :: CardDef
 basilisk =
   (enemy "04220" "Basilisk" PillarsOfJudgement 2)
-    { cdCardTraits = setFromList [Monster, Serpent]
+    { cdHealthDamage = healthDamage 2
+    , cdFight = fight 4
+    , cdEvade = evade 4
+    , cdHealth = health 4
+    , cdCardTraits = setFromList [Monster, Serpent]
     , cdKeywords = singleton Keyword.Hunter
     , cdVengeancePoints = Just 2
     }
@@ -164,28 +250,46 @@ basilisk =
 keeperOfTheGreatLibrary :: CardDef
 keeperOfTheGreatLibrary =
   (enemy "04257" "Keeper of the Great Library" TheCityOfArchives 2)
-    { cdCardTraits = setFromList [Monster, Yithian]
+    { cdHealthDamage = healthDamage 1
+    , cdSanityDamage = sanityDamage 1
+    , cdFight = fight 3
+    , cdEvade = evade 3
+    , cdHealth = health 4
+    , cdCardTraits = setFromList [Monster, Yithian]
     , cdKeywords = setFromList [Keyword.Alert, Keyword.Aloof]
     }
 
 scientistOfYith :: CardDef
 scientistOfYith =
   (enemy "04258" "Scientist of Yith" TheCityOfArchives 2)
-    { cdCardTraits = setFromList [Monster, Yithian]
+    { cdHealthDamage = healthDamage 2
+    , cdFight = fight 4
+    , cdEvade = evade 1
+    , cdHealth = health 3
+    , cdCardTraits = setFromList [Monster, Yithian]
     , cdKeywords = singleton Keyword.Aloof
     }
 
 scholarFromYith :: CardDef
 scholarFromYith =
   (enemy "04259" "Scholar from Yith" TheCityOfArchives 3)
-    { cdCardTraits = setFromList [Monster, Yithian]
+    { cdSanityDamage = sanityDamage 1
+    , cdFight = fight 2
+    , cdEvade = evade 2
+    , cdHealth = health 2
+    , cdCardTraits = setFromList [Monster, Yithian]
     }
 
 yig :: CardDef
 yig =
   unique
     $ (enemy "04296" ("Yig" <:> "The Father of Serpents") TheDepthsOfYoth 1)
-      { cdCardTraits = setFromList [AncientOne, Serpent, Elite]
+      { cdHealthDamage = healthDamage 3
+      , cdSanityDamage = sanityDamage 3
+      , cdFight = fight 4
+      , cdEvade = evade 4
+      , cdHealth = health 6
+      , cdCardTraits = setFromList [AncientOne, Serpent, Elite]
       , cdKeywords = setFromList [Keyword.Hunter, Keyword.Massive]
       , cdVictoryPoints = Just 5
       }
@@ -193,7 +297,12 @@ yig =
 pitWarden :: CardDef
 pitWarden =
   (enemy "04297" "Pit Warden" TheDepthsOfYoth 3)
-    { cdCardTraits = setFromList [Humanoid, Monster, Serpent]
+    { cdHealthDamage = healthDamage 1
+    , cdSanityDamage = sanityDamage 1
+    , cdFight = fight 4
+    , cdEvade = evade 1
+    , cdHealth = health 4
+    , cdCardTraits = setFromList [Humanoid, Monster, Serpent]
     , cdVengeancePoints = Just 1
     , cdKeywords = singleton Keyword.Hunter
     }
@@ -201,7 +310,12 @@ pitWarden =
 eaterOfTheDepths :: CardDef
 eaterOfTheDepths =
   (enemy "04298" "Eater of the Depths" TheDepthsOfYoth 1)
-    { cdCardTraits = singleton Monster
+    { cdHealthDamage = healthDamage 3
+    , cdSanityDamage = sanityDamage 2
+    , cdFight = fight 5
+    , cdEvade = evadeX
+    , cdHealth = health 6
+    , cdCardTraits = singleton Monster
     , cdKeywords = setFromList [Keyword.Hunter, Keyword.Massive]
     , cdVictoryPoints = Just 2
     }
@@ -211,7 +325,12 @@ ichtacaScionOfYig =
   unique
     $ doubleSided "04325b"
     $ (enemy "04325" ("Ichtaca" <:> "Scion of Yig") ShatteredAeons 1)
-      { cdCardTraits = setFromList [Humanoid, Monster, Serpent, Elite]
+      { cdHealthDamage = healthDamage 2
+      , cdSanityDamage = sanityDamage 1
+      , cdFight = fight 4
+      , cdEvade = evade 4
+      , cdHealth = healthPerInvestigator 6
+      , cdCardTraits = setFromList [Humanoid, Monster, Serpent, Elite]
       , cdKeywords = setFromList [Keyword.Hunter, Keyword.Retaliate]
       , cdVictoryPoints = Just 2
       }
@@ -221,7 +340,12 @@ alejandroVela =
   unique
     $ doubleSided "04326b"
     $ (enemy "04326" ("Alejandro Vela" <:> "Or, Is He?") ShatteredAeons 1)
-      { cdCardTraits = setFromList [Humanoid, Cultist, Elite]
+      { cdHealthDamage = healthDamage 1
+      , cdSanityDamage = sanityDamage 2
+      , cdFight = fight 6
+      , cdEvade = evade 3
+      , cdHealth = healthPerInvestigator 4
+      , cdCardTraits = setFromList [Humanoid, Cultist, Elite]
       , cdKeywords = setFromList [Keyword.Alert, Keyword.Hunter]
       , cdVictoryPoints = Just 2
       }
@@ -229,7 +353,12 @@ alejandroVela =
 formlessSpawn :: CardDef
 formlessSpawn =
   (enemy "04337" ("Formless Spawn" <:> "From the Abyss") ShatteredAeons 1)
-    { cdCardTraits = setFromList [Monster, Abomination, Elite]
+    { cdHealthDamage = healthDamage 3
+    , cdSanityDamage = sanityDamage 3
+    , cdFight = fight 2
+    , cdEvade = evade 2
+    , cdHealth = health 10
+    , cdCardTraits = setFromList [Monster, Abomination, Elite]
     , cdKeywords = singleton Keyword.Massive
     , cdVictoryPoints = Just 2
     }
@@ -237,6 +366,11 @@ formlessSpawn =
 temporalDevourer :: CardDef
 temporalDevourer =
   (enemy "04338" "Temporal Devourer" ShatteredAeons 2)
-    { cdCardTraits = setFromList [Monster, Extradimensional]
+    { cdHealthDamage = healthDamage 1
+    , cdSanityDamage = sanityDamage 1
+    , cdFight = fight 4
+    , cdEvade = evade 4
+    , cdHealth = health 5
+    , cdCardTraits = setFromList [Monster, Extradimensional]
     , cdKeywords = singleton Keyword.Hunter
     }

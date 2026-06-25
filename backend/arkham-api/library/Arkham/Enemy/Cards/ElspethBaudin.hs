@@ -3,22 +3,21 @@ module Arkham.Enemy.Cards.ElspethBaudin (elspethBaudin) where
 import Arkham.Ability
 import Arkham.Enemy.Cards qualified as Cards
 import Arkham.Enemy.Import.Lifted
-import Arkham.Helpers.FlavorText
-import Arkham.Helpers.GameValue (perPlayer)
 import Arkham.Helpers.Modifiers (ModifierType (..), modifySelf)
 import Arkham.Helpers.SkillTest (getSkillTestAction, getSkillTestTargetedEnemy)
+import Arkham.Helpers.Story (readStoryWithPlacement)
 import Arkham.Matcher
 import Arkham.Message qualified as Msg
-import Arkham.Message.Lifted.Choose
 import Arkham.Scenarios.BadBlood.Helpers
 import Arkham.Scenarios.BadBlood.Meta
+import Arkham.Story.Cards qualified as Stories
 
 newtype ElspethBaudin = ElspethBaudin EnemyAttrs
   deriving anyclass IsEnemy
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
 
 elspethBaudin :: EnemyCard ElspethBaudin
-elspethBaudin = enemy ElspethBaudin Cards.elspethBaudin (8, PerPlayer 4, 8) (2, 2)
+elspethBaudin = enemy ElspethBaudin Cards.elspethBaudin
 
 instance HasModifiersFor ElspethBaudin where
   getModifiersFor (ElspethBaudin a) = do
@@ -40,17 +39,14 @@ instance RunMessage ElspethBaudin where
       if viaEvasion
         then ElspethBaudin <$> liftRunMessage msg attrs
         else pure e
-    UseThisAbility _ (isSource attrs -> True) 1 -> do
+    UseThisAbility iid (isSource attrs -> True) 1 -> do
       cancelEnemyDefeat attrs.id
       healAllDamage (attrs.ability 1) attrs
-      scenarioI18n $ scope "elspethBaudin" $ flavor $ h "title" >> p "body"
-      whenJustM (selectOne agnesBaker) \agnes -> do
-        n <- (.elspethMemories) <$> getBadBloodMeta
-        clues <- perPlayer 2
-        scenarioI18n $ chooseOrRunOneM agnes do
-          when (n > 0) $ labeled' "collectMemoryFromElspeth" agnesStealsMemory
-          countVar clues $ labeled' "gainCluesFromTokenBank" $ gainClues agnes (attrs.ability 1) clues
+      flipOverBy iid (attrs.ability 1) attrs
       exhaustThis attrs
       disengageFromAll attrs
+      pure e
+    Flip iid _source (isTarget attrs -> True) -> do
+      readStoryWithPlacement iid attrs Stories.triumphAndSubjugation (enemyPlacement attrs)
       pure e
     _ -> ElspethBaudin <$> liftRunMessage msg attrs

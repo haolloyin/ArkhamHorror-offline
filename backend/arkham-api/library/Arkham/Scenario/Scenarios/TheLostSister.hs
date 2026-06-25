@@ -14,7 +14,7 @@ import Arkham.EncounterSet qualified as Set
 import Arkham.Enemy.Cards qualified as Enemies
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Modifiers (ModifierType (..), modifySelect)
-import Arkham.Helpers.Query (allInvestigators)
+import Arkham.Helpers.Query (allInvestigators, getLead)
 import Arkham.Helpers.SkillTest (withSkillTest)
 import Arkham.Helpers.Xp
 import Arkham.I18n
@@ -33,7 +33,6 @@ import Arkham.Scenario.Deck
 import Arkham.Scenario.Import.Lifted
 import Arkham.ScenarioLogKey
 import Arkham.Scenarios.TheLostSister.Helpers
-import Arkham.Story.Cards qualified as Stories
 import Arkham.Trait (Trait (Abomination, Cave, Dark))
 
 newtype TheLostSister = TheLostSister ScenarioAttrs
@@ -68,20 +67,26 @@ instance RunMessage TheLostSister where
       day <- getCampaignDay
       time <- getCampaignTime
       let isNight = time == Night
-      story $ i18nWithTitle "intro1"
       flavor do
+        h "title"
+        p "intro1"
         p.basic "body"
         ul $ li.nested.validate isNight "nightSkip" do
           li.validate (not isNight && day == Day1) "day1"
           li.validate (not isNight && day == Day2) "day2"
           li.validate (not isNight && day == Day3) "day3"
-      case (day, time) of
-        (Day1, Day) -> story $ i18nWithTitle "intro2"
-        (Day2, Day) -> story $ i18nWithTitle "intro3"
-        (Day3, Day) -> story $ i18nWithTitle "intro4"
-        _ -> story $ i18nWithTitle "intro5"
+      flavor do
+        h "title"
+        p $ case (day, time) of
+          (Day1, Day) -> "intro2"
+          (Day2, Day) -> "intro3"
+          (Day3, Day) -> "intro4"
+          _ -> "intro5"
       pure s
     Setup -> runScenarioSetup TheLostSister attrs do
+      day <- getCampaignDay
+      time <- getCampaignTime
+
       setup $ ul do
         li "gatherSets"
         li "currentDaySet"
@@ -93,13 +98,21 @@ instance RunMessage TheLostSister where
           li "removeTwoCaves"
           li "shuffleCavernsDeck"
           li "putTopThree"
-        li.nested "dayResidents" do
-          li "helenPeters"
-          li "theoPeters"
-          li "gideonMizrah"
-          li "williamHemlock"
-          li "removeResidents"
-        li.nested "nightResidents" do
+        li.nested.validate (time == Day) "dayResidents" do
+          if time == Day
+            then do
+              li "helenPeters"
+              li.validate (day == Day1 || day == Day2) "theoPeters"
+              li.validate (day == Day2 || day == Day3) "gideonMizrah"
+              li.validate (day == Day3) "williamHemlock"
+              li "removeResidents"
+            else do
+              li "helenPeters"
+              li "theoPeters"
+              li "gideonMizrah"
+              li "williamHemlock"
+              li "removeResidents"
+        li.nested.validate (time == Night) "nightResidents" do
           li "helenPetersNight"
           li "removeResidentsNight"
         li "setAsideEnemies"
@@ -118,28 +131,11 @@ instance RunMessage TheLostSister where
       gather Set.Myconids
 
       -- do not setScenarioDayAndTime
-      day <- getCampaignDay
-      time <- getCampaignTime
       gameModifier ScenarioSource ScenarioTarget (ScenarioModifierValue "day" (toJSON day))
       -- We default the time to Day, locations will apply Night to enemies/investigators directly
       gameModifier ScenarioSource ScenarioTarget (ScenarioModifierValue "time" (toJSON Day))
 
-      case day of
-        Day1 -> do
-          gather Set.TheFirstDay
-          placeStory $ case time of
-            Day -> Stories.dayOne
-            Night -> Stories.nightOne
-        Day2 -> do
-          gather Set.TheSecondDay
-          placeStory $ case time of
-            Day -> Stories.dayTwo
-            Night -> Stories.nightTwo
-        Day3 -> do
-          gather Set.TheFinalDay
-          placeStory $ case time of
-            Day -> Stories.dayThree
-            Night -> Stories.nightThree
+      setupHemlockDay day time
 
       setAgendaDeck [Agendas.intoTheCaves, Agendas.darknessClosesIn]
       setActDeck [Acts.theMissingSibling, Acts.onTheTrail, Acts.faceToCarapace]
@@ -381,5 +377,18 @@ instance RunMessage TheLostSister where
           record $ AreasSurveyed AkwanShoreline
           endOfScenario
         _ -> error "invalid resolution"
+      pure s
+    ScenarioSpecific "locationDarknessChanged" v -> do
+      let (lid, before, after) = toResult v :: (LocationId, Bool, Bool)
+      when (before /= after) do
+        lead <- getLead
+        -- "after" is the new darkness of the location; flip the hybrids that are on
+        -- the wrong side onto the side that matches it.
+        let wrongSide =
+              if after
+                then [Enemies.crustaceanHybridInTheLight, Enemies.limulusHybridInTheLight]
+                else [Enemies.crustaceanHybridInTheDark, Enemies.limulusHybridInTheDark]
+        selectEach (EnemyAt (LocationWithId lid) <> mapOneOf enemyIs wrongSide) \eid ->
+          flipOverBy lead attrs eid
       pure s
     _ -> TheLostSister <$> liftRunMessage msg attrs

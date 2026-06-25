@@ -60,7 +60,9 @@ westernWall_11530 =
 -- TODO: back side of double-sided card (11532b)
 underseaVault :: CardDef
 underseaVault =
-  victory 1 $ location_ "11532" "Undersea Vault" [Vault, Glyph] TheWesternWall
+  storyOnBack' "11532b"
+    $ victory 1
+    $ location_ "11532" "Undersea Vault" [Vault, Glyph] TheWesternWall
 
 -- The Drowned Quarter
 -- TODO: back side of double-sided card (11540b)
@@ -116,47 +118,62 @@ apiaryEntranceDangerousExit =
 
 fleshyPathsEasternBurrows :: CardDef
 fleshyPathsEasternBurrows =
-  location_ "11560" ("Fleshy Paths" <:> "Eastern Burrows") [Apiary] TheApiary
+  singleSided
+    $ location_ "11560" ("Fleshy Paths" <:> "Eastern Burrows") [Apiary] TheApiary
 
 fleshyPathsWesternBurrows :: CardDef
 fleshyPathsWesternBurrows =
-  victory 1 $ location_ "11561" ("Fleshy Paths" <:> "Western Burrows") [Apiary, Glyph] TheApiary
+  singleSided
+    $ victory 1
+    $ location_ "11561" ("Fleshy Paths" <:> "Western Burrows") [Apiary, Glyph] TheApiary
 
 growingFields :: CardDef
 growingFields =
-  location_ "11562" "Growing Fields" [Apiary] TheApiary
+  singleSided
+    $ location_ "11562" "Growing Fields" [Apiary] TheApiary
 
 churningChasm :: CardDef
 churningChasm =
-  location_ "11563" "Churning Chasm" [Apiary] TheApiary
+  singleSided
+    $ location_ "11563" "Churning Chasm" [Apiary] TheApiary
 
 corruptedVault :: CardDef
 corruptedVault =
-  victory 1 $ location_ "11564" "Corrupted Vault" [Apiary, Glyph] TheApiary
+  singleSided
+    $ victory 1
+    $ location_ "11564" "Corrupted Vault" [Apiary, Glyph] TheApiary
 
 luminousTunnels :: CardDef
 luminousTunnels =
-  location_ "11565" "Luminous Tunnels" [Apiary, Enclave] TheApiary
+  singleSided
+    $ location_ "11565" "Luminous Tunnels" [Apiary, Enclave] TheApiary
 
 spawningGrounds :: CardDef
 spawningGrounds =
-  location_ "11566" "Spawning Grounds" [Apiary, Enclave] TheApiary
+  singleSided
+    $ location_ "11566" "Spawning Grounds" [Apiary, Enclave] TheApiary
 
 lostCampsite :: CardDef
 lostCampsite =
-  victory 1 $ location_ "11567" "Lost Campsite" [Apiary, Enclave, Sanctum] TheApiary
+  singleSided
+    $ victory 1
+    $ location_ "11567" "Lost Campsite" [Apiary, Enclave, Sanctum] TheApiary
 
 graspingCorridor :: CardDef
 graspingCorridor =
-  location_ "11569" "Grasping Corridor" [Apiary, Nest] TheApiary
+  singleSided
+    $ location_ "11569" "Grasping Corridor" [Apiary, Nest] TheApiary
 
 starvingCorridor :: CardDef
 starvingCorridor =
-  location_ "11570" "Starving Corridor" [Apiary, Nest] TheApiary
+  singleSided
+    $ location_ "11570" "Starving Corridor" [Apiary, Nest] TheApiary
 
 acidicCoelom :: CardDef
 acidicCoelom =
-  victory 1 $ location_ "11571" "Acidic Coelom" [Apiary, Nest, Sanctum] TheApiary
+  singleSided
+    $ victory 1
+    $ location_ "11571" "Acidic Coelom" [Apiary, Nest, Sanctum] TheApiary
 
 centralChamber :: CardDef
 centralChamber =
@@ -165,7 +182,9 @@ centralChamber =
 -- TODO: back side of double-sided card (11579b)
 hiddenVault :: CardDef
 hiddenVault =
-  victory 1 $ location_ "11579" "Hidden Vault" [Apiary, Glyph] TheApiary
+  storyOnBack' "11579b"
+    $ victory 1
+    $ location_ "11579" "Hidden Vault" [Apiary, Glyph] TheApiary
 
 -- The Grand Vault
 theGreatStair :: CardDef
@@ -178,7 +197,11 @@ movingPlatformObservationStation =
 
 coreOfTheVaultHeartOfTheMachine :: CardDef
 coreOfTheVaultHeartOfTheMachine =
-  location_ "11595" ("Core of the Vault" <:> "Heart of the Machine") [Rlyeh, Sanctum, Glyph] TheGrandVault
+  location_
+    "11595"
+    ("Core of the Vault" <:> "Heart of the Machine")
+    [Rlyeh, Sanctum, Glyph]
+    TheGrandVault
 
 shroudedCistern :: CardDef
 shroudedCistern =
@@ -206,7 +229,11 @@ otherworldlyMechanismsGrimeCoveredGears =
 
 otherworldlyMechanismsInscrutableApparatus :: CardDef
 otherworldlyMechanismsInscrutableApparatus =
-  location_ "11603" ("Otherworldly Mechanisms" <:> "Inscrutable Apparatus") [Rlyeh, Vault] TheGrandVault
+  location_
+    "11603"
+    ("Otherworldly Mechanisms" <:> "Inscrutable Apparatus")
+    [Rlyeh, Vault]
+    TheGrandVault
 
 chamberOfTheTabletUnsealed :: CardDef
 chamberOfTheTabletUnsealed =
@@ -256,7 +283,11 @@ loftyWalkwayArchiveOfConflict =
 
 luminousArchivesArchiveOfHistory :: CardDef
 luminousArchivesArchiveOfHistory =
-  location_ "11628" ("Luminous Archives" <:> "Archive of History") [Rlyeh, Passageway] CourtOfTheAncients
+  location_
+    "11628"
+    ("Luminous Archives" <:> "Archive of History")
+    [Rlyeh, Passageway]
+    CourtOfTheAncients
 
 luminousArchivesArchiveOfMemory :: CardDef
 luminousArchivesArchiveOfMemory =
@@ -322,7 +353,9 @@ magneticSpires =
 -- TODO: back side of double-sided card (11662b)
 glyphOrrery :: CardDef
 glyphOrrery =
-  victory 1 $ location_ "11662" "Glyph Orrery" [Rlyeh, Summit, Glyph] ObsidianCanyons
+  storyOnBack' "11662b"
+    $ victory 1
+    $ location_ "11662" "Glyph Orrery" [Rlyeh, Summit, Glyph] ObsidianCanyons
 
 -- Sepulchre of the Sleeper
 dreamersRest :: CardDef
@@ -331,29 +364,54 @@ dreamersRest =
 
 sigilCarvedAlcoveStoryOfAmbition :: CardDef
 sigilCarvedAlcoveStoryOfAmbition =
-  location_ "11677" ("Sigil-Carved Alcove" <:> "Story of Ambition") [Rlyeh, Glyph] SepulchreOfTheSleeper
+  location_
+    "11677"
+    ("Sigil-Carved Alcove" <:> "Story of Ambition")
+    [Rlyeh, Glyph]
+    SepulchreOfTheSleeper
 
 sigilCarvedAlcoveStoryOfResilience :: CardDef
 sigilCarvedAlcoveStoryOfResilience =
-  location_ "11678" ("Sigil-Carved Alcove" <:> "Story of Resilience") [Rlyeh, Glyph] SepulchreOfTheSleeper
+  location_
+    "11678"
+    ("Sigil-Carved Alcove" <:> "Story of Resilience")
+    [Rlyeh, Glyph]
+    SepulchreOfTheSleeper
 
 sigilCarvedAlcoveStoryOfInfinity :: CardDef
 sigilCarvedAlcoveStoryOfInfinity =
-  location_ "11679" ("Sigil-Carved Alcove" <:> "Story of Infinity") [Rlyeh, Glyph] SepulchreOfTheSleeper
+  location_
+    "11679"
+    ("Sigil-Carved Alcove" <:> "Story of Infinity")
+    [Rlyeh, Glyph]
+    SepulchreOfTheSleeper
 
 sigilCarvedAlcoveStoryOfDefiance :: CardDef
 sigilCarvedAlcoveStoryOfDefiance =
-  location_ "11680" ("Sigil-Carved Alcove" <:> "Story of Defiance") [Rlyeh, Glyph] SepulchreOfTheSleeper
+  location_
+    "11680"
+    ("Sigil-Carved Alcove" <:> "Story of Defiance")
+    [Rlyeh, Glyph]
+    SepulchreOfTheSleeper
 
 sigilCarvedAlcoveStoryOfTheVoyage :: CardDef
 sigilCarvedAlcoveStoryOfTheVoyage =
-  location_ "11681" ("Sigil-Carved Alcove" <:> "Story of the Voyage") [Rlyeh, Glyph] SepulchreOfTheSleeper
+  location_
+    "11681"
+    ("Sigil-Carved Alcove" <:> "Story of the Voyage")
+    [Rlyeh, Glyph]
+    SepulchreOfTheSleeper
 
 -- The Doom of Arkham, Part I
 tillinghastEsotericaEphemeralShop :: CardDef
 tillinghastEsotericaEphemeralShop =
-  victory 1
-    $ location_ "11685" ("Tillinghast Esoterica" <:> "Ephemeral Shop") [Sanctum, Extradimensional] TheDoomOfArkhamPartI
+  singleSided
+    $ victory 1
+    $ location_
+      "11685"
+      ("Tillinghast Esoterica" <:> "Ephemeral Shop")
+      [Sanctum, Extradimensional]
+      TheDoomOfArkhamPartI
 
 -- The Doom of Arkham, Part II
 northsideTheDrownedCity :: CardDef

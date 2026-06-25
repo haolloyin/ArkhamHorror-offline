@@ -138,7 +138,25 @@ const skipTriggersAction = computed(() => {
 
 const skipAllTriggers = inject<(() => void)>('skipAllTriggers')
 const skipAllAvailable = inject<Ref<boolean>>('skipAllAvailable')
-const showSkipAll = computed(() => skipTriggersAction.value !== -1 && skipAllAvailable?.value === true)
+const skipAllInProgress = inject<Ref<boolean>>('skipAllInProgress')
+const solo = inject<Ref<boolean>>('solo')
+const isCurrentPlayersInvestigator = computed(() => props.investigator.playerId === props.playerId)
+const showSkipAll = computed(() => {
+  if (solo?.value === true) {
+    return skipTriggersAction.value !== -1 && skipAllAvailable?.value === true
+  }
+
+  return isCurrentPlayersInvestigator.value && skipAllAvailable?.value === true
+})
+// "Skip Triggers" skips only the current player's own window; it is greyed out
+// when this investigator has no window of their own. "Skip All" (showSkipAll) is
+// a separate button that handles the other players' windows.
+const canSkipTriggers = computed(() => skipTriggersAction.value !== -1)
+
+function skipTriggers() {
+  if (skipTriggersAction.value === -1) return
+  emit('choose', skipTriggersAction.value)
+}
 
 const investigatorClass = computed(() => {
   return ['c03006', 'c90087'].includes(props.investigator.cardCode) && props.investigator.meta !== 'Neutral' ? (props.investigator.meta ?? props.investigator.class) : props.investigator.class
@@ -174,6 +192,33 @@ const investigatorPortraitImage = computed(() => {
 
   return portraitImage(props.investigator.cardCode, suffix)
 })
+
+const miniCardDevoured = computed(() => {
+  const devouredMiniCards = props.game.scenario?.meta?.devouredMiniCards
+  return Array.isArray(devouredMiniCards) && devouredMiniCards.includes(id.value)
+})
+
+const replacementMiniCardInitials = computed(() => {
+  const name = props.investigator.name.title
+    .replace(/["“”']/g, '')
+    .replace(/\([^)]*\)/g, '')
+    .trim()
+  const words = name.split(/\s+/).filter(Boolean)
+  if (words.length === 0) return '?'
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase()
+  return `${words[0][0]}${words[words.length - 1][0]}`.toUpperCase()
+})
+
+const replacementMiniCardStyle = computed(() => ({
+  '--replacement-class-color': `var(--${investigatorClass.value.toLowerCase()})`,
+}))
+
+const portraitClasses = computed(() => ({
+  'investigator--can-interact--portrait': investigatorAction.value !== -1,
+  ethereal: ethereal.value,
+  dragging: dragging.value,
+  captured: captured.value,
+}))
 
 const emitter = useEmitter()
 const cardsUnderneath = computed(() => props.investigator.cardsUnderneath)
@@ -399,10 +444,28 @@ const spadeInjury = computed(() => {
         <line x1="5" y1="5" x2="19" y2="19" />
       </svg>
     </span>
+    <div
+      v-if="miniCardDevoured"
+      class="portrait portrait--replacement-marker portrait--devoured-mini-card"
+      :class="portraitClasses"
+      :style="replacementMiniCardStyle"
+      :draggable="debug.active"
+      v-tooltip="investigator.name.title"
+      @click="$emit('choose', investigatorAction)"
+      @dragstart="startDrag($event)"
+      @dragstop="endDrag"
+      @drop="onDrop($event)"
+      @dragover.prevent="dragover($event)"
+      @dragenter.prevent
+    >
+      {{ replacementMiniCardInitials }}
+      <img class="portrait--blob-overlay" :src="imgsrc('extra/the-blob-that-ate-everything/blob-overlay.png')" alt="" aria-hidden="true" />
+    </div>
     <img
+      v-else
       :src="investigatorPortraitImage"
       class="portrait"
-      :class="{ 'investigator--can-interact--portrait': investigatorAction !== -1, ethereal, dragging, captured }"
+      :class="portraitClasses"
       :draggable="debug.active"
       @click="$emit('choose', investigatorAction)"
       @dragstart="startDrag($event)"
@@ -437,7 +500,7 @@ const spadeInjury = computed(() => {
       </div>
       <div>
         <div class="player-buttons">
-          <div class="button-group">
+          <div class="button-group" :class="{ 'button-group--skip-all-pending': isCurrentPlayersInvestigator && skipAllInProgress }">
             <span v-if="!isMobile" class="action-container">
               <i class="spade" v-if="spadeInjury"></i>
               <i class="heart" v-if="heartInjury"></i>
@@ -488,8 +551,8 @@ const spadeInjury = computed(() => {
 
             <span class="skip-triggers-group" :class="{ 'skip-triggers-group--paired': showSkipAll }">
               <button
-                :disabled="skipTriggersAction == -1"
-                @click="$emit('choose', skipTriggersAction)"
+                :disabled="!canSkipTriggers || skipAllInProgress"
+                @click="skipTriggers"
                 class="skip-triggers-button"
               >{{ isMobile ? t('skip') : $t('investigator.skipTriggers') }}</button>
               <button
@@ -723,7 +786,7 @@ i.action {
   :deep(span) {
     height: 0.87rem;
     overflow: visible;
-    z-index: 10;
+    z-index: var(--z-index-10);
   }
   :deep(.action) {
     font-size: 0.35rem;
@@ -733,6 +796,38 @@ i.action {
 .portrait {
   border-radius: 3px;
   width: calc(var(--card-width) * 0.6);
+}
+
+.portrait--replacement-marker {
+  aspect-ratio: 2 / 3;
+  border: 2px dashed color-mix(in srgb, var(--replacement-class-color) 70%, white);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--replacement-class-color) 82%, black), var(--replacement-class-color));
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: calc(var(--card-width) * 0.24);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 75%);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 20%);
+  box-sizing: border-box;
+  user-select: none;
+}
+
+.portrait--devoured-mini-card {
+  position: relative;
+  overflow: visible;
+}
+
+.portrait--blob-overlay {
+  position: absolute;
+  inset: -2px;
+  width: calc(100% + 4px);
+  height: calc(100% + 4px);
+  border-radius: inherit;
+  pointer-events: none;
 }
 
 .supplies {
@@ -894,6 +989,17 @@ i.action {
   }
 }
 
+.button-group--skip-all-pending > :not(.skip-triggers-group) {
+  opacity: 0.35;
+  filter: grayscale(1);
+  pointer-events: none;
+}
+
+.button-group--skip-all-pending .skip-triggers-button {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
 .player-buttons {
   margin-left: 10px;
   display: flex;
@@ -996,7 +1102,7 @@ i.action {
   color: #e05252;
   filter: drop-shadow(0 1px 4px rgba(0,0,0,0.7));
   cursor: default;
-  z-index: 2;
+  z-index: var(--z-index-2);
   display: flex;
   align-items: center;
   justify-content: center;

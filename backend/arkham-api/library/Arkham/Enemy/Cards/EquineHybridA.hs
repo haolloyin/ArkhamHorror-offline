@@ -14,7 +14,7 @@ newtype EquineHybridA = EquineHybridA EnemyAttrs
 
 equineHybridA :: EnemyCard EquineHybridA
 equineHybridA =
-  enemy EquineHybridA Cards.equineHybridA (2, Static 3, 2) (2, 0)
+  enemy EquineHybridA Cards.equineHybridA
     & setSpawnAt (LocationInPosition $ Pos 0 2)
 
 instance HasModifiersFor EquineHybridA where
@@ -26,7 +26,7 @@ instance HasAbilities EquineHybridA where
     extend1 a
       $ mkAbility a 1
       $ forced
-      $ EnemyTakeDamage #when AnyDamageEffect (be a) AnyValue AnySource
+      $ EnemyTakeDamage #when AnyDamageEffect (be a) (atLeast 2) AnySource
 
 instance RunMessage EquineHybridA where
   runMessage msg e@(EquineHybridA attrs) = runQueueT $ case msg of

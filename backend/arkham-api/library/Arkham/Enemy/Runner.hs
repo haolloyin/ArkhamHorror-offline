@@ -185,6 +185,7 @@ filterOutEnemyMessages eid ask'@(Ask pid q) = case q of
   PickScenarioSettings -> Just (Ask pid PickScenarioSettings)
   PickCampaignSettings -> Just (Ask pid PickCampaignSettings)
   PickCampaignSpecific {} -> Just ask'
+  PickScenarioSpecific {} -> Just ask'
   ChooseExchangeAmounts {} -> Just ask'
   ContinueCampaign {} -> Just ask'
 filterOutEnemyMessages eid msg = case msg of
@@ -550,6 +551,15 @@ instance RunMessage EnemyAttrs where
         AsSwarm eid' _ -> do
           push $ EnemyEntered eid' lid
           pure a
+        -- The enemy was in play when this move was created but has since left
+        -- play (e.g. an act objective firing on its engagement set it aside).
+        -- Abort the entry so the stale move can't drag it back into play. Spawns
+        -- (which carry enemySpawnDetails) are a legitimate out-of-play entry.
+        _
+          | isNothing enemySpawnDetails
+              && maybe False moveFromInPlay enemyMovement
+              && isOutOfPlayPlacement enemyPlacement ->
+              pure a
         _ -> do
           swarm <- select $ SwarmOf eid
           -- If enemySpawnDetails is present it means this enemy is using the
@@ -731,7 +741,7 @@ instance RunMessage EnemyAttrs where
           push
             $ chooseOrRunOne player
             $ [targetLabel lid [Move $ movement {moveDestination = ToLocation lid}] | lid <- lids]
-      pure $ a & movementL ?~ movement
+      pure $ a & movementL ?~ movement {moveFromInPlay = isInPlayPlacement enemyPlacement}
     EnemyMove eid lid | eid == enemyId -> case enemyPlacement of
       AsSwarm eid' _ -> do
         push $ EnemyMove eid' lid
@@ -741,6 +751,18 @@ instance RunMessage EnemyAttrs where
         if willMove
           then do
             batchId <- getRandom
+            -- The `Move` path records `enemyMovement` (with its `moveFromInPlay`
+            -- flag) before pushing EnemyMove, but MoveToward/MoveUntil/hunter
+            -- moves reach EnemyMove directly without it. Record it here when
+            -- absent so that if the enemy leaves play mid-move (e.g. a forced
+            -- ability fires in the enter window and removes it) the `Do EnemyMove`
+            -- / `EnemyEntered` guards abort the placement instead of dragging the
+            -- removed enemy back into play.
+            mMovement <- case enemyMovement of
+              Just _ -> pure enemyMovement
+              Nothing -> do
+                m <- move (toSource eid) (toTarget eid) lid
+                pure $ Just m {moveFromInPlay = isInPlayPlacement enemyPlacement}
             mRunWouldMove <- runMaybeT do
               from <- MaybeT $ getLocationOf eid
               let source = fromMaybe (toSource eid) a.movement.source
@@ -762,7 +784,7 @@ instance RunMessage EnemyAttrs where
             -- causes After (EnemyEntered) to re-emit the after-EnemySpawns
             -- window at the new location, re-firing enters-play abilities
             -- in an infinite loop.
-            pure $ a & spawnDetailsL .~ Nothing
+            pure $ a & spawnDetailsL .~ Nothing & movementL .~ mMovement
           else do
             push (EnemyCheckEngagement eid)
             pure a
@@ -771,7 +793,13 @@ instance RunMessage EnemyAttrs where
       -- adjust the placement as it will affect engagement (such as Knight of
       -- the Inner Circle)
       current <- getLocationOf enemyId
-      if current == Just lid
+      -- Don't drag an enemy back into play if it left play (e.g. was set aside)
+      -- after this in-play move was queued.
+      let leftPlayMidMove =
+            isNothing enemySpawnDetails
+              && maybe False moveFromInPlay enemyMovement
+              && isOutOfPlayPlacement enemyPlacement
+      if current == Just lid || leftPlayMidMove
         then pure a
         else pure $ a & placementL .~ AtLocation lid
     After (EndTurn _) | not enemyDefeated -> a <$ push (EnemyCheckEngagement $ toId a)
@@ -1811,6 +1839,13 @@ instance RunMessage EnemyAttrs where
         <> [UnsealChaosToken token | token <- enemySealedChaosTokens]
         <> [RemoveEnemy a.id]
       pure a
+    RemovedFromPlay source -> do
+      -- An enemy attached to something (e.g. Cavern Moss on an Item asset) is
+      -- discarded when that thing leaves play, mirroring attached treacheries.
+      case placementToAttached a.placement of
+        Just target | isTarget target (sourceToTarget source) -> push $ toDiscard GameSource a
+        _ -> pure ()
+      pure a
     ShuffleBackIntoEncounterDeck source (isTarget a -> True) -> do
       mods <- getModifiers (toTarget a)
       blocked <-
@@ -1957,7 +1992,14 @@ instance RunMessage EnemyAttrs where
         getForcedSpawnAt (ForceSpawnLocation m : _) = Just $ SpawnAt m
         getForcedSpawnAt (ForceSpawn m : _) = Just m
         getForcedSpawnAt (_ : xs) = getForcedSpawnAt xs
-      case getForcedSpawnAt mods of
+        getOverwrittenSpawnAt [] = Nothing
+        getOverwrittenSpawnAt (OverwrittenSpawn m : _) = Just m
+        getOverwrittenSpawnAt (_ : xs) = getOverwrittenSpawnAt xs
+      -- ForceSpawn (On the Hunt, Kicking the Hornet's Nest) always wins; an
+      -- OverwrittenSpawn (a scenario rule replacing an enemy's normal spawn,
+      -- e.g. Dead Heat forcing Ghoul/Risen enemies to a random location) only
+      -- applies when no ForceSpawn is present.
+      case getForcedSpawnAt mods <|> getOverwrittenSpawnAt mods of
         Just matcher -> spawnAt enemyId (Just iid) (replaceYouMatcher iid matcher)
         Nothing -> do
           gatherConcealedCards a.id >>= \case
@@ -2003,11 +2045,19 @@ instance RunMessage EnemyAttrs where
                         then do
                           canBeEngaged <- matches iid (InvestigatorCanBeEngagedBy eid)
                           isAloof <- matches eid AloofEnemy
+                          -- An enemy with an exclusive prey ("Prey - X only") never
+                          -- automatically engages a non-prey investigator on spawn. When
+                          -- a non-prey investigator draws it, it spawns unengaged via the
+                          -- prey-aware SpawnAtLocation path (which only engages its prey).
+                          prey <- getPreyMatcher a
+                          onlyPreyAllows <- case prey of
+                            OnlyPrey _ -> (iid `elem`) <$> select prey
+                            _ -> pure True
                           pushAll
                             $ resolve
                             $ EnemySpawn
                             $ ( mkSpawnDetails eid
-                                  $ if canBeEngaged && not isAloof
+                                  $ if canBeEngaged && not isAloof && onlyPreyAllows
                                     then SpawnEngagedWith (InvestigatorWithId iid)
                                     else SpawnAtLocation lid
                               )
@@ -2077,6 +2127,9 @@ instance RunMessage EnemyAttrs where
     MoveTokens s source _ tType n | isSource a source -> liftRunMessage (RemoveTokens s (toTarget a) tType n) a
     MoveTokens _s (InvestigatorSource _) target Clue _ | isTarget a target -> pure a
     MoveTokens s _ target tType n | isTarget a target -> liftRunMessage (PlaceTokens s (toTarget a) tType n) a
+    MoveTokensNoDefeated s source _ tType n | isSource a source -> liftRunMessage (RemoveTokens s (toTarget a) tType n) a
+    MoveTokensNoDefeated _s _ target tType n | isTarget a target -> do
+      pure $ a & tokensL %~ addTokens tType n
     PlaceTokens source target token n | isTarget a target -> do
       if token == #doom
         then do

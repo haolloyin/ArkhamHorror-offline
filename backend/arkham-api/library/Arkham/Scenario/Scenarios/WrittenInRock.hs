@@ -32,7 +32,6 @@ import Arkham.Projection
 import Arkham.Resolution
 import Arkham.Scenario.Import.Lifted
 import Arkham.Scenarios.WrittenInRock.Helpers
-import Arkham.Story.Cards qualified as Stories
 import Arkham.Token
 import Arkham.Trait (Trait (Cave, Rail))
 
@@ -85,9 +84,16 @@ instance HasChaosTokenValue WrittenInRock where
 instance RunMessage WrittenInRock where
   runMessage msg s@(WrittenInRock attrs) = runQueueT $ scenarioI18n $ case msg of
     PreScenarioSetup -> do
-      story $ i18nWithTitle "intro"
+      flavor $ scope "intro" do
+        h "title"
+        p "body"
       pure s
     Setup -> runScenarioSetup WrittenInRock attrs do
+      setScenarioDayAndTime
+
+      day <- getCampaignDay
+      time <- getCampaignTime
+
       setup $ ul do
         li "gatherSets"
         li "currentDaySet"
@@ -96,12 +102,19 @@ instance RunMessage WrittenInRock where
         li "otherLocations"
         li.nested "scrap" do
           li "startAt"
-        li.nested "residents" do
-          li "riverHawthorne"
-          li "simeonAtwood"
-          li "leahAtwood"
-          li "remainingResidents"
-        li "subterraneanBeast"
+        li.nested.validate (time == Day) "residents" do
+          if time == Day
+            then do
+              li.validate (day == Day1) "riverHawthorne"
+              li.validate (day /= Day3) "simeonAtwood"
+              li.validate (day == Day3) "leahAtwood"
+              li "remainingResidents"
+            else do
+              li "riverHawthorne"
+              li "simeonAtwood"
+              li "leahAtwood"
+              li "remainingResidents"
+        li.validate (time == Day) "subterraneanBeast"
         li "scenarioReference"
         li "setOutOfPlay"
         unscoped $ li "shuffleRemainder"
@@ -116,30 +129,12 @@ instance RunMessage WrittenInRock where
 
       setAgendaDeck [Agendas.undergroundSurvey, Agendas.dangerousRide]
       setActDeck [Acts.descentIntoTheMines, Acts.theUndergroundMaze]
-      setScenarioDayAndTime
 
-      day <- getCampaignDay
-      time <- getCampaignTime
-
-      case day of
-        Day1 -> do
-          gather Set.TheFirstDay
-          placeStory $ case time of
-            Day -> Stories.dayOne
-            Night -> Stories.nightOne
-          setAside [Assets.simeonAtwoodDedicatedTroublemaker]
-        Day2 -> do
-          gather Set.TheSecondDay
-          placeStory $ case time of
-            Day -> Stories.dayTwo
-            Night -> Stories.nightTwo
-          setAside [Assets.simeonAtwoodDedicatedTroublemaker]
-        Day3 -> do
-          gather Set.TheFinalDay
-          placeStory $ case time of
-            Day -> Stories.dayThree
-            Night -> Stories.nightThree
-          setAside [Assets.leahAtwoodTheValeCook]
+      setupHemlockDay day time
+      when (time == Day) $ case day of
+        Day1 -> setAside [Assets.simeonAtwoodDedicatedTroublemaker]
+        Day2 -> setAside [Assets.simeonAtwoodDedicatedTroublemaker]
+        Day3 -> setAside [Assets.leahAtwoodTheValeCook]
 
       controlStation <- placeInGrid (Pos 5 1) Locations.controlStation
       placeTokens ScenarioSource controlStation Scrap 1
@@ -152,7 +147,7 @@ instance RunMessage WrittenInRock where
         loc <- placeCardInGrid (Pos x 1) cave
         placeTokens ScenarioSource loc Scrap 1
         when (x == 1) $ startAt loc
-        when (x == 3 && day == Day1) $ assetAt_ Assets.riverHawthorneBigInNewYork loc
+        when (x == 3 && day == Day1 && time == Day) $ assetAt_ Assets.riverHawthorneBigInNewYork loc
 
       when (time == Day) $ removeEvery [Enemies.subterraneanBeast]
       setAside =<< fromGathered (CardFromEncounterSet Set.WrittenInRock)
@@ -166,7 +161,7 @@ instance RunMessage WrittenInRock where
       when (n == 1) $ removeTokens Tablet attrs Scrap 1
       when (n == 2) do
         mineCart <- selectJust $ assetIs Assets.mineCartReliableButBroken
-        whenMatch mineCart (AssetWithModifier CannotMove)
+        whenMatch mineCart (not_ $ AssetWithModifier CannotMove)
           $ scenarioSpecific_ "moveMineCart"
       pure s
     ResolveChaosToken _ ElderThing iid | isHardExpert attrs -> do
@@ -189,7 +184,7 @@ instance RunMessage WrittenInRock where
           when (n == 1) $ removeTokens Tablet attrs Scrap 1
           when (n == 2) do
             mineCart <- selectJust $ assetIs Assets.mineCartReliableButBroken
-            whenMatch mineCart (AssetWithModifier CannotMove)
+            whenMatch mineCart (not_ $ AssetWithModifier CannotMove)
               $ scenarioSpecific_ "moveMineCart"
         ElderThing | isEasyStandard attrs -> do
           n <- getCurrentActStep
@@ -251,8 +246,6 @@ instance RunMessage WrittenInRock where
         questionLabeled' "mineCart.facing"
         labeled' "mineCart.faceNorth" $ scenarioSpecific "rotate" North
         labeled' "mineCart.faceEast" $ scenarioSpecific "rotate" East
-        labeled' "mineCart.faceSouth" $ scenarioSpecific "rotate" South
-        labeled' "mineCart.faceWest" $ scenarioSpecific "rotate" West
 
       doStep 3 msg -- ensure set aside cards are updated
       pure

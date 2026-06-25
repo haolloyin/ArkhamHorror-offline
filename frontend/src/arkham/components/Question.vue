@@ -13,7 +13,7 @@ import { AmountChoice, QuestionType, amountTargetUnmet } from '@/arkham/types/Qu
 import Card from '@/arkham/components/Card.vue';
 import * as ArkhamGame from '@/arkham/types/Game';
 import { tarotCardImage } from '@/arkham/types/TarotCard';
-import { cardImage, toCardContents } from '@/arkham/types/Card';
+import { cardImage, toCardContents, type Card as ArkhamCard, type CardContents } from '@/arkham/types/Card';
 import DropDown from '@/components/DropDown.vue';
 import Token from '@/arkham/components/Token.vue';
 import type { Game } from '@/arkham/types/Game';
@@ -43,6 +43,8 @@ function zoneToLabel(s: string) {
     case "FromDeck": return t("fromDeck")
     case "FromHand": return t("fromHand")
     case "FromDiscard": return t("fromDiscard")
+    case "FromEncounterDeck": return t("fromEncounterDeck")
+    case "FromEncounterDiscard": return t("fromEncounterDiscard")
     default: return s
   }
 }
@@ -78,18 +80,38 @@ const choosePaymentAmounts = inject<(amounts: Record<string, number>) => Promise
 const chooseAmounts = inject<(amounts: Record<string, number>) => Promise<void>>('chooseAmounts')
 const question = computed(() => props.game.question[props.playerId])
 const focusedChaosTokens = computed(() => props.game.focusedChaosTokens)
-const searchedCards = computed(() => {
-  const playerCards = Object.entries(investigator.value?.foundCards ?? [])
 
-  const playerZones = playerCards.filter(([, c]) => c.length > 0)
+type SearchedCardGroup = {
+  key: string
+  zone: string
+  label: string
+  cards: ArkhamCard[]
+}
+
+function searchedZoneLabel(zone: string, source: 'player' | 'encounter') {
+  if (source === 'encounter') {
+    switch (zone) {
+      case 'FromDeck': return t('fromEncounterDeck')
+      case 'FromDiscard': return t('fromEncounterDiscard')
+    }
+  }
+
+  return zoneToLabel(zone)
+}
+
+const searchedCards = computed<SearchedCardGroup[]>(() => {
+  const playerCards = Object.entries(investigator.value?.foundCards ?? {})
+    .filter(([, cards]) => cards.length > 0)
+    .map(([zone, cards]) => ({ key: `player-${zone}`, zone, label: searchedZoneLabel(zone, 'player'), cards }))
 
   const encounterCards = Object.entries({
     ...(props.game.scenario?.foundCards ?? {}),
     ...props.game.foundCards,
   })
-  const encounterZones = encounterCards.filter(([, c]) => c.length > 0)
+    .filter(([, cards]) => cards.length > 0)
+    .map(([zone, cards]) => ({ key: `encounter-${zone}`, zone, label: searchedZoneLabel(zone, 'encounter'), cards }))
 
-  return [...playerZones, ...encounterZones]
+  return [...playerCards, ...encounterCards]
 })
 
 const focusedCards = computed(() => {
@@ -100,10 +122,80 @@ const focusedCards = computed(() => {
   return props.game.focusedCards
 })
 
+function zoneTag(zone: unknown): string | null {
+  if (typeof zone === 'string') return zone
+  if (zone && typeof zone === 'object' && 'tag' in zone) return String((zone as { tag: unknown }).tag)
+  return null
+}
+
+function cardContentsId(card: CardContents): string {
+  return card.id
+}
+
+function focusedCardSourceLabel(cardId: string): string | null {
+  if (props.game.scenario?.discard.some((card) => cardContentsId(card) === cardId)) {
+    return t('fromEncounterDiscard')
+  }
+
+  if (props.game.scenario?.encounterDeck.some((card) => cardContentsId(card) === cardId)) {
+    return t('fromEncounterDeck')
+  }
+
+  for (const [, [deck, discard]] of Object.entries(props.game.scenario?.encounterDecks ?? {})) {
+    if (deck.some((card) => cardContentsId(card) === cardId)) return t('fromEncounterDeck')
+    if (discard.some((card) => cardContentsId(card) === cardId)) return t('fromEncounterDiscard')
+  }
+
+  const choice = choices.value.find((choice) => {
+    return choice.tag === MessageType.TARGET_LABEL
+      && choice.target.tag === 'CardIdTarget'
+      && choice.target.contents === cardId
+  })
+
+  if (!choice || choice.tag !== MessageType.TARGET_LABEL) return null
+
+  const messages = 'messages' in choice && Array.isArray(choice.messages) ? choice.messages : []
+  const foundMessage = messages.find((message) => {
+    return typeof message === 'object' && message !== null && 'tag' in message && message.tag === 'FoundEncounterCardFrom'
+  })
+  const zone = zoneTag(
+    foundMessage && typeof foundMessage === 'object' && 'contents' in foundMessage && Array.isArray(foundMessage.contents)
+      ? foundMessage.contents[2]
+      : null
+  )
+  if (!zone) return null
+
+  switch (zone) {
+    case 'FromEncounterDeck': return t('fromEncounterDeck')
+    case 'FromEncounterDiscard': return t('fromEncounterDiscard')
+    case 'FromDiscard': return t('fromEncounterDiscard')
+    case 'FromDeck': return t('fromEncounterDeck')
+    default: return zoneToLabel(zone)
+  }
+}
+
+const focusedCardGroups = computed<SearchedCardGroup[]>(() => {
+  if (focusedCards.value.length === 0) return []
+
+  const grouped = new Map<string, ArkhamCard[]>()
+  for (const card of focusedCards.value) {
+    const label = focusedCardSourceLabel(toCardContents(card).id) ?? t('cards')
+    grouped.set(label, [...(grouped.get(label) ?? []), card])
+  }
+
+  return Array.from(grouped.entries()).map(([label, cards]) => ({
+    key: `focused-${label}`,
+    zone: label,
+    label,
+    cards,
+  }))
+})
+
 const visibleCardIds = computed(() => new Set([
   ...(investigator.value?.hand ?? []).map((card) => toCardContents(card).id),
   ...focusedCards.value.map((card) => toCardContents(card).id),
-  ...searchedCards.value.flatMap(([, cards]) => cards.map((card) => toCardContents(card).id)),
+  ...searchedCards.value.flatMap((group) => group.cards.map((card) => toCardContents(card).id)),
+  ...(props.game.scenario?.victoryDisplay ?? []).map((card) => toCardContents(card).id),
   ...Object.values(props.game.assets).flatMap((asset) => asset.cardsUnderneath.map((card) => toCardContents(card).id)),
 ]))
 
@@ -561,31 +653,44 @@ const filteredCards = computed<{ choice: CardLabel; index: number }[]>(() => {
         </div>
 
         <div class='question-content'>
-          <div v-if="focusedCards.length > 0 && choices.length > 0" class="modal">
-            <div class="modal-contents focused-cards">
-              <Card
-                v-for="(card, index) in focusedCards"
-                :card="card"
-                :game="game"
-                :playerId="playerId"
-                :key="index"
-                @choose="$emit('choose', $event)"
-              />
+          <div v-if="focusedCardGroups.length > 0 && choices.length > 0" class="modal">
+            <div class="modal-contents searched-cards focused-cards">
+              <div v-for="group in focusedCardGroups" :key="group.key" class="group">
+                <h2>{{ group.label }}</h2>
+                <div class="group-cards">
+                  <div
+                    v-for="card in group.cards"
+                    :key="`${group.key}-${toCardContents(card).id}`"
+                    class="searched-card"
+                  >
+                    <Card
+                      :card="card"
+                      :game="game"
+                      :playerId="playerId"
+                      @choose="$emit('choose', $event)"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
           <div v-if="searchedCards.length > 0 && choices.length > 0" class="modal">
             <div class="modal-contents searched-cards">
-              <div v-for="[group, cards] in searchedCards" :key="group" class="group">
-                <h2>{{zoneToLabel(group)}}</h2>
+              <div v-for="group in searchedCards" :key="group.key" class="group">
+                <h2>{{ group.label }}</h2>
                 <div class="group-cards">
-                  <Card
-                    v-for="card in cards"
-                    :card="card"
-                    :game="game"
-                    :playerId="playerId"
-                    :key="`${group}-${toCardContents(card).id}`"
-                    @choose="$emit('choose', $event)"
-                  />
+                  <div
+                    v-for="card in group.cards"
+                    :key="`${group.key}-${toCardContents(card).id}`"
+                    class="searched-card"
+                  >
+                    <Card
+                      :card="card"
+                      :game="game"
+                      :playerId="playerId"
+                      @choose="$emit('choose', $event)"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -625,17 +730,21 @@ const filteredCards = computed<{ choice: CardLabel; index: number }[]>(() => {
           </div>
           <div v-if="amountsLabel" class="modal amount-modal">
             <div v-if="searchedCards.length > 0" class="modal-contents searched-cards">
-              <div v-for="[group, cards] in searchedCards" :key="group" class="group">
-                <h2>{{ zoneToLabel(group) }}</h2>
+              <div v-for="group in searchedCards" :key="group.key" class="group">
+                <h2>{{ group.label }}</h2>
                 <div class="group-cards">
-                  <Card
-                    v-for="card in cards"
-                    :card="card"
-                    :game="game"
-                    :playerId="playerId"
-                    :key="`${group}-${toCardContents(card).id}`"
-                    @choose="$emit('choose', $event)"
-                  />
+                  <div
+                    v-for="card in group.cards"
+                    :key="`${group.key}-${toCardContents(card).id}`"
+                    class="searched-card"
+                  >
+                    <Card
+                      :card="card"
+                      :game="game"
+                      :playerId="playerId"
+                      @choose="$emit('choose', $event)"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -826,7 +935,7 @@ section {
       box-sizing: border-box;
       content: "";
       filter: blur(0.25em);
-      z-index: 1;
+      z-index: var(--z-index-1);
     }
     h1 {
       color: #19214F;
@@ -840,7 +949,7 @@ section {
     padding: 50px;
     position: relative;
     &::before {
-      z-index: 2;
+      z-index: var(--z-index-2);
       pointer-events: none;
       position: absolute;
       inset: 10px;
@@ -877,7 +986,7 @@ section {
       background-image: v-bind(grunge), radial-gradient(ellipse at 50% 40%, #3a3d16 0%, #1f2110 55%, #0e0f06 80%);
       background-blend-mode: overlay;
       background-size: cover;
-      z-index: 0;
+      z-index: var(--z-index-0);
     }
 
     &::after {
@@ -888,13 +997,13 @@ section {
       background:
         radial-gradient(circle at 25% 75%, rgba(131, 137, 56, 0.16), transparent 55%),
         radial-gradient(circle at 75% 25%, rgba(131, 137, 56, 0.12), transparent 55%);
-      z-index: 0;
+      z-index: var(--z-index-0);
       animation: haunted-flicker 7s ease-in-out infinite;
     }
 
     .intro-text-body, &:deep(.intro-text-body) {
       position: relative;
-      z-index: 1;
+      z-index: var(--z-index-1);
       margin: -40px;
     }
   }
@@ -1204,6 +1313,11 @@ h2 {
   box-sizing: border-box;
 }
 
+.amount-choice:only-child {
+  flex-basis: 100%;
+  max-width: 100%;
+}
+
 .amount-choice label {
   color: #f6edf8;
   font-size: 1.05em;
@@ -1311,18 +1425,51 @@ h2 {
 
 .searched-cards {
   flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  width: 100%;
   overflow-x: auto;
 }
 
 .group {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid rgba(214, 205, 174, 0.18);
+  border-radius: 10px;
+  background: rgba(20, 16, 24, 0.74);
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.35),
+    0 6px 18px rgba(0, 0, 0, 0.24);
+}
+
+.group h2 {
+  margin: -2px -2px 2px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(214, 205, 174, 0.16);
+  color: var(--title);
+  font-family: "Teutonic", serif;
+  font-size: 1.05rem;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
 }
 
 .group .group-cards {
   display: flex;
   flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.searched-card {
+  display: flex;
 }
 
 .done {
@@ -1467,7 +1614,7 @@ h2 {
       box-sizing: border-box;
       content: "";
       filter: blur(0.25em);
-      z-index: -2;
+      z-index: var(--z-index-neg-2);
     }
     h1 {
       color: #19214F;
@@ -1479,7 +1626,7 @@ h2 {
       font-weight: 500;
     }
     &::before {
-      z-index: -1;
+      z-index: var(--z-index-neg-1);
       pointer-events: none;
       position: absolute;
       inset: 10px;
@@ -1509,7 +1656,7 @@ h2 {
       box-sizing: border-box;
       content: "";
       filter: blur(0.25em);
-      z-index: 1;
+      z-index: var(--z-index-1);
     }
     h1 {
       color: #19214F;
@@ -1523,7 +1670,7 @@ h2 {
     padding: 50px;
     position: relative;
     &::before {
-      z-index: 2;
+      z-index: var(--z-index-2);
       pointer-events: none;
       position: absolute;
       inset: 10px;

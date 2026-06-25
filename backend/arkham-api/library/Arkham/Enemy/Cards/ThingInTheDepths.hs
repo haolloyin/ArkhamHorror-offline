@@ -14,7 +14,7 @@ newtype ThingInTheDepths = ThingInTheDepths EnemyAttrs
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
 
 thingInTheDepths :: EnemyCard ThingInTheDepths
-thingInTheDepths = enemy ThingInTheDepths Cards.thingInTheDepths (4, Static 10, 2) (2, 2)
+thingInTheDepths = enemy ThingInTheDepths Cards.thingInTheDepths
 
 instance HasModifiersFor ThingInTheDepths where
   getModifiersFor (ThingInTheDepths a) = do
@@ -29,7 +29,7 @@ instance HasModifiersFor ThingInTheDepths where
 instance HasAbilities ThingInTheDepths where
   getAbilities (ThingInTheDepths a) =
     extend1 a
-      $ restricted a 1 (exists $ be a <> EnemyAt (LocationWithTrait Bog))
+      $ restricted a 1 (exists $ be a <> EnemyAt (LocationWithTrait Bog) <> EnemyWithAnyDamage)
       $ forced
       $ EnemyAttacks #after Anyone AnyEnemyAttack (be a)
 

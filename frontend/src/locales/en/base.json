@@ -48,6 +48,7 @@
     "loseResources": "Lose 1 resource | Lose {count} resources"
   },
   "name": "{name}",
+  "discard": "Discard {name}",
   "waitingForPlayer": "Waiting for {name}…",
   "shuffleRemainder": "Shuffle the remainder of the encounter cards to build the encounter deck.",
   "readyToBegin": "You are now ready to begin.",
@@ -137,6 +138,7 @@
     "cards": "Cards",
     "charge": "Charge",
     "clues": "Clues",
+    "damage": "Damage",
     "horror": "Horror",
     "mental": "Mental",
     "physical": "Physical",
@@ -152,6 +154,7 @@
     "arcane": "Arcane",
     "body": "Body",
     "hand": "Hand",
+    "head": "Head",
     "tarot": "Tarot"
   },
   "destiny": {
@@ -221,6 +224,8 @@
   "fromDeck": "From Deck",
   "fromHand": "From Hand",
   "fromDiscard": "From Discard",
+  "fromEncounterDeck": "From Encounter Deck",
+  "fromEncounterDiscard": "From Encounter Discard",
   "ok": "OK",
   "back": "Back",
   "join": "Join",
@@ -236,6 +241,7 @@
     "deleteDeck": "Delete deck"
   },
   "deckList": {
+    "newDeck": "New Deck",
     "saveToDeckList": "Save to Deck List",
     "saveToDeckListDescription": "Keep this deck available for future campaigns"
   },
@@ -324,6 +330,7 @@
     "remembered": "Remembered",
     "specialRules": "Special Rules",
     "campaignRules": "Campaign Rules",
+    "backToTop": "Back to top",
     "noRules": "No special rules for the current scenario or campaign.",
     "tabs": {
       "log": "Campaign Log",
@@ -357,6 +364,7 @@
     "skillValue": "Skill Value",
     "doubleSuccess": "Double Success",
     "doubleDifficulty": "Double Difficulty",
+    "automaticallyFailIfSucceedByAtLeast": "Automatically fail if you succeed by {amount} or more",
     "mayIgnoreLocationEffects": "May Ignore Location Effects",
     "skillIconsSubtract": "Skill Icons Subtract",
     "skillTestAutomaticallySucceeds": "Skill test automatically succeeds",
@@ -416,6 +424,14 @@
   "chooseDeck": {
     "search": "Search…",
     "useThisDeck": "Use this deck"
+  },
+  "deckRestrictions": {
+    "scarletKeys": {
+      "redGlovedMan": {
+        "description": "The Red-Gloved Man cannot be included.",
+        "error": "The Scarlet Keys campaign cannot include The Red-Gloved Man."
+      }
+    }
   },
   "deckToolbar": {
     "searchDecks": "Search decks…",

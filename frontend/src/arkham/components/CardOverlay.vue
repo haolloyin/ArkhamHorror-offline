@@ -170,7 +170,7 @@ onUnmounted(() => mq.removeEventListener?.('change', updateIsMobile))
  * ========================================================================== */
 
 const CARD_SELECTOR = '.card,[data-image-id],[data-target],[data-image]'
-const OVERLAY_BLOCKER_SELECTOR = '.draggable,.intro-text,.choice-modal-wrapper'
+const OVERLAY_BLOCKER_SELECTOR = '.draggable,.intro-text,.choice-modal-wrapper,.no-card-overlay'
 let hoverTimer: number | null = null
 let pressTimer: number | null = null
 let canDisablePress = false
@@ -285,6 +285,11 @@ const onDragEnd = () => {
   clearOverlay()
 }
 
+const onOverlayContextMenu = (e: MouseEvent) => {
+  const t = e.target as HTMLElement
+  if (t?.tagName.toLowerCase() !== 'input') e.preventDefault()
+}
+
 onMounted(() => {
   document.addEventListener('pointerdown', onPointerDown, { passive: true })
   document.addEventListener('pointermove', onPointerMove, { passive: true })
@@ -296,10 +301,7 @@ onMounted(() => {
   document.addEventListener('drop', onDragEnd)
   document.addEventListener('arkham:clear-card-overlay', clearOverlay)
   // only block context menu inside the overlay, not globally
-  cardOverlay.value?.addEventListener('contextmenu', (e) => {
-    const t = e.target as HTMLElement
-    if (t?.tagName.toLowerCase() !== 'input') e.preventDefault()
-  })
+  cardOverlay.value?.addEventListener('contextmenu', onOverlayContextMenu)
 })
 onUnmounted(() => {
   document.removeEventListener('pointerdown', onPointerDown)
@@ -311,6 +313,7 @@ onUnmounted(() => {
   document.removeEventListener('dragend', onDragEnd)
   document.removeEventListener('drop', onDragEnd)
   document.removeEventListener('arkham:clear-card-overlay', clearOverlay)
+  cardOverlay.value?.removeEventListener('contextmenu', onOverlayContextMenu)
   clearOverlay()
 })
 
@@ -1392,7 +1395,7 @@ watchEffect(() => {
 
 .card-overlay {
   position: absolute;
-  z-index: 20000;
+  z-index: var(--z-card-hover-overlay);
   display: flex;
   width: max-content;
   height: auto;
@@ -1429,7 +1432,7 @@ watchEffect(() => {
   position: absolute;
   bottom: 7%;
   right: 5.1%;
-  z-index: 3;
+  z-index: var(--z-index-3);
   font-size: 1.7em;
   color: rgba(180, 230, 255, 0.95);
   filter:
@@ -1528,7 +1531,7 @@ watchEffect(() => {
 .cosmic-emissary-prompt-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 30000;
+  z-index: var(--z-modal-overlay);
   display: flex;
   align-items: center;
   justify-content: center;

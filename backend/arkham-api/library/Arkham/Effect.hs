@@ -86,6 +86,7 @@ import Arkham.Asset.Assets (
   sixthSenseEffect,
   steadyHanded1Effect,
   thirtyFiveWinchesterEffect,
+  valeLanternAFaintHopeEffect,
   valeLanternBeaconOfHopeEffect,
   wellConnected3Effect,
   winchesterModel522Effect,
@@ -93,6 +94,7 @@ import Arkham.Asset.Assets (
   witherEffect,
   yaotl1Effect,
  )
+import Arkham.Campaigns.TheDrownedCity.Effects.StruggleForAir (struggleForAirEffect)
 import Arkham.Campaigns.TheInnsmouthConspiracy.Effects.NoAir (noAirEffect)
 import Arkham.Campaigns.TheScarletKeys.Key.Cards.TheWellspringOfFortune (
   theWellspringOfFortuneEffect,
@@ -565,6 +567,7 @@ allEffects =
     , ("10129", SomeEffect bideYourTimeEffect)
     , ("10131", SomeEffect dawnStar1Effect)
     , ("10610a", SomeEffect valeLanternBeaconOfHopeEffect)
+    , ("10611a", SomeEffect valeLanternAFaintHopeEffect)
     , ("11018", SomeEffect grimResolveEffect)
     , ("11079", SomeEffect deliverance3Effect)
     , ("11124", SomeEffect dimensionalVortex5Effect)
@@ -633,5 +636,6 @@ allEffects =
     , ("maxef", SomeEffect maxEffect)
     , ("abief", SomeEffect abilityEffect)
     , ("noair", SomeEffect noAirEffect)
+    , ("struggleForAir", SomeEffect struggleForAirEffect)
     , ("genef", SomeEffect genericEffect)
     ]

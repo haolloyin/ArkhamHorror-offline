@@ -32,10 +32,14 @@ instance RunMessage PsychotropicSpores where
       pure t
     UseThisAbility iid (isSource attrs -> True) 1 -> do
       -- The DrewCardsFromOwnDeck window fires on the first draw of each phase, but
-      -- this ability should only resolve once per round. RoundHistory aggregates
-      -- prior phases' draws, so a value of 0 means this is the first draw this round.
-      drawnThisRound <- getHistoryField RoundHistory iid HistoryCardsDrawn
-      when (drawnThisRound == 0) do
+      -- this ability should only resolve once per round. By the time it resolves,
+      -- the current draw is already recorded in the phase history, so
+      -- RoundHistory (= roundHistory <> phaseHistory) is never 0. Compare against
+      -- the phase total to isolate prior phases this round: if no earlier phase
+      -- drew cards, this is the round's first draw and we deal horror.
+      roundDrawn <- getHistoryField RoundHistory iid HistoryCardsDrawn
+      phaseDrawn <- getHistoryField PhaseHistory iid HistoryCardsDrawn
+      when (roundDrawn == phaseDrawn) do
         directHorror iid (attrs.ability 1) 1
       pure t
     UseThisAbility iid (isSource attrs -> True) 2 -> do
@@ -48,6 +52,10 @@ instance RunMessage PsychotropicSpores where
       beginSkillTest sid iid (attrs.ability 2) iid #intellect (Fixed 3)
       pure t
     PassedThisSkillTest iid (isAbilitySource attrs 2 -> True) -> do
-      toDiscardBy iid (attrs.ability 2) attrs
+      -- Register the discard as a skill-test success option so the player can
+      -- order it relative to other "on success" effects (e.g. Book of Verse
+      -- drawing a card) and discard the spores before such a draw would trigger
+      -- this card's own forced "first draw each round" horror.
+      skillTestCardOptionVariant "discard" attrs $ toDiscardBy iid (attrs.ability 2) attrs
       pure t
     _ -> PsychotropicSpores <$> liftRunMessage msg attrs

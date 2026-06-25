@@ -169,6 +169,7 @@ overCriteria f = \case
   AnyCriterion cs -> f (AnyCriterion (map f cs))
   Negate c -> f (Negate (f c))
   IfCostsAreIgnored c -> f (IfCostsAreIgnored (f c))
+  IfCriteria a b c -> f (IfCriteria (f a) (f b) (f c))
   c -> f c
 
 data Criterion
@@ -181,6 +182,11 @@ data Criterion
   | EventExists EventMatcher
   | ExcludeWindowAssetExists AssetMatcher
   | EventWindowInvestigatorIs InvestigatorMatcher
+  | -- | True when the card being played in the current `PlayCard` window has an
+    -- actual resource cost greater than 0 (accounting for cost modifiers and
+    -- treating X-cost cards as potentially > 0). Used to suppress cost-reduction
+    -- reactions on cards that already cost 0.
+    PlayedCardHasNonZeroCost
   | AgendaExists AgendaMatcher
   | AbilityExists AbilityMatcher
   | ActExists ActMatcher
@@ -305,6 +311,7 @@ data Criterion
   | IsReturnTo
   | IfCostsAreIgnored Criterion
   | IgnoreModifiersFrom Source Criterion
+  | IfCriteria Criterion Criterion Criterion
   deriving stock (Show, Eq, Ord, Data)
 
 instance Plated Criterion

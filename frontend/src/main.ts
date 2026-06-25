@@ -9,25 +9,26 @@ import router from './router'
 import { FontAwesomeIcon } from "@fortawesome/vue-fontawesome";
 import { library } from "@fortawesome/fontawesome-svg-core";
 import { faExpeditedssl } from "@fortawesome/free-brands-svg-icons";
-import { faBan, faCircleExclamation, faGhost, faLocationDot, faSearch, faList, faImage, faAngleDown, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faStore } from '@fortawesome/free-solid-svg-icons'
+import { faBan, faCircleExclamation, faGhost, faLocationDot, faSearch, faList, faImage, faAngleDown, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faArrowUp, faStore } from '@fortawesome/free-solid-svg-icons'
 import * as VueI18n from 'vue-i18n'
 import { loadLocaleMessages, normalizeLocale } from '@/locales/messages'
 import mitt from 'mitt';
 
-library.add(faBan, faLocationDot, faCircleExclamation, faGhost, faSearch, faList, faImage, faAngleDown, faExpeditedssl, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faStore)
+library.add(faBan, faLocationDot, faCircleExclamation, faGhost, faSearch, faList, faImage, faAngleDown, faExpeditedssl, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faArrowUp, faStore)
 
 async function bootstrap() {
   const language = localStorage.getItem('language')
-  const naviLanguage = navigator.language || 'en'
-  const currentLanguage = normalizeLocale(language ?? naviLanguage.split('-')[0])
-  if (language !== currentLanguage) { localStorage.setItem('language', currentLanguage) }
+  const naviLanguage = (navigator.language || 'en').split('-')[0]
+  const currentLanguage = language ?? naviLanguage
+  const currentLocale = normalizeLocale(currentLanguage)
+  if (!language) { localStorage.setItem('language', currentLanguage) }
 
   const loadedMessages: Record<string, any> = {}
   const fallback = await loadLocaleMessages('en')
   loadedMessages[fallback.locale] = fallback.messages
 
-  if (currentLanguage !== fallback.locale) {
-    const current = await loadLocaleMessages(currentLanguage)
+  if (currentLocale !== fallback.locale) {
+    const current = await loadLocaleMessages(currentLocale)
     loadedMessages[current.locale] = current.messages
   }
 

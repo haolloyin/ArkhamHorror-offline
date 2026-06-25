@@ -19,16 +19,14 @@ import Arkham.Classes.GameLogger
 import Arkham.Classes.Query
 import Arkham.Classes.RunMessage
 import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameT
 import Arkham.Helpers
 import Arkham.Helpers.Deck
 import Arkham.Helpers.Investigator
-import Arkham.Helpers.Modifiers (setupModifier)
 import Arkham.Helpers.Query
-import Arkham.Modifier (ModifierType (StartingHand, StartingResources))
 import Arkham.I18n (countVar, ikey', withI18n)
 import Arkham.Id
 import Arkham.Investigator.Types (Field (..))
-import Arkham.GameT
 import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Name
@@ -54,6 +52,12 @@ defaultCampaignRunner msg a = case msg of
         )
   SetGlobal CampaignTarget k v -> do
     pure $ updateAttrs a (storeL . at (Aeson.toText k) ?~ v)
+  SetCampaignMeta v -> do
+    pure $ updateAttrs a (metaL .~ v)
+  AddCampaignModifiersForAll modTypes -> do
+    pure $ updateAttrs a (modifiersForAllL %~ \xs -> nub (xs <> modTypes))
+  RemoveCampaignModifiersForAll modTypes -> do
+    pure $ updateAttrs a (modifiersForAllL %~ filter (`notElem` modTypes))
   StartCampaign -> do
     -- [ALERT] StartCampaign
     players <- allPlayers
@@ -72,23 +76,6 @@ defaultCampaignRunner msg a = case msg of
       [] -> pure ()
       xs -> push . chooseUpgradeDecks =<< traverse getPlayer xs
     pure a
-  SetupInvestigators -> do
-    -- Challenge scenario rewards that apply to the next scenario only
-    let counts = campaignLogRecordedCounts $ campaignLog $ toAttrs a
-    let bonusResources = fromMaybe 0 $ lookup AllOrNothingBonusResources counts
-    let bonusCards = fromMaybe 0 $ lookup ByTheBookBonusCards counts
-    when (bonusResources > 0) do
-      select (InvestigatorWithTitle "\"Skids\" O'Toole") >>= traverse_ \iid ->
-        setupModifier CampaignSource iid (StartingResources bonusResources)
-    when (bonusCards > 0) do
-      select (InvestigatorWithTitle "Roland Banks") >>= traverse_ \iid ->
-        setupModifier CampaignSource iid (StartingHand bonusCards)
-    pure
-      $ updateAttrs a
-      $ ( logL
-            . recordedCountsL
-            %~ (deleteMap AllOrNothingBonusResources . deleteMap ByTheBookBonusCards)
-        )
   CampaignStep (ScenarioStepWithOptions sid opts) -> do
     pushAll
       $ [ ResetInvestigators
@@ -442,11 +429,11 @@ defaultCampaignRunner msg a = case msg of
     activeIids <- select $ IncludeEliminated Anyone
     pure $ updateAttrs a \attrs ->
       let currentStep = normalizedCampaignStep (campaignStep attrs)
-      in case campaignXpBreakdown attrs of
-        XpBreakdownStep step iids xp : rest
-          | step == currentStep ->
-              attrs & xpBreakdownL .~ XpBreakdownStep step iids (xp <> report) : rest
-        _ -> attrs & xpBreakdownL %~ (XpBreakdownStep currentStep activeIids report :)
+       in case campaignXpBreakdown attrs of
+            XpBreakdownStep step iids xp : rest
+              | step == currentStep ->
+                  attrs & xpBreakdownL .~ XpBreakdownStep step iids (xp <> report) : rest
+            _ -> attrs & xpBreakdownL %~ (XpBreakdownStep currentStep activeIids report :)
   IgnoreGainXP step -> pure $ updateAttrs a \attrs -> attrs & xpBreakdownL %~ filter ((/= step) . (.xbsStep))
   UseAbility _ ab _ | ab.source == CampaignSource -> do
     push $ Do msg
@@ -454,8 +441,10 @@ defaultCampaignRunner msg a = case msg of
   Do (UseAbility iid ability windows) | ability.limitType == Just PerCampaign -> do
     let
       sameAbility u =
-        abilityCardCode (usedAbility u) == abilityCardCode ability
-          && abilityIndex (usedAbility u) == abilityIndex ability
+        abilityCardCode (usedAbility u)
+          == abilityCardCode ability
+          && abilityIndex (usedAbility u)
+          == abilityIndex ability
     case find sameAbility (campaignUsedAbilities (toAttrs a)) of
       Nothing -> do
         let
@@ -504,8 +493,9 @@ defaultCampaignRunner msg a = case msg of
     pure a
   _ -> pure a
 
--- | Side-stories cost each investigator xp to play. Challenge scenarios only
--- charge their required investigator the full cost; everyone else pays 1.
+{- | Side-stories cost each investigator xp to play. Challenge scenarios only
+charge their required investigator the full cost; everyone else pays 1.
+-}
 spendSideStoryXp :: ScenarioId -> GameT ()
 spendSideStoryXp sid = do
   let baseCost = getSideStoryCost sid

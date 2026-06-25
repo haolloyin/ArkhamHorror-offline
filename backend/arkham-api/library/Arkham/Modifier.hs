@@ -389,6 +389,11 @@ data ModifierType
   | Persist
   | OnlyFirstCopyCardCountsTowardMaximumHandSize
   | OtherDoomSubtracts
+  | -- | Like 'ForceSpawn', but only replaces an enemy's normal spawn location
+    -- (a scenario rule, e.g. Dead Heat forcing Ghoul/Risen enemies to a random
+    -- location). A 'ForceSpawn' from a drawing effect (On the Hunt, Kicking the
+    -- Hornet's Nest) takes precedence over this.
+    OverwrittenSpawn SpawnAt
   | PlaceOnBottomOfDeckInsteadOfDiscard
   | -- | Player cards that would be discarded are placed beneath the target instead
     PlaceUnderneathInsteadOfDiscard Target
@@ -470,6 +475,9 @@ data ModifierType
   | BecomeHomunculusWhenDefeated
   | BecomeInvestigator InvestigatorId
   | DrawsEachEncounterCard
+  | -- | When drawing encounter cards (e.g. the mythos draw), present this target
+    -- to click instead of the encounter deck. The draw itself is unchanged.
+    DrawEncounterCardsVia TargetMatcher
   deriving stock (Show, Eq, Ord, Data)
 
 data UIModifier
@@ -486,6 +494,9 @@ data UIModifier
 instance IsLabel "combat" (Int -> ModifierType) where
   fromLabel = SkillModifier #combat
 
+instance IsLabel "combat" (Integer -> ModifierType) where
+  fromLabel = SkillModifier #combat . fromIntegral
+
 instance IsLabel "agility" (Int -> ModifierType) where
   fromLabel = SkillModifier #agility
 
@@ -500,6 +511,9 @@ instance IsLabel "willpower" (Int -> ModifierType) where
 
 instance IsLabel "damage" (Int -> ModifierType) where
   fromLabel = DamageDealt
+
+instance IsLabel "damage" (Integer -> ModifierType) where
+  fromLabel = DamageDealt . fromIntegral
 
 instance IsLabel "noAction" ModifierType where
   fromLabel = ActionCostModifier (-1)
@@ -543,6 +557,18 @@ mconcat
         parseJSON = withObject "ModifierType" \v -> do
           tag :: Text <- v .: "tag"
           case tag of
+            "CanPlayUnderControlOf" -> do
+              let parseRecord o = do
+                    cmatch <- o .: "cardMatcher" <|> o .: "card"
+                    imatch <- o .: "investigatorMatcher" <|> o .: "investigator"
+                    pure $ CanPlayUnderControlOf cmatch imatch
+              mContents <- v .:? "contents"
+              case mContents of
+                Just contents ->
+                  (uncurry CanPlayUnderControlOf <$> parseJSON contents)
+                    <|> withObject "CanPlayUnderControlOf" parseRecord contents
+                    <|> (flip CanPlayUnderControlOf Anyone <$> parseJSON contents)
+                Nothing -> parseRecord v
             "MaxDamageTaken" -> do
               contents <- (Right <$> v .: "contents") <|> (Left <$> v .: "contents")
               case contents of

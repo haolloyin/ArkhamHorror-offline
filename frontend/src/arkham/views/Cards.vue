@@ -101,7 +101,7 @@ const includeEncounter = computed(() => route.query.includeEncounter === "true")
 const store = useDbCardStore()
 
 const CACHE_KEY_PREFIX = 'arkham_cards_cache_'
-const CACHE_VERSION = 'v1'
+const CACHE_VERSION = 'v2'
 const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 
 const getCachedCards = (withEncounter: boolean): Arkham.CardDef[] | null => {
@@ -159,12 +159,51 @@ interface CardSet {
   code: string
   cycle: number
   encounterDuplicates?: number
+  // Unused code numbers within [min, max] that don't correspond to a real card,
+  // so they aren't counted toward the set total.
+  missing?: string[]
 }
+
+// Total card count for an encounter set: every code in [min, max], plus any
+// duplicate-back cards, minus the unused (missing) numbers in that range.
+const encounterSetTotal = (set: CardSet) =>
+  set.max - set.min + 1 + (set.encounterDuplicates ?? 0) - (set.missing?.length ?? 0)
 
 interface CardCycle {
   name: string
   cycle: number
   code: string
+}
+
+interface CardSearchIndex {
+  set?: CardSet
+  setCode?: string
+  cycle?: number
+  nameLower: string
+  codeLower: string
+  typeLower: string
+  classSymbolsLower: string[]
+  traitsLower: string[]
+  encounterCode?: string
+}
+
+const setsByCycle = (sets as CardSet[]).reduce<Map<number, CardSet[]>>((acc, set) => {
+  const cycleSets = acc.get(set.cycle)
+  if (cycleSets) cycleSets.push(set)
+  else acc.set(set.cycle, [set])
+  return acc
+}, new Map())
+
+const cardSetCache = new Map<string, CardSet | undefined>()
+
+const findCardSetByArt = (art: string) => {
+  const cached = cardSetCache.get(art)
+  if (cached !== undefined || cardSetCache.has(art)) return cached
+
+  const cardCode = parseInt(art)
+  const set = (sets as CardSet[]).find((s) => cardCode >= s.min && cardCode <= s.max)
+  cardSetCache.set(art, set)
+  return set
 }
 
 const filter = ref<Filter>({ cardTypes: [], text: [], level: null, cycle: null, set: "core", classes: [], traits: [], encounterSets: []})
@@ -216,20 +255,50 @@ const chapter1Cycles = computed(() => cycles.filter((c) => !CHAPTER_2_CYCLES.has
 const chapter2Cycles = computed(() => cycles.filter((c) => CHAPTER_2_CYCLES.has(c.cycle)))
 const displayedCycles = computed(() => activeChapter.value === 2 ? chapter2Cycles.value : chapter1Cycles.value)
 
-const cycleCount = (cycle: CardCycle) => {
-  if (!allCards.value) return 0
-  const cycleSets = sets.filter((s) => s.cycle == cycle.cycle)
-  return allCards.value.filter((c) => {
-    const cSet = cardSet(c)
-    return cSet ? cycleSets.includes(cSet) : false
-  }).length
-}
+const cardSearchIndex = computed(() => {
+  const index = new Map<string, CardSearchIndex>()
+
+  for (const card of allCards.value ?? []) {
+    const set = findCardSetByArt(card.art)
+    const match: ArkhamDBCard | null = store.getDbCard(card.art)
+
+    index.set(card.cardCode, {
+      set,
+      setCode: set?.code,
+      cycle: set?.cycle,
+      nameLower: cardName(card).toLowerCase(),
+      codeLower: card.cardCode.toLowerCase(),
+      typeLower: cardType(card).toLowerCase().trim(),
+      classSymbolsLower: card.classSymbols.map((cs) => cs.toLowerCase()),
+      traitsLower: card.cardTraits.map((trait) => trait.toLowerCase()),
+      encounterCode: match?.encounter_code,
+    })
+  }
+
+  return index
+})
+
+const cardCounts = computed(() => {
+  const bySet = new Map<string, number>()
+  const byCycle = new Map<number, number>()
+  const index = cardSearchIndex.value
+
+  for (const card of allCards.value ?? []) {
+    const meta = index.get(card.cardCode)
+    if (meta?.setCode) bySet.set(meta.setCode, (bySet.get(meta.setCode) ?? 0) + 1)
+    if (meta?.cycle) byCycle.set(meta.cycle, (byCycle.get(meta.cycle) ?? 0) + 1)
+  }
+
+  return { bySet, byCycle }
+})
+
+const cycleCount = (cycle: CardCycle) => cardCounts.value.byCycle.get(cycle.cycle) ?? 0
 
 const cycleCountText = (cycle: CardCycle) => {
   if (!allCards.value) return 0
   const implementedCount = cycleCount(cycle)
-  const cycleSets = sets.filter((s) => s.cycle == cycle.cycle)
-  const total = cycleSets.reduce((acc, set) => acc + (includeEncounter.value ? set.max - set.min + 1 + (set.encounterDuplicates ? set.encounterDuplicates : 0) : set.playerCards), 0)
+  const cycleSets = setsByCycle.get(cycle.cycle) ?? []
+  const total = cycleSets.reduce((acc, set) => acc + (includeEncounter.value ? encounterSetTotal(set) : set.playerCards), 0)
 
   if (implementedCount == total) {
     return ""
@@ -238,14 +307,11 @@ const cycleCountText = (cycle: CardCycle) => {
   return ` (${implementedCount}/${total})`
 }
 
-const setCount = (set: CardSet) => {
-  if (!allCards.value) return 0
-  return allCards.value.filter((c) => cardSet(c) == set).length
-}
+const setCount = (set: CardSet) => cardCounts.value.bySet.get(set.code) ?? 0
 
 const setCountText = (set: CardSet) => {
   const implementedCount = setCount(set)
-  const total = includeEncounter.value ? set.max - set.min + 1 + (set.encounterDuplicates ? set.encounterDuplicates : 0) : set.playerCards
+  const total = includeEncounter.value ? encounterSetTotal(set) : set.playerCards
 
   if (implementedCount == total) {
     return ""
@@ -258,46 +324,38 @@ const cards = computed(() => {
   if (!allCards.value) return []
 
   const { classes, encounterSets, traits, cycle, set, text, level, cardTypes } = filter.value
-  const cycleSets = cycle ? sets.filter((s) => s.cycle == cycle) : null
+  const classSet = classes.length > 0 ? new Set(classes) : null
+  const traitSet = traits.length > 0 ? new Set(traits) : null
+  const encounterSet = encounterSets.length > 0 ? new Set(encounterSets) : null
+  const cardTypeSet = cardTypes.length > 0 ? new Set(cardTypes.map((ct) => ct.toLowerCase().trim())) : null
+  const textLower = text.map((t) => t.toLowerCase())
+  const codeText = textLower.map((t) => `c${t}`)
+  const index = cardSearchIndex.value
 
   return allCards.value.filter((c) => {
     if (c.cardCode === "cx05184") return false
-    if (cycleSets) {
-      const cSet = cardSet(c)
-      if (!cSet || !cycleSets.includes(cSet)) return false
+
+    const meta = index.get(c.cardCode)
+    if (!meta) return false
+
+    if (cycle && meta.cycle !== cycle) return false
+    if (set && meta.setCode !== set) return false
+
+    if (classSet && !meta.classSymbolsLower.some((cs) => classSet.has(cs))) return false
+    if (traitSet && !meta.traitsLower.some((trait) => traitSet.has(trait))) return false
+
+    if (encounterSet) {
+      if (!meta.encounterCode || !encounterSet.has(meta.encounterCode)) return false
     }
 
-    if (set) {
-      let cCode = cardSet(c)?.code
-      if (!cCode || cCode !== set) return false
-    }
-
-    if (classes.length > 0) {
-      if (!c.classSymbols.some((cs) => classes.includes(cs.toLowerCase()))) return false
-    }
-
-    if (traits.length > 0) {
-      if (!c.cardTraits.some((cs) => traits.includes(cs.toLowerCase()))) return false
-    }
-
-    if (encounterSets.length > 0) {
-      const match: ArkhamDBCard | null = store.getDbCard(c.art)
-      if (!match) return false
-      return match.encounter_code !== undefined && encounterSets.includes(match.encounter_code)
-    }
-
-    if (text.length > 0) {
-      const cardNameMatches = text.some((t) => cardName(c).toLowerCase().includes(t.toLowerCase()))
-      const cardCodeMatches = text.some((t) => c.cardCode == `c${t.toLowerCase()}`)
+    if (textLower.length > 0) {
+      const cardNameMatches = textLower.some((term) => meta.nameLower.includes(term))
+      const cardCodeMatches = codeText.some((term) => meta.codeLower === term)
       if (!cardNameMatches && !cardCodeMatches) return false
     }
 
     if (level && c.level !== level) return false
-
-    if (cardTypes.length > 0) {
-      const sanitizedCardTypes = cardTypes.map((ct) => ct.toLowerCase().trim())
-      if (!sanitizedCardTypes.includes(cardType(c).toLowerCase().trim())) return false
-    }
+    if (cardTypeSet && !cardTypeSet.has(meta.typeLower)) return false
 
     return true
   })
@@ -318,7 +376,7 @@ const setFilter = () => {
 
   if (matchCardTypes) {
     queryString = queryString.replace(/t:([^ ]*)/, '')
-    cardTypes = matchCardTypes[1].split('|')
+    cardTypes = matchCardTypes[1].split('|').map((s) => s.toLowerCase().trim())
   }
 
   const matchLevel = queryString.match(/p:([1-9][0-9]*)/)
@@ -332,7 +390,7 @@ const setFilter = () => {
 
   if (matchClasses) {
     queryString = queryString.replace(/f:([^ ]*)/, '')
-    classes = matchClasses[1].split('|')
+    classes = matchClasses[1].split('|').map((s) => s.toLowerCase().trim())
   }
 
   const matchCycle = queryString.match(/y:([1-9][0-9]*)/)
@@ -346,14 +404,14 @@ const setFilter = () => {
 
   if (matchSet) {
     queryString = queryString.replace(/e:([^ ]*)/, '')
-    set = matchSet[1]
+    set = matchSet[1].toLowerCase()
   }
 
   const matchTraits = queryString.match(/k:([^ ]*)/)
 
   if (matchTraits) {
     queryString = queryString.replace(/k:([^ ]*)/, '')
-    traits = matchTraits[1].split('|')
+    traits = matchTraits[1].split('|').map((s) => s.toLowerCase().trim())
   }
 
   const matchEncounterSets = queryString.match(/m:([^ ]*)/)
@@ -420,14 +478,9 @@ const cardType = (card: Arkham.CardDef) => {
   }
 }
 
-const cardSet = (card: Arkham.CardDef) => {
-  const cardCode = parseInt(card.art)
-  return sets.find((s) => cardCode >= s.min && cardCode <= s.max)
-}
+const cardSet = (card: Arkham.CardDef) => findCardSetByArt(card.art)
 
-const cycleSets = (cycle: CardCycle) => {
-  return sets.filter((s) => s.cycle == cycle.cycle)
-}
+const cycleSets = (cycle: CardCycle) => setsByCycle.get(cycle.cycle) ?? []
 
 const CYCLE_ICON_OVERRIDES: Record<number, string> = {
   50: 'core',  // Return to...
@@ -552,7 +605,7 @@ const showSidebar = ref(false)
     max-height: unset;
     border-right: 1px solid rgba(255,255,255,0.12);
     background: var(--background);
-    z-index: 50;
+    z-index: var(--z-index-50);
     transform: translateX(-100%);
     transition: transform 0.25s ease;
     overflow-y: auto;
@@ -568,7 +621,7 @@ const showSidebar = ref(false)
       position: fixed;
       inset: 0;
       background: rgba(0, 0, 0, 0.6);
-      z-index: 49;
+      z-index: var(--z-index-49);
     }
   }
 }
@@ -748,7 +801,7 @@ header {
   background: color-mix(in srgb, var(--background) 92%, transparent);
   border-bottom: 1px solid rgba(255,255,255,0.07);
   backdrop-filter: blur(6px);
-  z-index: 1;
+  z-index: var(--z-index-1);
 
   form {
     display: flex;

@@ -17,7 +17,7 @@ import Arkham.Helpers.Act (getCurrentAct, getCurrentActStep)
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Location (connectBothWays, withLocationOf)
 import Arkham.Helpers.Message.Discard.Lifted (randomDiscard)
-import Arkham.Helpers.Modifiers (ModifierType (..), modifySelectWith)
+import Arkham.Helpers.Modifiers (ModifierType (..), modifySelect, modifySelectWith)
 import Arkham.Helpers.Query (allInvestigators, getSetAsideCardMaybe)
 import Arkham.Helpers.SkillTest (isEvadeWith, isFightWith)
 import Arkham.Helpers.Xp (toBonus)
@@ -122,13 +122,22 @@ openCaveLabelFor nest = do
     Just label -> pure (Just label)
     Nothing -> pure $ find (`notElem` occupied) (concatMap snd cosmicEmissaryCaveLabels)
 
-{- | Resolve drawing a card from The Abyss. Resident cards have special text on
-The Abyss: flip them to their enemy side, they attack without engaging, then
-are discarded instead of going to hand.
+{- | Draw a card from The Abyss. The card leaves The Abyss immediately and the
+actual resolution is routed through a cancellable window so cards such as Old
+Memory can react before it resolves (see 'resolveAbyssDraw').
 -}
 drawCardFromAbyss :: ReverseQueue m => InvestigatorId -> Source -> Card -> m ()
 drawCardFromAbyss iid source card = do
   scenarioSpecific "removeFromAbyss" (toCardId card)
+  abyssDrawWindow "scenario" iid card
+    $ ScenarioSpecific "resolveAbyssDraw" (toJSON (iid, source, card))
+
+{- | Resolve a card drawn from The Abyss. Resident cards have special text on
+The Abyss: flip them to their enemy side, they attack without engaging, then
+are discarded instead of going to hand.
+-}
+resolveAbyssDraw :: ReverseQueue m => InvestigatorId -> Source -> Card -> m ()
+resolveAbyssDraw iid source card = do
   if toCardType card == LocationType
     then do
       let mirrorNest = LocationWithTitle "Mirror Nest"
@@ -154,14 +163,16 @@ drawCardFromAbyss iid source card = do
         enemyCard <- fetchCard (residentEnemyDef resident)
         focusCards [enemyCard] do
           chooseOneM iid do
-            labeled "Continue" do
+            labeledI "continue" do
               unfocusCards
               obtainCard card
               withLocationOf iid \lid -> do
                 eid <- createEnemyAt enemyCard lid
                 initiateEnemyAttack eid source iid
                 toDiscard source eid
-      Nothing -> addToHand iid [card]
+      Nothing -> case card of
+        PlayerCard _ -> addToHand iid [card]
+        _ -> drawCard iid card
 
 instance HasModifiersFor FateOfTheVale where
   getModifiersFor (FateOfTheVale attrs) = do
@@ -180,6 +191,14 @@ instance HasModifiersFor FateOfTheVale where
       (assetIs Assets.drRosaMarquezBestInHerField)
       setActiveDuringSetup
       [DoNotTakeUpSlot #ally]
+    -- Once The Abyss is a location on the map, the encounter deck is gone, so the
+    -- mythos draw must be initiated by clicking The Abyss instead of the (absent)
+    -- encounter deck. The draw still routes through The Silence into the Abyss deck.
+    when (getMetaKeyDefault "abyssIsLocation" False attrs)
+      $ modifySelect
+        attrs
+        Anyone
+        [DrawEncounterCardsVia $ LocationTargetMatches $ locationIs Locations.theAbyssSpiralingOblivion]
 
 instance HasChaosTokenValue FateOfTheVale where
   getChaosTokenValue iid tokenFace (FateOfTheVale attrs) = case tokenFace of
@@ -195,7 +214,7 @@ instance HasChaosTokenValue FateOfTheVale where
 instance RunMessage FateOfTheVale where
   runMessage msg s@(FateOfTheVale attrs) = runQueueT $ scenarioI18n $ case msg of
     PreScenarioSetup -> scope "intro" do
-      flavor $ setTitle "title" >> p "body"
+      flavor $ h "title" >> p "body"
       pure s
     Setup -> runScenarioSetup (FateOfTheVale . (encounterDeckL .~ mempty)) attrs do
       setup $ ul do
@@ -634,6 +653,10 @@ instance RunMessage FateOfTheVale where
     ScenarioSpecific "drawFromAbyss" v -> do
       let (iid, card) = toResult v :: (InvestigatorId, Card)
       drawCardFromAbyss iid ScenarioSource card
+      pure s
+    DoBatch _ (ScenarioSpecific "resolveAbyssDraw" v) -> do
+      let (iid, source, card) = toResult v :: (InvestigatorId, Source, Card)
+      resolveAbyssDraw iid source card
       pure s
     ScenarioSpecific "theAbyssBecameLocation" _ -> do
       pure $ FateOfTheVale $ attrs & setMetaKey "abyssIsLocation" True

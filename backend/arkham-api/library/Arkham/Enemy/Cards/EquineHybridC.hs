@@ -12,7 +12,7 @@ newtype EquineHybridC = EquineHybridC EnemyAttrs
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
 
 equineHybridC :: EnemyCard EquineHybridC
-equineHybridC = enemy EquineHybridC Cards.equineHybridC (2, Static 3, 2) (2, 0)
+equineHybridC = enemy EquineHybridC Cards.equineHybridC
 
 instance HasModifiersFor EquineHybridC where
   getModifiersFor (EquineHybridC a) =
@@ -23,7 +23,7 @@ instance HasAbilities EquineHybridC where
     extend1 a
       $ mkAbility a 1
       $ forced
-      $ EnemyTakeDamage #when AnyDamageEffect (be a) AnyValue AnySource
+      $ EnemyTakeDamage #when AnyDamageEffect (be a) (atLeast 2) AnySource
 
 instance RunMessage EquineHybridC where
   runMessage msg e@(EquineHybridC attrs) = runQueueT $ case msg of

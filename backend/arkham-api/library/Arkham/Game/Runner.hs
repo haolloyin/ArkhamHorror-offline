@@ -8,7 +8,7 @@ import Arkham.Act.Types (Field (..))
 import Arkham.Action qualified as Action
 import Arkham.ActiveCost
 import Arkham.Agenda
-import Arkham.Agenda.Types (Field (..))
+import Arkham.Agenda.Types (Field (..), doomL)
 import Arkham.Asset
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Asset.Types (Asset, AssetAttrs (..), Field (..), assetIsStory)
@@ -106,7 +106,7 @@ import Arkham.Matcher hiding (
 import Arkham.Message qualified as Msg
 import Arkham.Message.Lifted (removeLocation)
 import Arkham.Message.Lifted qualified as Lifted
-import Arkham.Modifier (Modifier (modifierSource, modifierType))
+import Arkham.Modifier (Modifier (Modifier, modifierSource, modifierType), ModifierType (AsIfInHandFor))
 import Arkham.Movement
 import Arkham.Name
 import Arkham.Phase
@@ -1226,9 +1226,17 @@ runGameMessage msg g = case msg of
     pure $ g & entitiesL . actsL . at aid ?~ either throw id (lookupAct aid deckNum $ toCardId card)
   AddAgenda agendaDeckNum card -> do
     let aid = AgendaId $ toCardCode card
+    mods <- getModifiers aid
+    let startingDoom = sum [n | EntersPlayWithDoom n <- mods]
     let (before, _, after) = frame (Window.EnterPlay $ toTarget aid)
     pushAll [before, after]
-    pure $ g & entitiesL . agendasL . at aid ?~ lookupAgenda aid agendaDeckNum (toCardId card)
+    let theAgenda = lookupAgenda aid agendaDeckNum (toCardId card)
+    pure
+      $ g
+      & entitiesL
+      . agendasL
+      . at aid
+      ?~ (if startingDoom > 0 then overAttrs (doomL .~ startingDoom) theAgenda else theAgenda)
   ReassignHorror source target n -> do
     let
       matchesP = \case
@@ -2526,7 +2534,10 @@ runGameMessage msg g = case msg of
         (\t -> checkWindows [mkWindow t Window.AtBeginningOfRound])
         [#when, Timing.AtIf, #after]
     pushAll windows'
-    pure g
+    pure
+      $ g
+      & (phaseL .~ MythosPhase)
+      & (phaseStepL ?~ MythosPhaseStep MythosPhaseBeginsStep)
   EndRound -> do
     pushAllEnd [BeginRoundWindow, BeginRound, Begin MythosPhase]
     let
@@ -2605,7 +2616,10 @@ runGameMessage msg g = case msg of
     iid' <- fromMaybe iid <$> selectOne (InvestigatorWithModifier DrawsEachEncounterCard)
     whenM (not <$> isEliminated iid) do
       player <- getPlayer iid'
-      push $ chooseOne player [TargetLabel EncounterDeckTarget [drawEncounterCard iid' GameSource]]
+      mods <- getModifiers iid'
+      viaTargets <- nub . concat <$> traverse select [tm | DrawEncounterCardsVia tm <- mods]
+      let drawTargets = if null viaTargets then [EncounterDeckTarget] else viaTargets
+      push $ chooseOne player [TargetLabel t [drawEncounterCard iid' GameSource] | t <- drawTargets]
     pure $ g & activeInvestigatorIdL .~ iid'
   EndMythos -> do
     pushAll
@@ -3549,9 +3563,23 @@ preloadEntities g = do
       | Just Refl <- eqT @a @Treachery = overAttrs (\attrs -> attrs {treacheryPlacement = p}) a
       | otherwise = a
     preloadHandEntities entities investigator' = do
-      asIfInHandCards <- getAsIfInHandCardsFor NotForPlay (toId investigator')
-      committedCards <- field Investigator.InvestigatorCommittedCards (toId investigator')
+      let iid = toId investigator'
+      asIfInHandCards <- getAsIfInHandEffectCards iid
+      committedCards <- field Investigator.InvestigatorCommittedCards iid
+      -- Cards that are only "as if in hand for play" (stashed under Backpack /
+      -- Stick to the Plan, etc.) physically sit under their host asset, not in
+      -- hand. Load their entity at the host's placement rather than StillInHand,
+      -- so "while in your hand" effects (e.g. Pelt Shipment's hand-size penalty)
+      -- don't fire while the card is merely playable from under the asset.
+      forPlayMods <- getModifiers' (InvestigatorTarget iid)
       let
+        forPlayHosts :: Map CardId AssetId
+        forPlayHosts =
+          mapFromList
+            [ (cid, aid)
+            | Modifier {modifierType = AsIfInHandFor ForPlay cid, modifierSource = AssetSource aid} <- forPlayMods
+            ]
+        placementFor c = maybe (StillInHand iid) (`AttachedToAsset` Nothing) (lookup c.id forPlayHosts)
         handEffectCards =
           filter (cdCardInHandEffects . toCardDef)
             $ investigatorHand (toAttrs investigator')
@@ -3565,8 +3593,8 @@ preloadEntities g = do
                 foldl'
                   ( \e c ->
                       addCardEntityWith
-                        (toId investigator')
-                        (setPlacement $ StillInHand investigator'.id)
+                        iid
+                        (setPlacement $ placementFor c)
                         (unsafeCardIdToUUID c.id)
                         e
                         c
@@ -3574,7 +3602,7 @@ preloadEntities g = do
                   defaultEntities
                   handEffectCards
              in
-              insertMap (toId investigator') handEntities entities
+              insertMap iid handEntities entities
     preloadDiscardEntities entities investigator' = do
       -- NOTE: recently added the asset type check here to avoid the "Do
       -- (DiscardCard..." message's action removed entity conflicting with this
