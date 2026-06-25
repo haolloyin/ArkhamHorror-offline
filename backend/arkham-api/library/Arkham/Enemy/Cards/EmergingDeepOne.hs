@@ -4,7 +4,6 @@ import Arkham.Ability
 import Arkham.Campaigns.TheInnsmouthConspiracy.Helpers
 import Arkham.Enemy.Cards qualified as Cards
 import Arkham.Enemy.Import.Lifted
-import Arkham.Enemy.Types (delayEngagementL)
 import Arkham.Helpers.Location (getLocationOf, placementLocation)
 import Arkham.Helpers.Modifiers (ModifierType (..), getCombinedModifiers)
 import Arkham.Location.FloodLevel
@@ -15,7 +14,7 @@ newtype EmergingDeepOne = EmergingDeepOne EnemyAttrs
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
 
 emergingDeepOne :: EnemyCard EmergingDeepOne
-emergingDeepOne = enemy EmergingDeepOne Cards.emergingDeepOne (3, Static 2, 1) (1, 1)
+emergingDeepOne = enemy EmergingDeepOne Cards.emergingDeepOne
 
 instance HasAbilities EmergingDeepOne where
   getAbilities (EmergingDeepOne a) =

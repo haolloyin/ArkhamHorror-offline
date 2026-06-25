@@ -32,7 +32,6 @@ import Arkham.Investigator.Types qualified as Field
 import Arkham.Matcher qualified as Matcher
 import Arkham.Message
 import Arkham.Message.Lifted qualified as Lifted
-import Arkham.Modifier
 import Arkham.Name
 import Arkham.Prelude
 import Arkham.Projection
@@ -723,6 +722,14 @@ allScenarios =
     , ("12168", SomeScenario queenOfAsh)
     , ("11501", SomeScenario oneLastJob)
     , ("11517", SomeScenario theWesternWall)
+    , ("11536", SomeScenario theDrownedQuarter)
+    , ("11553", SomeScenario theApiary)
+    , ("11587", SomeScenario theGrandVault)
+    , ("11612", SomeScenario courtOfTheAncients)
+    , ("11639", SomeScenario obsidianCanyons)
+    , ("11673", SomeScenario sepulchreOfTheSleeper)
+    , ("11682", SomeScenario theDoomOfArkhamPartI)
+    , ("11688a", SomeScenario theDoomOfArkhamPartII)
     , ("90032", SomeScenario byTheBook)
     , ("90011", SomeScenario allOrNothing)
     , ("90020", SomeScenario badBlood)
@@ -879,6 +886,14 @@ scenarioEncounterSets =
     , ("12168", EncounterSet.QueenOfAsh)
     , ("11501", EncounterSet.OneLastJob)
     , ("11517", EncounterSet.TheWesternWall)
+    , ("11536", EncounterSet.TheDrownedQuarter)
+    , ("11553", EncounterSet.TheApiary)
+    , ("11587", EncounterSet.TheGrandVault)
+    , ("11612", EncounterSet.CourtOfTheAncients)
+    , ("11639", EncounterSet.ObsidianCanyons)
+    , ("11673", EncounterSet.SepulchreOfTheSleeper)
+    , ("11682", EncounterSet.TheDoomOfArkhamPartI)
+    , ("11688a", EncounterSet.TheDoomOfArkhamPartII)
     , ("90032", EncounterSet.ByTheBook)
     , ("90011", EncounterSet.AllOrNothing)
     , ("90020", EncounterSet.BadBlood)

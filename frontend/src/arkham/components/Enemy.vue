@@ -13,6 +13,7 @@ import { AbilityLabel, AbilityMessage, Message, MessageType } from '@/arkham/typ
 import AbilitiesMenu from '@/arkham/components/AbilitiesMenu.vue'
 import DebugEnemy from '@/arkham/components/debug/Enemy.vue'
 import PoolItem from '@/arkham/components/PoolItem.vue'
+import TokenPool from '@/arkham/components/TokenPool.vue'
 import KeyToken from '@/arkham/components/Key.vue'
 import Treachery from '@/arkham/components/Treachery.vue'
 import Asset from '@/arkham/components/Asset.vue'
@@ -139,6 +140,12 @@ const abilities = computed<AbilityMessage[]>(() => {
     , [])
 })
 
+const hasObjective = computed(() =>
+  abilities.value.some(
+    ({ contents }) => 'ability' in contents && contents.ability.type.tag === 'Objective',
+  ),
+)
+
 const isExhausted = computed(() => props.enemy.exhausted)
 
 const keys = computed(() => props.enemy.keys)
@@ -146,18 +153,10 @@ const keys = computed(() => props.enemy.keys)
 const debug = useDebug()
 
 const enemyDamage = computed(() => (props.enemy.tokens[TokenType.Damage] || 0) + props.enemy.assignedDamage)
-const doom = computed(() => props.enemy.tokens[TokenType.Doom])
-const clues = computed(() => props.enemy.tokens[TokenType.Clue])
-const resources = computed(() => props.enemy.tokens[TokenType.Resource])
-const leylines = computed(() => props.enemy.tokens[TokenType.Leyline])
-const lostSouls = computed(() => props.enemy.tokens[TokenType.LostSoul])
-const overgrowth = computed(() => props.enemy.tokens[TokenType.Overgrowth])
-const bounties = computed(() => props.enemy.tokens[TokenType.Bounty])
-const evidence = computed(() => props.enemy.tokens[TokenType.Evidence])
-const warnings = computed(() => props.enemy.tokens[TokenType.Warning])
-const targets = computed(() => props.enemy.tokens[TokenType.Target])
-const seals = computed(() => props.enemy.tokens[TokenType.Seal])
-
+const enemyTokens = computed(() => {
+  const { Damage, ...rest } = props.enemy.tokens
+  return rest
+})
 const omnipotent = computed(() => {
   const {modifiers} = props.enemy
 
@@ -310,7 +309,7 @@ function onDrop(event: DragEvent) {
         <div class="card-frame" ref="frame">
           <div
             class="card-wrapper"
-            :class="{ exhausted: isExhausted }"
+            :class="{ exhausted: isExhausted, 'enemy--objective': hasObjective, 'objective-ring': hasObjective }"
             :style="{ '--ui-rotation': `${uiRotation}deg` }"
           >
             <font-awesome-icon v-if="hasSpiritAura" :icon="['fas', 'ghost']" class="spirit-icon" />
@@ -323,7 +322,7 @@ function onDrop(event: DragEvent) {
             <img v-if="isTrueForm" :src="image"
               class="card enemy"
               v-tooltip="sourceTooltip"
-              :class="{ dragging, 'enemy--can-interact': canInteract, attached, 'source-highlight': isHighlighted }"
+              :class="{ dragging, 'enemy--can-interact': canInteract && !hasObjective, 'enemy--can-interact-cursor': canInteract, attached, 'source-highlight': isHighlighted }"
               :data-id="id"
               :data-card-code="enemy.cardCode"
               :data-game-id="game.id"
@@ -345,7 +344,7 @@ function onDrop(event: DragEvent) {
               :src="isSwarm ? imgsrc('player_back.jpg') : image"
               class="card enemy"
               v-tooltip="sourceTooltip"
-              :class="{ 'enemy--can-interact': canInteract, attached, 'source-highlight': isHighlighted }"
+              :class="{ 'enemy--can-interact': canInteract && !hasObjective, 'enemy--can-interact-cursor': canInteract, attached, 'source-highlight': isHighlighted }"
               :data-id="id"
               :data-card-code="enemy.cardCode"
               :data-game-id="game.id"
@@ -365,17 +364,7 @@ function onDrop(event: DragEvent) {
               <KeyToken v-for="k in keys" :key="keyToId(k)" :keyToken="k" :game="game" :playerId="playerId" @choose="choose" />
             </div>
             <PoolItem v-if="!omnipotent && !attached" type="health" :amount="enemyDamage" />
-            <PoolItem v-if="doom && doom > 0" type="doom" :amount="doom" />
-            <PoolItem v-if="clues && clues > 0" type="clue" :amount="clues" />
-            <PoolItem v-if="resources && resources > 0" type="resource" :amount="resources" />
-            <PoolItem v-if="leylines && leylines > 0" type="resource" tooltip="Leyline" :amount="leylines" />
-            <PoolItem v-if="lostSouls && lostSouls > 0" type="resource" :amount="lostSouls" />
-            <PoolItem v-if="overgrowth && overgrowth > 0" type="resource" :amount="overgrowth" />
-            <PoolItem v-if="bounties && bounties > 0" type="resource" :amount="bounties" />
-            <PoolItem v-if="evidence && evidence > 0" type="resource" tooltip="Evidence" :amount="evidence" />
-            <PoolItem v-if="warnings && warnings > 0" type="resource" tooltip="Warning" :amount="warnings" />
-            <PoolItem v-if="targets && targets > 0" type="resource" tooltip="Target" :amount="targets" />
-            <PoolItem v-if="seals && seals > 0" type="resource" tooltip="Seal" :amount="seals" />
+            <TokenPool :tokens="enemyTokens" />
             <PoolItem v-if="enemy.cardsUnderneath.length > 0" type="card" :amount="enemy.cardsUnderneath.length" />
             <Token
               v-for="(sealedToken, index) in enemy.sealedChaosTokens"
@@ -500,6 +489,10 @@ function onDrop(event: DragEvent) {
   cursor: pointer;
 }
 
+.enemy--can-interact-cursor {
+  cursor: pointer;
+}
+
 img.card.source-highlight {
   box-shadow: 0 0 0 2px var(--important), 0 0 6px 1px var(--important), var(--card-shadow);
 }
@@ -508,7 +501,7 @@ img.card.source-highlight {
   display: flex;
   flex-direction: column;
   position: relative;
-  z-index: 5;
+  z-index: var(--z-index-5);
   isolation: isolate;
 }
 
@@ -526,7 +519,7 @@ img.card.source-highlight {
   flex-wrap: wrap;
   align-self: flex-start;
   align-items: flex-end;
-  z-index: 15;
+  z-index: var(--z-index-15);
   :deep(img) {
     width: 20px;
     height: auto;
@@ -545,6 +538,9 @@ img.card.source-highlight {
   --ui-rotation: 0deg;
   --exhaust-rotation: 0deg;
   position: relative;
+  isolation: isolate;
+  width: fit-content;
+  border-radius: 5px;
   transition: transform 0.2s linear;
   transform: rotate(calc(var(--ui-rotation) + var(--exhaust-rotation)));
   transform-origin: center;
@@ -559,7 +555,7 @@ img.card.source-highlight {
   position: absolute;
   bottom: 8%;
   right: 6%;
-  z-index: 3;
+  z-index: var(--z-index-3);
   font-size: 0.9em;
   color: rgba(180, 230, 255, 0.95);
   filter:
@@ -574,7 +570,7 @@ img.card.source-highlight {
 }
 
 .card-frame {
-  z-index: 10;
+  z-index: var(--z-index-10);
   isolation: isolate;
   position: relative;
   display: flex;
@@ -591,14 +587,14 @@ img.card.source-highlight {
   gap: 5px;
   bottom:100%;
   left: 0;
-  z-index: 20000000000;
+  z-index: var(--z-index-20000000000);
 
   &.right {
     bottom:50%;
     left: 100%;
     transform: translateY(50%) translateZ(0);
-    z-index: 20000000000;
-    /*z-index: 0;*/
+    z-index: var(--z-index-20000000000);
+    /*z-index: var(--z-index-0);*/
   }
 
   &.left {
@@ -660,14 +656,14 @@ img.card.source-highlight {
   pointer-events: none;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 1;
+  z-index: var(--z-index-1);
   max-width: 40%;
   max-height: min-content;
   aspect-ratio: 1 / 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 6;
+  z-index: var(--z-index-6);
 }
 
 .cannot-be-damaged-badge {
@@ -684,7 +680,7 @@ img.card.source-highlight {
     drop-shadow(0 0 2px #000)
     drop-shadow(0 1px 3px rgba(0, 0, 0, 0.9));
   cursor: default;
-  z-index: 7;
+  z-index: var(--z-index-7);
   display: flex;
   align-items: center;
   justify-content: center;

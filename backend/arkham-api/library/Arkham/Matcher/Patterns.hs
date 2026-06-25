@@ -142,6 +142,11 @@ pattern InvestigatorCanHealDamage <- InvestigatorWithoutModifier CannotHealDamag
   where
     InvestigatorCanHealDamage = InvestigatorWithoutModifier CannotHealDamage
 
+pattern InvestigatorCanBeDamaged :: InvestigatorMatcher
+pattern InvestigatorCanBeDamaged <- InvestigatorWithoutModifier CannotBeDamaged
+  where
+    InvestigatorCanBeDamaged = InvestigatorWithoutModifier CannotBeDamaged
+
 -- ** Event Patterns **
 
 pattern EventWithAnyDoom :: EventMatcher
@@ -490,6 +495,11 @@ pattern SuccessfulParley :: Timing -> Who -> WindowMatcher
 pattern SuccessfulParley timing who <- SkillTestResult timing who WhileParleying (SuccessResult AnyValue)
   where
     SuccessfulParley timing who = SkillTestResult timing who WhileParleying (SuccessResult AnyValue)
+
+pattern IfEnemyDefeated_ :: Timing -> EnemyMatcher -> WindowMatcher
+pattern IfEnemyDefeated_ timing ematcher <- IfEnemyDefeated timing Anyone ByAny ematcher
+  where
+    IfEnemyDefeated_ timing ematcher = IfEnemyDefeated timing Anyone ByAny ematcher
 
 -- * Ability Helpers
 

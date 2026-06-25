@@ -30,15 +30,15 @@ instance RunMessage ReclaimedByNature where
             unscoped $ countVar 2 $ labeled' "takeDamage" $ assignDamage iid attrs 2
             when (notNull nearestEnemies) do
               labeled' "reclaimedByNature.nearestEnemyAttacks" do
-                chooseOrRunOneM iid do
-                  targets nearestEnemies \enemy ->
-                    initiateEnemyAttack enemy attrs iid
+                chooseTargetM iid nearestEnemies \enemy ->
+                  initiateEnemyAttackEdit enemy attrs iid despiteExhausted
         Night -> do
           let yourLocation = locationWithInvestigator iid
           enemies <- select $ EnemyAt $ oneOf [yourLocation, connectedTo yourLocation]
           chooseOneM iid $ campaignI18n do
             unscoped $ countVar 2 $ labeled' "takeHorror" $ assignHorror iid attrs 2
-            labeled' "reclaimedByNature.enemiesHeal" do
-              for_ enemies \enemy -> healDamage enemy attrs 1
+            when (notNull enemies) do
+              labeled' "reclaimedByNature.enemiesHeal" do
+                for_ enemies \enemy -> healDamage enemy attrs 1
       pure t
     _ -> ReclaimedByNature <$> liftRunMessage msg attrs

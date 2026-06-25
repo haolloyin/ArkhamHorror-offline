@@ -399,7 +399,7 @@ payCost msg c iid skipAdditionalCosts cost = do
             ]
       pure c
     EnemyAttackCost eid -> do
-      push $ toMessage $ (enemyAttack eid source iid) {attackCanBeCanceled = False}
+      push $ toMessage $ (enemyAttack eid source iid) {attackCanBeCanceled = False, attackDespiteExhausted = True}
       pure c
     DrawEncounterCardsCost n -> do
       push $ drawEncounterCards iid source n
@@ -788,6 +788,10 @@ payCost msg c iid skipAdditionalCosts cost = do
     CalculatedResourceCost calc -> do
       n <- calculate calc
       push $ PayCost acId iid True (ResourceCost n)
+      pure c
+    CalculatedClueCost calc -> do
+      n <- calculate calc
+      push $ PayCost acId iid True (ClueCost $ Static n)
       pure c
     CalculatedHandDiscardCost calc matcher -> do
       n <- calculate calc

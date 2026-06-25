@@ -53,6 +53,7 @@ import Data.Typeable
 
 spawned :: EnemyAttrs -> Bool
 spawned EnemyAttrs {enemyPlacement} = enemyPlacement /= Unplaced
+
 isActionTarget :: Targetable a => a -> Target -> Bool
 isActionTarget a = isTarget a . toProxyTarget
 
@@ -322,10 +323,14 @@ sourceCanDamageEnemy eid source = do
         <$> sourceMatches
           source
           (Matcher.SourceMatchesAny [Matcher.EncounterCardSource, matcher])
+    -- Only block sources matching the modifier's own matcher. We must NOT add
+    -- EncounterCardSource here (unlike the ...Except whitelist above): a basic
+    -- attack's source is UseAbilitySource <fighter> (EnemySource <enemy>) 100,
+    -- whose underlying EnemySource matches EncounterCardSource, so including it
+    -- would block every investigator's fight against the enemy (issue #4887),
+    -- not just the one the matcher targets.
     CannotBeDamagedByPlayerSources matcher ->
-      sourceMatches
-        source
-        (Matcher.SourceMatchesAny [Matcher.EncounterCardSource, matcher])
+      sourceMatches source matcher
     CannotBeDamaged -> pure True
     _ -> pure False
 
@@ -431,6 +436,22 @@ insteadOfDamage (asId -> eid) body = do
         ws' -> pure [CheckWindows ws']
       Damaged (EnemyTarget eid') dmg | eid == eid' -> evalQueueT (body dmg)
       other -> pure [other]
+
+{- | Reduce the amount of the pending 'Damaged' message on this enemy to at most
+@n@ (leaving it unchanged if it is already lower). Pair with a forced ability
+on an @EnemyTakeDamage #when@ window to implement "reduce that damage to @n@"
+effects. See Crustacean Hybrid (In the Light) and Vengeful Specter.
+-}
+reduceDamageTakenTo
+  :: (HasQueue Message m, MonadTrans t, ToId enemy EnemyId)
+  => enemy -> Int -> t m ()
+reduceDamageTakenTo (asId -> eid) n =
+  lift
+    $ replaceMessageMatching
+      (\case Damaged (EnemyTarget eid') _ -> eid == eid'; _ -> False)
+      \case
+        Damaged target dmg -> [Damaged target dmg {damageAssignmentAmount = min n dmg.amount}]
+        other -> [other]
 
 patrol :: (ReverseQueue m, ToId enemy EnemyId) => enemy -> m ()
 patrol (asId -> eid) = whenJustM (getPatrolMatcher eid) $ push . PatrolMove eid

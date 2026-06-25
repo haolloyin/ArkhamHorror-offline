@@ -29,6 +29,27 @@ interface UnimplementedCardError {
   contents: string
 }
 
+function validationErrorsFromResponse(err: unknown): string[] {
+  const response = err as { response?: { data?: unknown } }
+  const payload = response.response?.data
+  if (!Array.isArray(payload)) {
+    if (payload && typeof payload === 'object' && 'message' in payload) {
+      return [String((payload as { message: unknown }).message)]
+    }
+    return ['Unable to validate deck']
+  }
+
+  return payload.map((e) => {
+    const code = typeof e === 'object' && e !== null && 'contents' in e
+      ? String((e as UnimplementedCardError).contents)
+      : String(e)
+    const key = normalizeCode(code)
+    const hit = cardByCode.value.get(key)
+    if (hit) return hit.xp ? `${hit.name.title} (${hit.xp})` : hit.name.title
+    return `Unknown card: ${code}`
+  })
+}
+
 interface ArkhamDBCard {
   name: { title: string; subtitle: string | null }
   cardCode: string
@@ -46,6 +67,9 @@ const deckId = ref<string | null>(null)
 const deckName = ref<string | null>(null)
 const deckUrl = ref<string | null>(null)
 const deckList = ref<ArkhamDbDecklist | null>(null)
+const normalizeCode = (code: string) => code.replace(/^c/, '')
+const isInvestigatorImplemented = (code: string) =>
+  investigators.value.includes(code) || investigators.value.includes(normalizeCode(code))
 const maybeSetPortrait = (code: string | null | undefined) => {
   if (!code || !props.setPortrait) return
   props.setPortrait(imgsrc(`portraits/${normalizeCode(code)}.jpg`))
@@ -65,7 +89,7 @@ function loadDeckFromFile(e: Event) {
       deckList.value = data
       investigator.value = null
       investigatorError.value = null
-      if (investigators.value.includes(data.investigator_code)) {
+      if (isInvestigatorImplemented(data.investigator_code)) {
         if(data.meta && data.meta.alternate_front) {
           investigator.value = data.meta.alternate_front
           if (props.setPortrait) {
@@ -102,7 +126,7 @@ async function loadDeck() {
   if (!dl) return
 
   const invCode = resolvedInvestigatorCode(dl)
-  const invImplemented = investigators.value.includes(dl.investigator_code)
+  const invImplemented = isInvestigatorImplemented(dl.investigator_code)
 
   if (invImplemented) {
     investigator.value = invCode
@@ -119,7 +143,6 @@ async function loadDeck() {
   await runValidations()
 }
 
-const normalizeCode = (code: string) => code.replace(/^c/, '')
 const cardByCode = computed(() => {
   const m = new Map<string, ArkhamDBCard>()
   for (const c of cards.value) m.set(normalizeCode(c.cardCode), c)
@@ -134,14 +157,7 @@ async function runValidations() {
     await validateDeck(deckList.value)
     valid.value = true
   } catch (err: unknown) {
-    const response = err as { response?: { data?: UnimplementedCardError[] } }
-    const payload: UnimplementedCardError[] = response.response?.data ?? []
-    errors.value = payload.map((e) => {
-      const key = normalizeCode(e.contents)
-      const hit = cardByCode.value.get(key)
-      if (hit) return hit.xp ? `${hit.name.title} (${hit.xp})` : hit.name.title
-      return `Unknown card: ${e.contents}`
-    })
+    errors.value = validationErrorsFromResponse(err)
   }
 }
 
@@ -171,14 +187,7 @@ async function createDeck() {
     deck.value = null
     emit('newDeck', created)
   } catch (err: unknown) {
-    const response = err as { response?: { data?: UnimplementedCardError[] } }
-    const payload: UnimplementedCardError[] = response.response?.data ?? []
-    errors.value = payload.map((e) => {
-      const key = normalizeCode(e.contents)
-      const hit = cardByCode.value.get(key)
-      if (hit) return hit.xp ? `${hit.name.title} (${hit.xp})` : hit.name.title
-      return 'Unknown card'
-    })
+    errors.value = validationErrorsFromResponse(err)
   }
 }
 </script>

@@ -15,7 +15,7 @@ newtype ValeriyaAntonovaDontMessWithHer = ValeriyaAntonovaDontMessWithHer EnemyA
 
 valeriyaAntonovaDontMessWithHer :: EnemyCard ValeriyaAntonovaDontMessWithHer
 valeriyaAntonovaDontMessWithHer =
-  enemy ValeriyaAntonovaDontMessWithHer Cards.valeriyaAntonovaDontMessWithHer (2, Static 3, 3) (0, 1)
+  enemy ValeriyaAntonovaDontMessWithHer Cards.valeriyaAntonovaDontMessWithHer
 
 instance HasModifiersFor ValeriyaAntonovaDontMessWithHer where
   getModifiersFor (ValeriyaAntonovaDontMessWithHer a) = do
@@ -32,8 +32,7 @@ instance HasModifiersFor ValeriyaAntonovaDontMessWithHer where
 
 instance HasAbilities ValeriyaAntonovaDontMessWithHer where
   getAbilities (ValeriyaAntonovaDontMessWithHer a) =
-    [ mkAbility a 1 $ forced $ RoundEnds #when
-    ]
+    extend1 a $ mkAbility a 1 $ forced $ RoundEnds #when
 
 instance RunMessage ValeriyaAntonovaDontMessWithHer where
   runMessage msg e@(ValeriyaAntonovaDontMessWithHer attrs) = runQueueT $ case msg of

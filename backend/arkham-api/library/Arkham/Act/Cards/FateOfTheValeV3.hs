@@ -12,6 +12,7 @@ import Arkham.Matcher hiding (DuringTurn)
 import Arkham.Message.Lifted.Choose
 import Arkham.Modifier
 import Arkham.Projection
+import Arkham.Scenarios.FateOfTheVale.Helpers (scenarioI18n)
 import Arkham.Token (Token (Kindling))
 import Arkham.Treachery.Cards qualified as Treacheries
 
@@ -35,12 +36,17 @@ instance HasAbilities FateOfTheValeV3 where
   getAbilities (FateOfTheValeV3 a) =
     extend
       a
-      [ restricted a 1 (DuringTurn You) $ actionAbilityWithCost (GroupClueCostX YourLocation)
-      , restricted
-          a
-          2
-          (DuringTurn You <> exists (YourLocation <> LocationWithModifier (ScenarioModifier "ready")))
-          actionAbility
+      [ scenarioI18n
+          $ withI18nTooltip "fateOfTheValeV3.placeKindling"
+          $ restricted a 1 (DuringTurn You)
+          $ actionAbilityWithCost (GroupClueCostX YourLocation)
+      , scenarioI18n
+          $ withI18nTooltip "fateOfTheValeV3.drawFire"
+          $ restricted
+            a
+            2
+            (DuringTurn You <> exists (YourLocation <> LocationWithModifier (ScenarioModifier "ready")))
+            actionAbility
       , restricted a 3 (TreacheryCount (atLeast 5) $ treacheryIs Treacheries.fire)
           $ Objective
           $ forced
@@ -58,10 +64,10 @@ instance RunMessage FateOfTheValeV3 where
         resources <- getSpendableResources iid
         items <- select $ assetControlledBy iid <> #item <> DiscardableAsset
         when (resources >= 5 || notNull items) do
-          chooseOneM iid do
-            labeled "Done" nothing
+          chooseOneM iid $ scenarioI18n do
+            labeledI "done" nothing
             when (resources >= 5) do
-              labeled "Spend 5 resources to place 1 additional kindling" do
+              labeled' "fateOfTheValeV3.spendResourcesForKindling" do
                 spendResources iid 5
                 placeTokens (attrs.ability 1) lid Kindling 1
             targets items \item -> do

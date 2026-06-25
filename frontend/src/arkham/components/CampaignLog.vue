@@ -3,7 +3,7 @@ import * as Arkham from '@/arkham/types/Game'
 import { LogContents, LogKey, formatKey, logContentsDecoder } from '@/arkham/types/Log'
 import { toCapitalizedWords, formatContent } from '@/arkham/helpers'
 import { cardArt } from '@/arkham/cardImages'
-import { computed, ref, onMounted, watch, type Component } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch, type Component } from 'vue'
 import { fetchCard } from '@/arkham/api'
 import type { CardDef } from '@/arkham/types/CardDef'
 import { type Name, simpleName } from '@/arkham/types/Name'
@@ -73,7 +73,8 @@ const psi = computed(() => props.game.campaign?.meta?.psi)
 const scarletKeys = computed(() => props.game.campaign?.meta?.keyStatus)
 
 type AdditionalLogSection = { title: string; body: string }
-type CampaignDefinition = { id: string; additional?: AdditionalLogSection[] }
+type ConfiguredLogSection = string | { id: string; baseKey?: string }
+type CampaignDefinition = { id: string; additional?: AdditionalLogSection[]; logSections?: ConfiguredLogSection[] }
 
 const campaignDefinition = computed<CampaignDefinition | null>(() => {
   const campaignId = props.game.campaign?.id
@@ -298,6 +299,7 @@ type SectionModel = {
   id: string
   titleKey: string
   orderKey: string
+  prefix: string
   records: string[]
   recordCounts: Record<string, number>
   relationshipLevel: number
@@ -391,6 +393,7 @@ const sections = computed<SectionModel[]>(() => {
       id: sectionId,
       titleKey,
       orderKey,
+      prefix: baseKey,
       records: [recordKey],
       recordCounts: recordCountsBySectionId.value[sectionId] ?? {},
       relationshipLevel: relationshipLevelBySectionId.value[sectionId] ?? 0,
@@ -411,10 +414,34 @@ const sections = computed<SectionModel[]>(() => {
       id: meta.id,
       titleKey: meta.titleKey,
       orderKey: meta.orderKey,
+      prefix: meta.baseKey,
       records: [],
       recordCounts: recordCountsBySectionId.value[meta.id] ?? {},
       relationshipLevel: relationshipLevelBySectionId.value[meta.id] ?? 0,
       component: sectionComponentById[meta.id],
+    }
+  }
+
+  for (const entry of campaignDefinition.value?.logSections ?? []) {
+    const id = typeof entry === 'string' ? entry : entry.id
+    const baseKey = typeof entry === 'string'
+      ? (props.game.campaign ? campaignIdToI18n(props.game.campaign.id) : '')
+      : (entry.baseKey ?? (props.game.campaign ? campaignIdToI18n(props.game.campaign.id) : ''))
+    if (!baseKey) continue
+
+    const key = `${baseKey}:${id}`
+    if (byKey[key]) continue
+
+    byKey[key] = {
+      key,
+      id,
+      titleKey: t(`${baseKey}.key['[${id}]'].title`),
+      orderKey: t(`${baseKey}.key['[${id}]'].orderKey`),
+      prefix: baseKey,
+      records: [],
+      recordCounts: recordCountsBySectionId.value[id] ?? {},
+      relationshipLevel: relationshipLevelBySectionId.value[id] ?? 0,
+      component: sectionComponentById[id],
     }
   }
 
@@ -584,6 +611,7 @@ const emptyLog = computed(() => {
   if (hasSupplies.value) return false
   if (recorded.value.length > 0) return false
   if (remembered.value.length > 0) return false
+  if (visibleSections.value.length > 0) return false
   if (Object.entries(recordedSets.value ?? {}).length > 0) return false
   return true
 })
@@ -638,11 +666,31 @@ const mapData = computed(() => {
     locations,
   }
 })
+
+// --- Back-to-top (the .content element is the scroll container) ---------------
+const contentEl = ref<HTMLElement | null>(null)
+const showBackToTop = ref(false)
+
+const onContentScroll = () => {
+  showBackToTop.value = (contentEl.value?.scrollTop ?? 0) > 400
+}
+
+const scrollToTop = () => {
+  contentEl.value?.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+onMounted(() => {
+  contentEl.value?.addEventListener('scroll', onContentScroll, { passive: true })
+})
+
+onUnmounted(() => {
+  contentEl.value?.removeEventListener('scroll', onContentScroll)
+})
 </script>
 
 <template>
   <LogIcons />
-  <div class="content column">
+  <div class="content column" ref="contentEl">
     <div class="log-column">
       <div class="campaign-log column">
         <div class="campaign-log-header">
@@ -768,13 +816,16 @@ const mapData = computed(() => {
               v-if="hemlockDayTime"
               :day="hemlockDayTime.day"
               :time="hemlockDayTime.time"
+              :meta="game.campaign?.meta"
+              :gameId="game.id"
+              @refresh="emit('refresh')"
             />
             <component
               v-if="hemlockAreasSurveyedSection"
               :is="hemlockAreasSurveyedSection.component"
               class="hemlock-overview-grow"
               :sectionId="hemlockAreasSurveyedSection.id"
-              :prefix="hemlockAreasSurveyedSection.titleKey.split('.').slice(0, 1).join('.')"
+              :prefix="hemlockAreasSurveyedSection.prefix"
               :records="hemlockAreasSurveyedSection.records"
               :recordCounts="hemlockAreasSurveyedSection.recordCounts"
               :relationshipLevel="hemlockAreasSurveyedSection.relationshipLevel"
@@ -800,7 +851,7 @@ const mapData = computed(() => {
               v-if="section.component"
               :is="section.component"
               :sectionId="section.id"
-              :prefix="section.titleKey.split('.').slice(0, 1).join('.')"
+              :prefix="section.prefix"
               :records="section.records"
               :recordCounts="section.recordCounts"
               :relationshipLevel="section.relationshipLevel"
@@ -854,6 +905,18 @@ const mapData = computed(() => {
         />
       </template>
     </div>
+
+    <button
+      type="button"
+      class="back-to-top"
+      :class="{ visible: showBackToTop }"
+      :aria-hidden="!showBackToTop"
+      :tabindex="showBackToTop ? 0 : -1"
+      :title="t('campaignLog.backToTop')"
+      @click="scrollToTop"
+    >
+      <font-awesome-icon :icon="['fas', 'arrow-up']" />
+    </button>
   </div>
 </template>
 
@@ -867,6 +930,63 @@ const mapData = computed(() => {
   overflow: auto;
   padding-bottom: 60px;
   box-sizing: border-box;
+}
+
+.back-to-top {
+  position: sticky;
+  bottom: 18px;
+  align-self: flex-end;
+  margin-right: 18px;
+  /* last child: overlay the bottom padding instead of adding scroll height */
+  margin-bottom: -48px;
+  flex: none;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.9);
+  background: #2b3140;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.45);
+  z-index: var(--z-index-100);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(10px);
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease,
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.back-to-top :deep(svg) {
+  width: 15px;
+  height: 15px;
+}
+
+.back-to-top.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.back-to-top:hover {
+  background: var(--spooky-green);
+  border-color: var(--spooky-green);
+  color: #1b1f29;
+}
+
+.back-to-top:active {
+  transform: translateY(1px);
+}
+
+.back-to-top:focus-visible {
+  outline: none;
+  border-color: var(--spooky-green);
 }
 
 /* ── Tabs ────────────────────────────────────────────────── */

@@ -1182,34 +1182,40 @@
   {
     "id": "10",
     "name": "The Feast of Hemlock Vale",
-    "alpha": true,
+    "beta": true,
     "additional": [
       {
         "title": "theFeastOfHemlockVale.campaignLog.map.title",
         "body": "theFeastOfHemlockVale.campaignLog.map.body"
       }
-    ]
-  },
-  {
-    "id": "12",
-    "name": "Brethren of Ash",
-    "beta": true,
+    ],
+    "logSections": [
+      "motherRachelNotes",
+      "leahAtwoodNotes",
+      "simeonAtwoodNotes",
+      "williamHemlockNotes",
+      "riverHawthorneNotes",
+      "gideonMizrahNotes",
+      "judithParkNotes",
+      "theoPetersNotes",
+      "areasSurveyed"
+    ],
     "difficultyLevels": {
       "Easy":
-        [ "PlusOne", "PlusOne", "Zero", "Zero", "Zero", "MinusOne", "MinusOne", "MinusOne", "MinusTwo", "MinusTwo"
-        , "Skull", "Skull", "ElderThing", "Tablet", "AutoFail", "ElderSign"
+        [ "PlusOne", "PlusOne", "Zero", "Zero", "Zero", "MinusOne", "MinusOne", "MinusOne", "MinusTwo", "MinusTwo", "MinusThree"
+        , "Skull", "Skull", "ElderSign"
         ],
       "Standard":
-        [ "PlusOne", "Zero", "Zero", "MinusOne", "MinusOne", "MinusOne", "MinusTwo", "MinusTwo", "MinusThree", "MinusFour"
-        , "Skull", "Skull", "ElderThing", "Tablet", "AutoFail", "ElderSign"
+        [ "PlusOne", "Zero", "Zero", "MinusOne", "MinusOne", "MinusOne", "MinusTwo", "MinusTwo", "MinusThree", "MinusThree", "MinusFour"
+        , "Skull", "Skull", "ElderSign"
         ],
       "Hard":
-        [ "Zero", "Zero", "Zero", "MinusOne", "MinusOne", "MinusTwo", "MinusTwo", "MinusThree", "MinusThree", "MinusFour", "MinusFive"
-        , "Skull", "Skull", "ElderThing", "Tablet", "AutoFail", "ElderSign"
+        [ "Zero", "Zero", "Zero", "MinusOne", "MinusOne", "MinusTwo", "MinusTwo", "MinusThree", "MinusThree", "MinusFive", "MinusFive", "MinusSeven"
+        , "Skull", "Skull", "ElderSign"
         ],
       "Expert":
-        [ "Zero", "MinusOne", "MinusOne", "MinusTwo", "MinusTwo", "MinusThree", "MinusThree", "MinusFour", "MinusFour", "MinusFive", "MinusSix", "MinusEight"
-        , "Skull", "Skull", "ElderThing", "Tablet", "AutoFail", "ElderSign"
+        [ "Zero", "MinusOne", "MinusOne","MinusTwo", "MinusTwo", "MinusThree", "MinusThree","MinusFour", "MinusFive", "MinusFive", "MinusSix", "MinusSeven", "MinusEight"
+        , "Skull", "Skull", "ElderSign"
         ]
     }
   },
@@ -1234,6 +1240,28 @@
       "Expert":
         [ "Zero", "MinusOne", "MinusOne", "MinusTwo", "MinusTwo", "MinusThree", "MinusThree", "MinusFour", "MinusFour", "MinusFive", "MinusSix", "MinusEight"
         , "Skull", "Skull", "Tablet", "ElderThing", "AutoFail", "ElderSign"
+        ]
+    }
+  },
+  {
+    "id": "12",
+    "name": "Brethren of Ash",
+    "difficultyLevels": {
+      "Easy":
+        [ "PlusOne", "PlusOne", "Zero", "Zero", "Zero", "MinusOne", "MinusOne", "MinusOne", "MinusTwo", "MinusTwo"
+        , "Skull", "Skull", "ElderThing", "Tablet", "AutoFail", "ElderSign"
+        ],
+      "Standard":
+        [ "PlusOne", "Zero", "Zero", "MinusOne", "MinusOne", "MinusOne", "MinusTwo", "MinusTwo", "MinusThree", "MinusFour"
+        , "Skull", "Skull", "ElderThing", "Tablet", "AutoFail", "ElderSign"
+        ],
+      "Hard":
+        [ "Zero", "Zero", "Zero", "MinusOne", "MinusOne", "MinusTwo", "MinusTwo", "MinusThree", "MinusThree", "MinusFour", "MinusFive"
+        , "Skull", "Skull", "ElderThing", "Tablet", "AutoFail", "ElderSign"
+        ],
+      "Expert":
+        [ "Zero", "MinusOne", "MinusOne", "MinusTwo", "MinusTwo", "MinusThree", "MinusThree", "MinusFour", "MinusFour", "MinusFive", "MinusSix", "MinusEight"
+        , "Skull", "Skull", "ElderThing", "Tablet", "AutoFail", "ElderSign"
         ]
     }
   }

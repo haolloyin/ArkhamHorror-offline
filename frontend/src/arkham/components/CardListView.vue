@@ -60,9 +60,16 @@ const cardIcons = (card: Arkham.CardDef) => {
   })
 }
 
+const cardSetCache = new Map<string, (typeof sets)[number] | undefined>()
+
 const cardSet = (card: Arkham.CardDef) => {
+  const cached = cardSetCache.get(card.art)
+  if (cached !== undefined || cardSetCache.has(card.art)) return cached
+
   const cardCode = parseInt(card.art)
-  return sets.find((s) => cardCode >= s.min && cardCode <= s.max)
+  const set = sets.find((s) => cardCode >= s.min && cardCode <= s.max)
+  cardSetCache.set(card.art, set)
+  return set
 }
 
 const cardSetText = (card: Arkham.CardDef) => {
@@ -88,33 +95,51 @@ const ungroupedWarOfTheOuterGodsCards = new Set(['c86038a', 'c86044a', 'c86049a'
 
 const groupKey = (card: Arkham.CardDef) => ungroupedWarOfTheOuterGodsCards.has(card.cardCode) ? card.cardCode : card.art
 
-const groupedCards = computed(() => {
-  return props.cards.reduce<Array<{ card: Arkham.CardDef; count: number }>>((acc, card) => {
-    const existing = acc.find((entry) => groupKey(entry.card) === groupKey(card))
+const groupCards = (cards: Arkham.CardDef[]) => {
+  const grouped = new Map<string, { card: Arkham.CardDef; count: number }>()
+
+  for (const card of cards) {
+    const key = groupKey(card)
+    const existing = grouped.get(key)
     if (existing) existing.count += 1
-    else acc.push({ card, count: 1 })
-    return acc
-  }, [])
-})
+    else grouped.set(key, { card, count: 1 })
+  }
+
+  return Array.from(grouped.values())
+}
+
+const groupedCards = computed(() => groupCards(props.cards))
 
 const attachedCards = (card: Arkham.CardDef) => props.attachments[card.art] ?? []
 
-const groupedAttachedCards = (card: Arkham.CardDef) => {
-  return attachedCards(card).reduce<Array<{ card: Arkham.CardDef; count: number }>>((acc, attached) => {
-    const existing = acc.find((entry) => groupKey(entry.card) === groupKey(attached))
-    if (existing) existing.count += 1
-    else acc.push({ card: attached, count: 1 })
-    return acc
-  }, [])
-}
+const groupedAttachedCards = (card: Arkham.CardDef) => groupCards(attachedCards(card))
 
 const underworldMarketCards = () => props.attachments['09077'] ?? []
+const spiritDeckCards = () => props.attachments['90052'] ?? []
 
-const marketCardCount = (card: Arkham.CardDef) => underworldMarketCards().filter((c) => c.art === card.art).length
+const countCards = (cards: Arkham.CardDef[]) => {
+  const counts = new Map<string, number>()
+  for (const card of cards) counts.set(card.art, (counts.get(card.art) ?? 0) + 1)
+  return counts
+}
+
+const marketCardCounts = computed(() => countCards(underworldMarketCards()))
+const spiritCardCounts = computed(() => countCards(spiritDeckCards()))
+
+const marketCardCount = (card: Arkham.CardDef) => marketCardCounts.value.get(card.art) ?? 0
+const spiritCardCount = (card: Arkham.CardDef) => spiritCardCounts.value.get(card.art) ?? 0
 
 const marketTooltip = (card: Arkham.CardDef) => `Attached to Market deck (x ${marketCardCount(card)})`
+const spiritTooltip = (card: Arkham.CardDef) => `In Spirit deck (x ${spiritCardCount(card)})`
 
 const isUnderworldMarketCard = (card: Arkham.CardDef) => marketCardCount(card) > 0
+const isSpiritDeckCard = (card: Arkham.CardDef) => spiritCardCount(card) > 0
+
+const attachmentHeading = (card: Arkham.CardDef) => {
+  if (card.art === '90052') return 'Spirit deck'
+  if (card.art === '09077') return 'Underworld Market'
+  return `Attached cards for ${cardName(card)}`
+}
 </script>
 
 <template>
@@ -142,6 +167,10 @@ const isUnderworldMarketCard = (card: Arkham.CardDef) => marketCardCount(card) >
                   <font-awesome-icon icon="store" />
                   <span>x {{ marketCardCount(card) }}</span>
                 </span>
+                <span v-if="isSpiritDeckCard(card)" class="spirit-badge" v-tooltip="spiritTooltip(card)" :aria-label="spiritTooltip(card)">
+                  <font-awesome-icon :icon="['fas', 'ghost']" />
+                  <span>x {{ spiritCardCount(card) }}</span>
+                </span>
               </div>
             </td>
             <td>
@@ -163,8 +192,8 @@ const isUnderworldMarketCard = (card: Arkham.CardDef) => marketCardCount(card) >
           <tr v-if="attachedCards(card).length > 0" class="attachments-row">
             <td colspan="7">
               <div class="attachments-list">
-                <div class="attachments-heading">
-                  <font-awesome-icon icon="paperclip" /> Attached cards for {{ cardName(card) }}
+                <div class="attachments-heading" :class="{ 'attachments-heading--spirit': card.art === '90052' }">
+                  <font-awesome-icon :icon="card.art === '90052' ? ['fas', 'ghost'] : 'paperclip'" /> {{ attachmentHeading(card) }}
                 </div>
                 <div class="attachment-pills">
                   <a
@@ -207,7 +236,7 @@ const isUnderworldMarketCard = (card: Arkham.CardDef) => marketCardCount(card) >
 .card-table th {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: var(--z-index-1);
   text-align: left;
   padding: 11px 12px;
   color: #a8a8a8;
@@ -287,7 +316,8 @@ a {
   white-space: nowrap;
 }
 
-.market-badge {
+.market-badge,
+.spirit-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -302,6 +332,12 @@ a {
   font-size: 0.68rem;
   font-weight: 800;
   white-space: nowrap;
+}
+
+.spirit-badge {
+  color: #b8d7ff;
+  background: rgba(120, 170, 255, 0.14);
+  border-color: rgba(120, 170, 255, 0.34);
 }
 
 .attachments-row td {
@@ -333,6 +369,10 @@ a {
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.attachments-heading--spirit {
+  color: #b8d7ff;
 }
 
 .attachment-pills {

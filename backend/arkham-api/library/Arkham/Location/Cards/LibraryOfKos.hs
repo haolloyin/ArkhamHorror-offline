@@ -2,6 +2,7 @@ module Arkham.Location.Cards.LibraryOfKos (libraryOfKos) where
 
 import Arkham.Ability
 import Arkham.Campaigns.EdgeOfTheEarth.Seal
+import Arkham.Helpers.Cost (getSpendableClueCount)
 import Arkham.Helpers.GameValue
 import Arkham.I18n
 import Arkham.Location.Cards qualified as Cards
@@ -32,9 +33,10 @@ instance RunMessage LibraryOfKos where
     PassedThisSkillTest iid (isAbilitySource attrs 1 -> True) -> do
       targetAmount <- perPlayer 1
       iids <- select $ investigatorAt attrs
+      totalClues <- getSpendableClueCount iids
       sameRing <- getLocationsOnSameRing attrs.label UnrevealedLocation
-      chooseOneM iid $ withI18n $ countVar targetAmount do
-        labeled' "spendCluesToActivate" do
+      chooseOrRunOneM iid $ withI18n $ countVar targetAmount do
+        labeledValidate' (totalClues >= targetAmount) "spendCluesToActivate" do
           push $ SpendClues targetAmount iids
           activateSeal SealE
           chooseOneAtATimeM iid $ targets sameRing $ lookAtRevealed iid (attrs.ability 1)

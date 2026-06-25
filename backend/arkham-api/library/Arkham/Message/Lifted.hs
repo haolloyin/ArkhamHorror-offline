@@ -199,20 +199,28 @@ dealAssetDirectDamageAndHorror asset source damage horror =
 
 assignDamage
   :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> Int -> m ()
-assignDamage iid (toSource -> source) damage = push $ Msg.assignDamage iid source damage
+assignDamage iid (toSource -> source) damage =
+  whenM (matches iid InvestigatorCanBeDamaged) do
+    push $ Msg.assignDamage iid source damage
 
 assignDamageTo
   :: (ReverseQueue m, Sourceable source) => source -> Int -> InvestigatorId -> m ()
-assignDamageTo source damage iid = assignDamage iid source damage
+assignDamageTo source damage iid = 
+  whenM (matches iid InvestigatorCanBeDamaged) do
+    assignDamage iid source damage
 
 assignDamageWithStrategy
   :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> DamageStrategy -> Int -> m ()
 assignDamageWithStrategy _ _ _ 0 = pure ()
-assignDamageWithStrategy iid (toSource -> source) strat damage = push $ Msg.assignDamageWithStrategy iid source strat damage
+assignDamageWithStrategy iid (toSource -> source) strat damage = 
+  whenM (matches iid InvestigatorCanBeDamaged) do
+    push $ Msg.assignDamageWithStrategy iid source strat damage
 
 assignHorror
   :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> Int -> m ()
-assignHorror iid (toSource -> source) horror = push $ Msg.assignHorror iid source horror
+assignHorror iid (toSource -> source) horror = 
+  whenM (matches iid InvestigatorCanBeDamaged) do
+    push $ Msg.assignHorror iid source horror
 
 assignHorrorTo
   :: (ReverseQueue m, Sourceable source) => source -> Int -> InvestigatorId -> m ()
@@ -221,13 +229,17 @@ assignHorrorTo source horror iid = assignHorror iid source horror
 assignDamageAndHorror
   :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> Int -> Int -> m ()
 assignDamageAndHorror _ _ 0 0 = pure ()
-assignDamageAndHorror iid (toSource -> source) 0 horror = push $ Msg.assignHorror iid source horror
-assignDamageAndHorror iid (toSource -> source) damage 0 = push $ Msg.assignDamage iid source damage
-assignDamageAndHorror iid (toSource -> source) damage horror = push $ Msg.assignDamageAndHorror iid source damage horror
+assignDamageAndHorror iid (toSource -> source) 0 horror = assignHorror iid source horror
+assignDamageAndHorror iid (toSource -> source) damage 0 = assignDamage iid source damage
+assignDamageAndHorror iid (toSource -> source) damage horror = 
+  whenM (matches iid InvestigatorCanBeDamaged) do
+    push $ Msg.assignDamageAndHorror iid source damage horror
 
 directDamageAndHorror
   :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> Int -> Int -> m ()
-directDamageAndHorror iid source d h = push $ Msg.directDamageAndHorror iid source d h
+directDamageAndHorror iid source d h = 
+  whenM (matches iid InvestigatorCanBeDamaged) do
+    push $ Msg.directDamageAndHorror iid source d h
 
 findAndDrawEncounterCard
   :: (ReverseQueue m, IsCardMatcher a) => InvestigatorId -> a -> m ()
@@ -428,6 +440,11 @@ createEnemyAtEdit c lid f = do
   (enemyId, msg) <- Msg.createEnemyAtEdit (toCard c) lid Nothing f
   push msg
   pure enemyId
+
+createEnemyAtEdit_
+  :: (ReverseQueue m, IsCard card)
+  => card -> LocationId -> (EnemyCreation Message -> EnemyCreation Message) -> m ()
+createEnemyAtEdit_ c lid f = void $ createEnemyAtEdit c lid f
 
 createEnemyAtLocationMatching_
   :: (ReverseQueue m, FetchCard card) => card -> LocationMatcher -> m ()
@@ -832,6 +849,24 @@ placeDoomOnAgenda n = push $ PlaceDoomOnAgenda n CanNotAdvance
 
 placeDoomOnAgendaAndCheckAdvance :: ReverseQueue m => Int -> m ()
 placeDoomOnAgendaAndCheckAdvance n = push $ PlaceDoomOnAgenda n CanAdvance
+
+-- | Place doom on the current agenda as a /card effect/, attributing it to
+-- @source@. Unlike 'placeDoomOnAgenda' (which routes through the scenario and so
+-- is sourced from the scenario itself), this preserves the placing card's source
+-- so @SourceIsCardEffect@ \"would place doom\" windows fire (e.g. The Onslaught
+-- redirecting doom onto The Captives).
+placeDoomOnAgendaBy :: (ReverseQueue m, Sourceable source) => source -> Int -> m ()
+placeDoomOnAgendaBy _ 0 = pure ()
+placeDoomOnAgendaBy source n = do
+  agendas <- select AnyAgenda
+  for_ agendas \agenda -> placeDoom source agenda n
+
+placeDoomOnAgendaAndCheckAdvanceBy :: (ReverseQueue m, Sourceable source) => source -> Int -> m ()
+placeDoomOnAgendaAndCheckAdvanceBy _ 0 = pure ()
+placeDoomOnAgendaAndCheckAdvanceBy source n = do
+  agendas <- select AnyAgenda
+  for_ agendas \agenda -> placeDoom source agenda n
+  push AdvanceAgendaIfThresholdSatisfied
 
 revertAgenda :: (ReverseQueue m, AsId a, IdOf a ~ AgendaId) => a -> m ()
 revertAgenda a = push $ RevertAgenda (asId a)
@@ -1804,7 +1839,15 @@ additionalSkillTestOption = skillTestResultOptionEdit AdditionalOptionKind id
 
 skillTestCardOption
   :: (ReverseQueue m, HasCardCode card, Named card) => card -> QueueT Message m () -> m ()
-skillTestCardOption card = withI18n $ additionalSkillTestOption (cardNameVar card $ ikey' "name")
+skillTestCardOption = skillTestCardOptionVariant "name"
+
+-- | Like 'skillTestCardOption' but lets the caller pick the i18n key used to
+-- render the option label (the card name is still passed as the @name@ var).
+-- e.g. @skillTestCardOptionVariant "discard"@ renders "Discard {cardName}".
+skillTestCardOptionVariant
+  :: (ReverseQueue m, HasCardCode card, Named card) => Scope -> card -> QueueT Message m () -> m ()
+skillTestCardOptionVariant variant card =
+  withI18n $ additionalSkillTestOption (cardNameVar card $ ikey' variant)
 
 skillTestCardOptionEdit
   :: (ReverseQueue m, HasCardCode card, Named card)
@@ -2823,6 +2866,9 @@ initiateEnemyAttack enemy source target = do
   canAttack <- Msg.withoutModifier (asId enemy) CannotAttack
   when canAttack $ push $ InitiateEnemyAttack $ enemyAttack enemy source target
 
+despiteExhausted :: EnemyAttackDetails -> EnemyAttackDetails
+despiteExhausted x = x { attackDespiteExhausted = True }
+
 initiateEnemyAttackEdit
   :: (Targetable target, Sourceable source, IdOf enemy ~ EnemyId, AsId enemy, ReverseQueue m)
   => enemy
@@ -3131,6 +3177,17 @@ cancelSkillTestEffects source = do
 sealChaosToken
   :: (ReverseQueue m, Targetable target) => InvestigatorId -> target -> ChaosToken -> m ()
 sealChaosToken iid target token = pushAll [SealChaosToken token, SealedChaosToken token (Just iid) (toTarget target)]
+
+sealChaosToken_
+  :: (ReverseQueue m, Targetable target) => target -> ChaosToken -> m ()
+sealChaosToken_ target token = pushAll [SealChaosToken token, SealedChaosToken token Nothing (toTarget target)]
+
+placeChaosToken
+  :: ReverseQueue m => LocationId -> ChaosToken -> m ()
+placeChaosToken lid token = pushAll [PlaceChaosToken token, PlacedChaosToken token lid]
+
+removePlacedChaosToken :: ReverseQueue m => ChaosToken -> m ()
+removePlacedChaosToken token = push $ RemovePlacedChaosToken token
 
 unsealChaosToken :: ReverseQueue m => ChaosToken -> m ()
 unsealChaosToken token = push $ UnsealChaosToken token

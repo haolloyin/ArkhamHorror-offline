@@ -15,6 +15,7 @@ import Arkham.Classes hiding (matches)
 import Arkham.Classes.HasGame
 import Arkham.Deck qualified as Deck
 import Arkham.Helpers.ChaosToken (getModifiedChaosTokenFaces)
+import Arkham.Game.Utils (maybeLocation)
 import Arkham.Helpers.Cost (getCanAffordCost)
 import Arkham.Helpers.Message
 import Arkham.Helpers.Modifiers (ModifierType (..), getModifiers, skillTestModifier)
@@ -40,6 +41,29 @@ import Arkham.Window qualified as Window
 import Control.Lens (each)
 import Data.Map.Strict qualified as Map
 
+locationTargetToMaybeCard :: (HasCallStack, HasGame m, Tracing m) => LocationId -> m (Maybe Card)
+locationTargetToMaybeCard lid = do
+  mCard <- targetToMaybeCard (LocationTarget lid)
+  case mCard of
+    Just card -> pure $ Just card
+    Nothing -> fmap toCard <$> maybeLocation lid
+
+skillTestTargetToMaybeCard :: (HasCallStack, HasGame m, Tracing m) => Target -> m (Maybe Card)
+skillTestTargetToMaybeCard = \case
+  LocationTarget lid -> locationTargetToMaybeCard lid
+  ProxyTarget t _ -> skillTestTargetToMaybeCard t
+  t -> targetToMaybeCard t
+
+skillTestSourceToMaybeCard :: (HasCallStack, HasGame m, Tracing m, Sourceable source) => source -> m (Maybe Card)
+skillTestSourceToMaybeCard (toSource -> source) = case source of
+  LocationSource lid -> locationTargetToMaybeCard lid
+  AbilitySource src _ -> skillTestSourceToMaybeCard src
+  UseAbilitySource _ src _ -> skillTestSourceToMaybeCard src
+  ProxySource u t -> runMaybeT $ MaybeT (skillTestSourceToMaybeCard t) <|> MaybeT (skillTestSourceToMaybeCard u)
+  IndexedSource _ t -> skillTestSourceToMaybeCard t
+  PaymentSource inner -> skillTestSourceToMaybeCard inner
+  s -> sourceToMaybeCard s
+
 totalModifiedSkillValue :: (HasGame m, Tracing m) => SkillTest -> m Int
 totalModifiedSkillValue s = do
   results <- calculateSkillTestResultsData s
@@ -49,13 +73,6 @@ totalModifiedSkillValue s = do
     $ max
       0
       (skillTestResultsSkillValue results + chaosTokenValues + skillTestResultsIconValue results)
-
-autoFailSkillTestResultsData :: (HasGame m, Tracing m) => SkillTest -> m SkillTestResultsData
-autoFailSkillTestResultsData s = do
-  modifiedSkillTestDifficulty <- getModifiedSkillTestDifficulty s
-  mods <- getModifiers s
-  let x = getSum $ mconcat [Sum n | SkillTestResultValueModifier n <- mods]
-  pure $ SkillTestResultsData 0 0 0 modifiedSkillTestDifficulty (guard (x /= 0) $> x) False
 
 computeCommitCosts :: HasGame m => InvestigatorId -> [Card] -> m [Cost]
 computeCommitCosts iid cards = do
@@ -116,13 +133,11 @@ instance RunMessage SkillTest where
         $ windows'
         <> [Do BeginSkillTestAfterFast, windowMsg, BeforeSkillTest s.id, EndSkillTestWindow]
       mAbilityCardId <- case skillTestSource of
-        AbilitySource src _ -> fmap toCardId <$> sourceToMaybeCard src
-        UseAbilitySource _ src _ -> fmap toCardId <$> sourceToMaybeCard src
-        t -> fmap toCardId <$> sourceToMaybeCard t
-      mTargetCardId <- case skillTestTarget of
-        ProxyTarget t _ -> fmap toCardId <$> targetToMaybeCard t
-        t -> fmap toCardId <$> targetToMaybeCard t
-      mSourceCardId <- fmap toCardId <$> sourceToMaybeCard skillTestSource
+        AbilitySource src _ -> fmap toCardId <$> skillTestSourceToMaybeCard src
+        UseAbilitySource _ src _ -> fmap toCardId <$> skillTestSourceToMaybeCard src
+        t -> fmap toCardId <$> skillTestSourceToMaybeCard t
+      mTargetCardId <- fmap toCardId <$> skillTestTargetToMaybeCard skillTestTarget
+      mSourceCardId <- fmap toCardId <$> skillTestSourceToMaybeCard skillTestSource
 
       updatedSkillTestType <- case skillTestType of
         SkillSkillTest stype -> SkillSkillTest <$> getAlternateSkill s stype
@@ -497,7 +512,11 @@ instance RunMessage SkillTest where
       pushAll [CheckAllAdditionalCommitCosts, windowMsg, TriggerSkillTest skillTestInvestigator]
       pure $ s & stepL .~ SkillTestFastWindow2
     CheckAllAdditionalCommitCosts -> do
-      let perInvestigator = Map.toList skillTestCommittedCards
+      -- Only investigators who actually committed at least one card incur commit
+      -- costs / fire CommittedCards windows. Un-committing leaves an empty list
+      -- under the investigator's key, and investigator-level CommitCost modifiers
+      -- (e.g. Trapped Spirits) would otherwise still be charged for zero cards.
+      let perInvestigator = filter (not . null . snd) $ Map.toList skillTestCommittedCards
       payable <- flip filterM perInvestigator $ \(iid, cards) -> do
         additionalCosts <- computeCommitCosts iid cards
         if null additionalCosts

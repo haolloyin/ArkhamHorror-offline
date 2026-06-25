@@ -248,6 +248,14 @@ data WindowType
   | EnemyWouldBeDefeated EnemyId
   | EnterPlay Target
   | Entering InvestigatorId LocationId
+  | -- | Fired alongside the after-@Entering@ window, but only when the
+    -- investigator entered a location that had one or more enemies at the moment
+    -- of entry. Because enemies engage (and can be defeated) before the
+    -- after-entering window resolves, the @Entering@ window's current-state enemy
+    -- check is unreliable for "after you enter a location with 1+ enemies"
+    -- triggers (e.g. On Their Heels). This window snapshots that condition at
+    -- entry. See #4813.
+    EnteringLocationWithEnemy InvestigatorId LocationId
   | Exhausts Target
   | FailAttackEnemy InvestigatorId EnemyId Int
   | FailEvadeEnemy InvestigatorId EnemyId Int
@@ -287,7 +295,7 @@ data WindowType
   | PassSkillTest (Maybe Action) Source InvestigatorId Int
   | PerformAction InvestigatorId Action
   | PerformedSameTypeOfAction InvestigatorId [Action]
-  | PerformedDifferentTypesOfActionsInARow InvestigatorId Int [Action]
+  | PerformedDifferentTypesOfActionsInARow InvestigatorId Int [[Action]]
   | PhaseBegins Phase
   | PhaseEnds Phase
   | PlaceUnderneath Target Card
@@ -459,6 +467,14 @@ mconcat
               case contents of
                 Left cs -> pure $ WouldAddChaosTokensToChaosBag Nothing cs
                 Right (i, cs) -> pure $ WouldAddChaosTokensToChaosBag i cs
+            "PerformedDifferentTypesOfActionsInARow" -> do
+              -- New shape carries the per-action type groups ([[Action]]); old
+              -- saves carry a single flattened SDR ([Action]). Treat each legacy
+              -- action as its own singleton group.
+              contents <- (Right <$> o .: "contents") <|> (Left <$> o .: "contents")
+              case contents of
+                Right (i, n, groups) -> pure $ PerformedDifferentTypesOfActionsInARow i n groups
+                Left (i, n, as) -> pure $ PerformedDifferentTypesOfActionsInARow i n (map (: []) as)
             _ -> $(mkParseJSON defaultOptions ''WindowType) (Object o)
       |]
   , deriveJSON defaultOptions ''Window

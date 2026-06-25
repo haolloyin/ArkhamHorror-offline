@@ -76,6 +76,7 @@ import Arkham.Helpers.Card (
   cardIsFast',
   drawThisCardFrom,
   extendedCardMatch,
+  getCardEntityTarget,
   getModifiedCardCost,
   passesLimits,
  )
@@ -226,7 +227,12 @@ handleChooseAndDiscardAsset a@InvestigatorAttrs{..} iid source assetMatcher = do
     $ targetLabels discardableAssetIds (Only . toDiscardBy iid source)
   pure a
 
-handleAddToDiscard a@InvestigatorAttrs{..} iid pc = do
+handleAddToDiscard a@InvestigatorAttrs{..} iid pc0 = do
+  -- Normalize ownership to this investigator's canonical id. The card may have
+  -- been imported under an alternate investigator code (e.g. a Revised Core
+  -- printing), which would otherwise leave a mismatched owner on the discarded
+  -- copy and break later owner-routed operations.
+  let pc = pc0 {pcOwner = Just investigatorId}
   let
     discardF = case cdWhenDiscarded (toCardDef pc) of
       ToDiscard -> discardL %~ nub . (pc :)
@@ -269,7 +275,11 @@ handleDoDiscardFromHand a@InvestigatorAttrs{..} handDiscard = do
       DiscardChoose -> do
         case handDiscard.filter of
           CardWithId _ -> do
-            let cs' = filterCards handDiscard.filter cs
+            -- An explicit by-id discard names one specific card, so it must
+            -- bypass the voluntary-weakness restriction baked into
+            -- discardableCards (which otherwise hides weaknesses when the hand
+            -- also holds non-weakness cards).
+            let cs' = filterCards handDiscard.filter investigatorHand
             pushAll [mkMsg c | c <- cs']
             pushDiscardedCards cs'
           _ -> do
@@ -411,6 +421,24 @@ handlePutOnBottomOfDeck a@InvestigatorAttrs{..} iid cid = do
   push $ PutCardOnBottomOfDeck iid (Deck.InvestigatorDeck iid) card
   pure a
 
+-- | An investigator "owns" a card when its owner is the investigator's canonical
+-- id, or any of the investigator's card codes (primary or alternate).
+--
+-- The alternate-code match handles alternate printings such as the Revised Core
+-- Set, where a card imported from the Revised decklist carries the Revised
+-- investigator code (e.g. Roland @01501@) while the investigator entity keeps its
+-- canonical id (e.g. @01001@).
+--
+-- The canonical-id match handles the inverse case, where the investigator's
+-- current form differs from its true identity: in Yithian form 'toCardDef'
+-- resolves to Body of a Yithian (@04244@), so its 'cardCodes' no longer contain
+-- the investigator's own id while the cards remain owned by that canonical id.
+-- Plain 'InvestigatorId' equality treats these as distinct, so without this the
+-- owner-routed discard would never match and the card would be lost.
+investigatorOwnsCardCode :: InvestigatorAttrs -> InvestigatorId -> Bool
+investigatorOwnsCardCode a iid =
+  iid == investigatorId a || unInvestigatorId iid `elem` (toCardDef a).cardCodes
+
 handleDiscarded a@InvestigatorAttrs{..} aid card = do
   -- TODO: This message is ugly, we should do something different
   -- TODO: There are a number of messages here that mean the asset is no longer in play, we should consolidate to a singular message
@@ -424,14 +452,16 @@ handleDiscarded a@InvestigatorAttrs{..} aid card = do
       _ -> push $ RefillSlots investigatorId []
 
   let shouldDiscard =
-        pcOwner card
-          == Just investigatorId
+        maybe False (investigatorOwnsCardCode a) (pcOwner card)
           && card
           `notElem` investigatorDiscard
           && card
           `notElem` fromMaybe [] investigatorSideDeck
 
-  pure $ a & (if shouldDiscard then discardL %~ (card :) else id) & (slotsL %~ removeFromSlots aid)
+  -- Normalize ownership to this investigator's canonical id so the discarded
+  -- copy doesn't retain a mismatched alternate-printing owner code.
+  let discardedCard = card {pcOwner = Just investigatorId}
+  pure $ a & (if shouldDiscard then discardL %~ (discardedCard :) else id) & (slotsL %~ removeFromSlots aid)
   -- Discarded _ _ (PlayerCard card) -> do
   --   let shouldDiscard = pcOwner card == Just investigatorId && card `notElem` investigatorDiscard
   --   if shouldDiscard
@@ -831,16 +861,36 @@ handleDoInvestigatorDrewPlayerCardFrom a@InvestigatorAttrs{..} iid card mdeck = 
   let
     cardFilter :: IsCard c => [c] -> [c]
     cardFilter = filter ((/= card.id) . toCardId)
+  -- Cards drawn simultaneously are placed in hand up front (handleDoDrawCardsV2),
+  -- then this deferred handler finalizes each draw. An effect resolving between
+  -- those two steps can relocate a just-drawn card before we get here -- e.g. a
+  -- sibling weakness's revelation that grants an action to play it (At a
+  -- Crossroads), or a random discard triggered during that action. By then the
+  -- card has settled into a final zone, and finalizing the draw would corrupt
+  -- state: re-adding it to hand leaves a phantom duplicate of the in-play copy,
+  -- and the zone strips below pull it back out of the discard, orphaning it. So
+  -- only finalize while the card is still in flight; if it has settled in play, or
+  -- (having been discarded out from under us) in the discard pile, leave it be.
+  inPlay <- isJust <$> getCardEntityTarget (toCard card)
+  let
+    drawnFromDiscard = case mdeck of
+      Just (Deck.InvestigatorDiscard _) -> True
+      _ -> False
+    settledElsewhere =
+      inPlay || (not drawnFromDiscard && card.id `elem` map toCardId investigatorDiscard)
   doCheck <- hasModifier iid CheckHandSizeAfterDraw
   when doCheck $ push $ CheckHandSize iid
   pure
-    $ a
-    & (handL %~ nub . (toCard card :))
-    & (deckL %~ filter ((/= card.id) . toCardId))
-    & (foundCardsL . each %~ cardFilter)
-    & (cardsUnderneathL %~ cardFilter)
-    & (discardL %~ cardFilter)
-    & (bondedCardsL %~ cardFilter)
+    $ if settledElsewhere
+      then a
+      else
+        a
+          & (handL %~ nub . (toCard card :))
+          & (deckL %~ filter ((/= card.id) . toCardId))
+          & (foundCardsL . each %~ cardFilter)
+          & (cardsUnderneathL %~ cardFilter)
+          & (discardL %~ cardFilter)
+          & (bondedCardsL %~ cardFilter)
 
 handleEmptyDeck a@InvestigatorAttrs{..} iid = do
   modifiers' <- getModifiers (toTarget a)

@@ -12,7 +12,7 @@ newtype SinisterSoloist = SinisterSoloist EnemyAttrs
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
 
 sinisterSoloist :: EnemyCard SinisterSoloist
-sinisterSoloist = enemy SinisterSoloist Cards.sinisterSoloist (4, PerPlayer 6, 5) (2, 2)
+sinisterSoloist = enemy SinisterSoloist Cards.sinisterSoloist
 
 instance HasModifiersFor SinisterSoloist where
   getModifiersFor (SinisterSoloist a) = do
@@ -22,7 +22,10 @@ instance HasModifiersFor SinisterSoloist where
 instance HasAbilities SinisterSoloist where
   getAbilities (SinisterSoloist a) =
     extend1 a
-      $ restricted a 1 (exists $ EnemyWithId a.id <> ReadyEnemy)
+      $ restricted
+        a
+        1
+        (exists (EnemyWithId a.id <> ReadyEnemy) <> exists (InvestigatorAt $ orConnected_ $ locationWithEnemy a))
       $ forced
       $ PhaseEnds #when #enemy
 

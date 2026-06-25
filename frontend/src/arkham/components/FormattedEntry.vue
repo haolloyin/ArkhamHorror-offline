@@ -128,7 +128,7 @@ export default defineComponent({
     flex-direction: column;
     flex: 1 1 auto;
     padding: 10px 20px;
-    z-index: 5;
+    z-index: var(--z-index-5);
   }
 
   .composite {
@@ -200,7 +200,7 @@ export default defineComponent({
   background-color: color-mix(in srgb, #3a4a69, transparent 90%);
   padding: 20px;
   position: relative;
-  z-index: 0;
+  z-index: var(--z-index-0);
 
   &.nested {
     border: 0;
@@ -215,7 +215,7 @@ export default defineComponent({
     content: "";
     position: absolute;
     inset: 0;
-    z-index: -1;
+    z-index: var(--z-index-neg-1);
   }
 
   > p:first-child {
@@ -242,7 +242,7 @@ export default defineComponent({
   background-color: color-mix(in srgb, var(--color), transparent 90%);
   padding: 20px;
   position: relative;
-  z-index: 0;
+  z-index: var(--z-index-0);
 
   &:has(.composite > :nth-child(2)) {
     display: flex;
@@ -263,7 +263,7 @@ export default defineComponent({
     content: "";
     position: absolute;
     inset: 0;
-    z-index: 1;
+    z-index: var(--z-index-1);
   }
 
   > p:first-child {
@@ -412,7 +412,7 @@ p.billenia, :deep(p.billenia) {
         mix-blend-mode: multiply;
       }
       &::before {
-        z-index: 2;
+        z-index: var(--z-index-2);
         pointer-events: none;
         position: absolute;
         inset: 10px;
@@ -490,6 +490,16 @@ p.billenia, :deep(p.billenia) {
     background-color: var(--survivor-dark);
     background-image: url('data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white"%3E%3Cpath d="M12 10.586l4.95-4.95 1.414 1.414-4.95 4.95 4.95 4.95-1.414 1.414-4.95-4.95-4.95 4.95-1.414-1.414 4.95-4.95-4.95-4.95L7.05 5.636l4.95 4.95z"/%3E%3C/svg%3E');
   }
+}
+
+li:has(> .invalid) > ul,
+:deep(li:has(> .invalid) > ul) {
+  color: #666;
+}
+
+li:has(> .invalid) > ul .valid,
+:deep(li:has(> .invalid) > ul .valid) {
+  color: var(--neutral-extra-dark);
 }
 
 h3, :deep(h3) {
@@ -624,7 +634,7 @@ ul, :deep(ul) {
     isolation: isolate;
     mix-blend-mode: multiply;
     &::before {
-      z-index: -1;
+      z-index: var(--z-index-neg-1);
       content: '';
       position: absolute;
       inset: -10px;
@@ -658,7 +668,7 @@ ul, :deep(ul) {
       content: "";
       position: absolute;
       inset: 0;
-      z-index: 3;
+      z-index: var(--z-index-3);
       border: 3px solid black;
       filter: blur(5px);
     }
@@ -820,6 +830,15 @@ ul, :deep(ul) {
   color: var(--neutral-extra-dark);
 }
 
+:deep(.set-icon-font) {
+  display: inline-block;
+  font-family: "ArkhamEncounters";
+  font-style: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  background-color: transparent;
+}
 
 :deep(.encounter-sets) {
   display: flex;
@@ -856,6 +875,301 @@ ul, :deep(ul) {
   }
 }
 
+/* example card images for the additional rules sections, mimicking the
+   rulebook layout: the two portrait cards (enemy/treachery) sit side by side
+   on top, with the landscape agenda centered below and slightly larger.
+   Natural aspect ratios are preserved so the landscape agenda is not cropped.
+   Faction-colored arrows (set via the --faction custom property) point at each
+   card, emulating the call-outs printed in the rulebook. */
+:deep(.card-examples) {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+  .top {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+  }
+  .ex {
+    position: relative;
+    display: inline-block;
+    line-height: 0;
+  }
+  img {
+    width: 120px;
+    height: auto;
+    border-radius: 8px;
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.3);
+  }
+  img.agenda {
+    width: 170px;
+  }
+  /* arrows overlay the card edge, tip pointing onto the card; --at sets the
+     vertical position to roughly match the rulebook call-out for each card.
+     The SVG (faction-colored, with its own white border + drop shadow) points
+     left; the base .arrow flips it to point right, .arrow.left keeps it left. */
+  .arrow {
+    position: absolute;
+    top: var(--at, 30%);
+    left: var(--left, -25px);
+    transform: translateY(-50%) scaleX(-1);
+    width: 36px;
+    height: auto;
+    border-radius: 0;
+    box-shadow: none;
+    z-index: var(--z-index-5);
+  }
+  .arrow.left {
+    left: auto;
+    right: var(--right, -30px);
+    transform: translateY(-50%);
+  }
+  .arrow.top {
+    left: var(--left, 50%);
+    top: -15px;
+    right: var(--right, -30px);
+    transform: rotate(var(--angle, -90deg));
+  }
+}
+
+/* "Place around this location" example: a location card with clue tokens
+   physically bordering it (around the edges, not placed on the card).
+   Clue size = 1/6 of the card height, so exactly 6 clues run along the card's
+   right edge; the two corner clues extend one clue beyond the card, making the
+   right column 8 total. The left/right columns own the corners, so the
+   top/bottom rows sit inset between them to avoid corner overlap. */
+:deep(.place-around) {
+  --card-w: 180px;
+  --clue: calc(var(--card-w) * 1.4 / 6);
+  position: relative;
+  width: var(--card-w);
+  margin: calc(var(--clue) + 8px) auto;
+  > img {
+    width: 100%;
+    display: block;
+    border-radius: 8px;
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.3);
+  }
+  .clues {
+    position: absolute;
+    display: flex;
+  }
+  .clues img {
+    width: var(--clue);
+    height: var(--clue);
+    border-radius: 0;
+    box-shadow: none;
+    transform: rotate(90deg);
+    filter: drop-shadow(1px 1px 2px rgba(0, 0, 0, 0.6));
+  }
+  .clues.left,
+  .clues.right {
+    flex-direction: column;
+  }
+  /* right column extends into both corners (level with the top/bottom rows),
+     so its top and bottom clues sit in the corners with 6 along the side */
+  .clues.right {
+    right: calc(-1 * var(--clue));
+    top: calc(-1 * var(--clue));
+    height: calc(100% + 2 * var(--clue));
+    justify-content: space-between;
+  }
+  /* left column: 2 clues at the bottom, the lowest sitting in the corner
+     (level with the bottom row) */
+  .clues.left {
+    left: calc(-1 * var(--clue));
+    top: 0;
+    height: calc(100% + var(--clue));
+    justify-content: flex-end;
+  }
+  /* rows: full width, inset from the corners owned by the columns */
+  .clues.top,
+  .clues.bottom {
+    left: 0;
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-evenly;
+  }
+  .clues.top {
+    top: calc(-1 * var(--clue));
+    justify-content: flex-end;
+  }
+  .clues.bottom {
+    bottom: calc(-1 * var(--clue));
+  }
+}
+
+/* "Warring" worked example — three panels mirroring the rulebook diagram:
+   setup, hunter move, and resolve attacks. */
+:deep(.warring-example) {
+  --we-card: 84px;
+  --we-h: calc(var(--we-card) * 1.4);
+  margin: 12px 0 4px;
+}
+:deep(.warring-example) .we-cap {
+  margin: 16px 0 10px;
+}
+:deep(.warring-example) .we-title {
+  margin: 8px 0;
+}
+:deep(.warring-example) img {
+  border-radius: 5px;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.35);
+}
+:deep(.warring-example) .faded {
+  opacity: 0.4;
+}
+:deep(.warring-example) .we-panel {
+  position: relative;
+}
+:deep(.warring-example) .we-arrow {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* Panel 1 — setup: three location + enemy groups, centered with a gap */
+:deep(.warring-example) .we-setup {
+  display: flex;
+  justify-content: center;
+  gap: 72px;
+  padding-bottom: 52px;
+}
+:deep(.warring-example) .we-spot {
+  position: relative;
+  flex: none;
+  width: var(--we-card);
+}
+:deep(.warring-example) .we-spot > .loc {
+  display: block;
+  width: 100%;
+}
+:deep(.warring-example) .we-spot > .enemy {
+  position: absolute;
+  width: 100%;
+  left: -40%;
+  top: 30%;
+  z-index: 2;
+}
+
+/* Panel 2 — hunter move: same centered layout as the setup panel. The side
+   locations keep faded "origin" copies of the enemies that moved; the middle
+   location gathers all three. */
+:deep(.warring-example) .we-move {
+  display: flex;
+  justify-content: center;
+  gap: 72px;
+  padding-bottom: 52px;
+  width: fit-content;
+  margin-inline: auto;
+  margin-bottom: 28px;
+}
+/* the left move arrow: from the bottom of the left enemy to the lower middle
+   of the same (red) enemy gathered on the middle location */
+:deep(.warring-example) .we-mv-left {
+  left: 10px;
+  bottom: -19px;
+  width: 150px;
+  height: 40px;
+  box-shadow: none;
+  border-radius: 0;
+}
+/* mirror of the left move arrow: from the right enemy to the middle (green) */
+:deep(.warring-example) .we-mv-right {
+  right: 10px;
+  bottom: -19px;
+  width: 150px;
+  height: 40px;
+  box-shadow: none;
+  border-radius: 0;
+}
+:deep(.warring-example) .we-move .enemy.red-faction {
+  left: -40%;
+  right: auto;
+  top: 30%;
+}
+:deep(.warring-example) .we-move .enemy.green-faction {
+  left: auto;
+  right: -40%;
+  top: 30%;
+}
+:deep(.warring-example) .we-move .enemy.blue-faction {
+  left: 0;
+  right: auto;
+  top: 25%;
+  z-index: 1;
+}
+/* the three enemies gathered on the middle location sit lower and further out
+   than the side "origin" copies */
+:deep(.warring-example) .we-move .gathered .enemy.red-faction {
+  left: -60%;
+  top: 50%;
+}
+:deep(.warring-example) .we-move .gathered .enemy.green-faction {
+  right: -60%;
+  top: 50%;
+}
+
+/* Panel 3 — resolve attacks: three enemies in a row */
+:deep(.warring-example) .we-attack {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  padding: 8px 0 12px;
+  width: fit-content;
+  margin-inline: auto;
+}
+/* attack arrows: top = Herald -> Disciple, bottom = Zealot -> Disciple */
+:deep(.warring-example) .we-atk-top {
+  left: 44px;
+  top: -10px;
+  width: 72px;
+  height: auto;
+  box-shadow: none;
+  border-radius: 0;
+}
+:deep(.warring-example) .we-atk-bot {
+  left: 72px;
+  bottom: -24px;
+  width: 150px;
+  height: auto;
+  box-shadow: none;
+  border-radius: 0;
+}
+:deep(.warring-example) .we-attack .enemy {
+  position: relative;
+  flex: none;
+  width: var(--we-card);
+}
+/* the outer two enemies (attackers' target and the green attacker) sit lower
+   than the middle one */
+:deep(.warring-example) .we-attack .enemy:nth-child(1),
+:deep(.warring-example) .we-attack .enemy:nth-child(3) {
+  transform: translateY(25%);
+}
+:deep(.warring-example) .we-attack .enemy > img {
+  display: block;
+  width: 100%;
+}
+:deep(.warring-example) .we-attack .dmg {
+  position: absolute;
+  /* width: 15px !important;*/
+  width: calc(var(--we-card) * 0.2) !important;
+  height: auto;
+  border-radius: 0;
+  box-shadow: none;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.85));
+  z-index: 3;
+}
+:deep(.warring-example) .we-attack .dmg.d1 { top: -8%; left: 40%; }
+:deep(.warring-example) .we-attack .dmg.d2 { top: 17%; left: 43%; }
+:deep(.warring-example) .we-attack .dmg.d3 { top: 27%; left: 79%; }
+:deep(.warring-example) .we-attack .dmg.d4 { top: 66%; left: 60%; }
+
 :deep(hr) {
   border:0;
   border-bottom: 2px solid var(--border-color, #60759F);
@@ -870,7 +1184,7 @@ img.remove {
 div:has(> img.remove) {
   position: relative;
   &::before {
-    z-index: 1;
+    z-index: var(--z-index-1);
     content: "";
     display: block;
     inset: 0;
@@ -935,7 +1249,7 @@ div:has(> img.remove) {
       translateX(calc(-50% + (var(--i) - (var(--n) - 1)/2) * var(--shift)))
       rotate(calc((var(--i) - (var(--n) - 1)/2) * var(--spread)))
       translateY(var(--lift));
-    z-index: calc(var(--i) + 1);
+    z-index: calc(var(--i) + var(--z-index-1));
   }
 
   /* lift the hovered card and bring it to the top */
@@ -945,7 +1259,7 @@ div:has(> img.remove) {
       rotate(calc((var(--i) - (var(--n) - 1)/2) * var(--spread)))
       translateY(var(--hover-lift));
     box-shadow: 0 16px 30px rgba(0,0,0,.35);
-    z-index: 999;
+    z-index: var(--z-index-999);
   }
 
   /* ---- small utility: assign index (--i) with :nth-child rules ---- */
@@ -998,7 +1312,7 @@ div:has(> img.remove) {
       translateX(calc(-50% + (var(--i) - (var(--n) - 1)/2) * var(--shift)))
       rotate(calc((var(--i) - (var(--n) - 1)/2) * var(--spread)))
       translateY(var(--lift));
-    z-index: calc(100 - var(--i));
+    z-index: calc(var(--z-index-100) - var(--i));
   }
 
   /* lift the hovered card and bring it to the top */
@@ -1008,7 +1322,7 @@ div:has(> img.remove) {
       rotate(calc((var(--i) - (var(--n) - 1)/2) * var(--spread)))
       translateY(var(--hover-lift));
     box-shadow: 0 16px 30px rgba(0,0,0,.35);
-    z-index: 999;
+    z-index: var(--z-index-999);
   }
 
   /* ---- small utility: assign index (--i) with :nth-child rules ---- */

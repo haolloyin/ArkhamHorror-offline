@@ -230,4 +230,19 @@ allStories =
     , SomeStoryCard anomaliesInSpacetime
     , SomeStoryCard mobTroubles
     , SomeStoryCard unspeakableAbomination
+    , -- The Drowned City
+      SomeStoryCard westernWinds
+    , SomeStoryCard ruthlessCharge
+    , SomeStoryCard hurricaneForce
+    , SomeStoryCard direGale
+    , SomeStoryCard dreadsight
+    , SomeStoryCard demolition
+    , SomeStoryCard fifthEye
+    , SomeStoryCard seismicStomp
+    , SomeStoryCard eldritchCall
+    , SomeStoryCard psychicRebuke
+    , SomeStoryCard risingTides
+    , SomeStoryCard hopeFades
+    , -- Bad Blood
+      SomeStoryCard triumphAndSubjugation
     ]

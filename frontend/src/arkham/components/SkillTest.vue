@@ -20,6 +20,7 @@ import * as ArkhamGame from '@/arkham/types/Game';
 import { imgsrc, formatContent } from '@/arkham/helpers';
 import { cardArt, portraitImage, sourceCardCode } from '@/arkham/cardImages';
 import ChaosBagView from '@/arkham/components/ChaosBag.vue';
+import Token from '@/arkham/components/Token.vue';
 import { useI18n } from 'vue-i18n';
 import { useMenu } from '@/composable/menu';
 import { useSettingsFocus } from '@/composable/settingsFocus';
@@ -64,6 +65,7 @@ const shouldRender = (mod: Modifier) => {
   if (type.tag === 'RevealAnotherChaosToken') return true
   if (type.tag === 'DoubleSuccess') return true
   if (type.tag === 'DoubleDifficulty') return true
+  if (type.tag === 'AutomaticallyFailIfSucceedByAtLeast') return true
   if (type.tag === 'CannotCommitCards')
     return props.playerId == props.game.investigators[props.skillTest.investigator].playerId
   if (type.tag === 'OtherModifier' && type.contents === 'MayIgnoreLocationEffectsAndKeywords') return true
@@ -224,14 +226,17 @@ const testResult = computed(() => {
   }
 })
 
+const focusedChaosTokens = computed(() => {
+  const skillTestTokenIds = new Set(props.game.skillTestChaosTokens.map((token) => token.id))
+  return props.game.focusedChaosTokens.filter((token) => !skillTestTokenIds.has(token.id))
+})
+
 const tokenEffects = computed(() => {
   const scenario = props.game.scenario
   if(!scenario) return []
   const tokens = props.skillTest.resolvedChaosTokens.length > 0
     ? props.skillTest.resolvedChaosTokens
-    : props.skillTest.revealedChaosTokens.length > 0
-      ? props.skillTest.revealedChaosTokens
-      : props.game.focusedChaosTokens
+    : props.skillTest.revealedChaosTokens
   const faces = tokens.map((t) => t.face)
 
   const difficulty = ['Easy', 'Standard'].includes(scenario.difficulty) ? 'easyStandard' : 'hardExpert'
@@ -369,6 +374,9 @@ const adjustDebugSkillValue = (event: MouseEvent, direction: 1 | -1) => {
         :playerId="playerId"
         @choose="choose"
       />
+      <div v-if="focusedChaosTokens.length > 0" class="focused-chaos-tokens">
+        <Token v-for="focusedToken in focusedChaosTokens" :key="focusedToken.id" :token="focusedToken" :playerId="playerId" :game="game" @choose="choose" />
+      </div>
       <div v-if="tokenEffects.length > 0" class="token-effects">
         <div class="token-effect" v-for="effect in tokenEffects" :key="effect" v-html="effect"></div>
       </div>
@@ -450,6 +458,9 @@ const adjustDebugSkillValue = (event: MouseEvent, direction: 1 | -1) => {
           <template v-if="modifier.type.tag === 'DoubleDifficulty'">
             <span class="text">{{ $t('modifier.doubleDifficulty') }}</span>
           </template>
+          <template v-if="modifier.type.tag === 'AutomaticallyFailIfSucceedByAtLeast'">
+            <span class="text">{{ $t('modifier.automaticallyFailIfSucceedByAtLeast', { amount: modifier.type.contents }) }}</span>
+          </template>
           <template v-if="modifier.type.tag === 'OtherModifier' && modifier.type.contents === 'CancelAnyChaosToken'">
             <span class="text">{{ $t('modifier.cancelMatchingChaosTokensShort') }}</span>
           </template>
@@ -511,7 +522,7 @@ const adjustDebugSkillValue = (event: MouseEvent, direction: 1 | -1) => {
   background: #75968600;
   min-width: fit-content;
   text-align: center;
-  z-index: 10;
+  z-index: var(--z-index-10);
   overflow: auto;
 
   .choices, :deep(.choices) {
@@ -961,6 +972,14 @@ i.iconSkillAgility {
   padding: 6px 10px;
   gap: 5px;
   font-size: 1em;
+}
+
+.focused-chaos-tokens {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.5);
 }
 
 .token-effects {

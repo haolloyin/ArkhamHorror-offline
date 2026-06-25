@@ -1,6 +1,7 @@
-module Arkham.Scenario.Scenarios.AllOrNothing (allOrNothing, AllOrNothing (..)) where
+module Arkham.Scenario.Scenarios.AllOrNothing (allOrNothing) where
 
 import Arkham.Act.Cards qualified as Acts
+import Arkham.Act.Types (Field (ActResources))
 import Arkham.Agenda.Cards qualified as Agendas
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.EncounterSet qualified as Set
@@ -9,14 +10,19 @@ import Arkham.Event.Cards qualified as Events
 import Arkham.Exception
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Xp
-import Arkham.Investigator.Types (Field (InvestigatorClues, InvestigatorResources))
+import Arkham.Investigator.Types (
+  Field (InvestigatorClues, InvestigatorName, InvestigatorResources),
+ )
 import Arkham.Location.Cards qualified as Locations
 import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
+import Arkham.Modifier (ModifierType (StartingResources))
+import Arkham.Name qualified as Name
 import Arkham.Projection
 import Arkham.Resolution
 import Arkham.Scenario.Import.Lifted
+import Arkham.ScenarioLogKey
 import Arkham.Scenarios.AllOrNothing.Helpers
 import Arkham.Treachery.Cards qualified as Treacheries
 
@@ -78,6 +84,18 @@ instance RunMessage AllOrNothing where
       flavor $ scope "intro" do
         h "title"
         p "body"
+      storyWithChooseOneM
+        do
+          buildFlavor $ scope "setup" $ ul do
+            li.nested "returnTo" do
+              li "returnToSetupCard"
+              li "returnToVersions"
+              li "cloverClubStage"
+              li "returnToTreacheries"
+              li "cheated"
+        do
+          labeled' "returnTo.include" $ setScenarioMeta $ object ["includeReturnTo" .= True]
+          labeled' "returnTo.exclude" $ setScenarioMeta $ object ["includeReturnTo" .= False]
       pure s
     StandaloneSetup -> do
       setChaosTokens $ case attrs.difficulty of
@@ -87,13 +105,22 @@ instance RunMessage AllOrNothing where
         Expert -> expertTokens
       pure s
     Setup -> runScenarioSetup AllOrNothing attrs do
+      includeReturnTo <- getScenarioMetaKeyDefault "includeReturnTo" False
       setup do
         ul do
           li "gatherSets"
+          li.nested.validate includeReturnTo "returnTo" do
+            li "returnToSetupCard"
+            li "returnToVersions"
+            li "cloverClubStage"
+            li "returnToTreacheries"
+            li "cheated"
+          li "scenarioReference"
           li "newActAgenda"
           li "removeFromGame"
           li "setAside"
-          li "placeLocations"
+          li.nested "placeLocations" do
+            li "startAt"
           li "placePitBoss"
           unscoped $ li "shuffleRemainder"
           unscoped $ li "readyToBegin"
@@ -108,7 +135,18 @@ instance RunMessage AllOrNothing where
       removeEvery [Assets.peterClover, Assets.drFrancisMorgan]
 
       startAt =<< place Locations.laBellaLuna
-      cloverClubLounge <- place Locations.cloverClubLounge
+
+      -- With the Return to the House Always Wins set, swap the Clover Club Lounge
+      -- for its new version (which sets aside the Clover Club Stage) and shuffle
+      -- the new treacheries (Caught Cheating, Raise the Stakes) into the deck.
+      loungeDef <-
+        if includeReturnTo
+          then do
+            gather Set.ReturnToTheHouseAlwaysWins
+            removeEvery [Locations.cloverClubLounge]
+            pure Locations.returnToCloverClubLounge
+          else pure Locations.cloverClubLounge
+      cloverClubLounge <- place loungeDef
       placeAll [Locations.cloverClubBar, Locations.cloverClubCardroom, Locations.darkenedHall]
       enemyAt_ Enemies.cloverClubPitBoss cloverClubLounge
 
@@ -119,6 +157,12 @@ instance RunMessage AllOrNothing where
           , Enemies.siobhanRiley
           ]
         <> replicate 4 Enemies.cloverClubBouncer
+        <> [Locations.cloverClubStage | includeReturnTo]
+
+      when includeReturnTo do
+        selectOne skidsOToole >>= traverse_ \skids -> do
+          name <- field InvestigatorName skids
+          remember $ Cheated $ Name.labeled name skids
 
       setActDeck [Acts.playingCards, Acts.hotOnYourTail]
       setAgendaDeck [Agendas.eyesAllAroundYou]
@@ -131,9 +175,6 @@ instance RunMessage AllOrNothing where
     FailedSkillTestWithToken _ ElderThing -> do
       selectOne skidsOToole >>= traverse_ \skids -> assignHorror skids ElderThing 1
       pure s
-    ScenarioSpecific "placeResourcesOnAct" v -> do
-      let total = getMetaKeyDefault "actResources" 0 attrs
-      pure $ AllOrNothing $ setMetaKey "actResources" (total + toResultDefault 0 v :: Int) attrs
     ScenarioResolution r -> scope "resolutions" do
       mSkids <- selectOne $ IncludeEliminated skidsOToole
       case r of
@@ -141,8 +182,8 @@ instance RunMessage AllOrNothing where
           resolution "noResolution"
           push R2
         Resolution 1 -> do
-          let resources = getMetaKeyDefault "actResources" 0 attrs :: Int
-          let (bonusXp, bonusResources)
+          resources <- fromMaybe 0 <$> (selectOne AnyAct >>= traverse (field ActResources))
+          let (bonusXp, bonusResources) :: (Int, Int)
                 | resources >= 60 = (3, 6)
                 | resources >= 50 = (2, 5)
                 | resources >= 40 = (1, 4)
@@ -150,16 +191,25 @@ instance RunMessage AllOrNothing where
                 | resources >= 20 = (0, 2)
                 | resources >= 10 = (0, 1)
                 | otherwise = (0, 0)
-          withVars
-            [ "resources" .= resources
-            , "bonusXp" .= bonusXp
-            , "bonusResources" .= bonusResources
-            ]
-            $ resolutionWithXp "resolution1"
-            $ allGainXp' attrs
+          xp <- allGainXp' attrs
+          resolutionFlavor $ withVars ["xp" .= xp] do
+            setTitle "resolution1.title"
+            p "resolution1.body"
+            ul do
+              li.nested "resolution1.victory" do
+                li "resolution1.experience"
+              li.nested "resolution1.resourcesChoice" do
+                li.validate (resources >= 10 && resources < 20) "resolution1.resources10"
+                li.validate (resources >= 20 && resources < 30) "resolution1.resources20"
+                li.validate (resources >= 30 && resources < 40) "resolution1.resources30"
+                li.validate (resources >= 40 && resources < 50) "resolution1.resources40"
+                li.validate (resources >= 50 && resources < 60) "resolution1.resources50"
+                li.validate (resources >= 60) "resolution1.resources60"
+              li "resolution1.skidsMaySwap"
           for_ mSkids \skids -> do
             when (bonusXp > 0) $ interludeXp skids $ toBonus "gamblersTake" bonusXp
-            when (bonusResources > 0) $ recordCount AllOrNothingBonusResources bonusResources
+            when (bonusResources > 0)
+              $ nextScenarioModifier attrs skids (StartingResources bonusResources)
             hasOnTheLam <- hasCardInDeck skids Events.onTheLam
             hasAdvancedHospitalDebts <- hasCardInDeck skids Treacheries.hospitalDebtsAdvanced
             chooseOneM skids do

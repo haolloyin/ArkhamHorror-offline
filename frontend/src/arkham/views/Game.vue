@@ -1,12 +1,12 @@
 <script lang="ts" setup>
 import {
   computed,
+  nextTick,
   onMounted,
   onUnmounted,
   provide,
   ref,
   shallowRef,
-  useTemplateRef,
   watch,
 } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
@@ -79,6 +79,7 @@ import Settings from '@/arkham/components/Settings.vue'
 import StandaloneScenario from '@/arkham/components/StandaloneScenario.vue'
 import Draggable from '@/components/Draggable.vue'
 import Menu from '@/components/Menu.vue'
+import Prompt from '@/components/Prompt.vue'
 
 interface GameCard {
   title: string
@@ -118,10 +119,15 @@ const store = useCardStore()
 const userStore = useUserStore()
 const { addEntry, menuItems } = useMenu()
 const preloaded = new Set<string>()
+const preloading = new Set<string>()
 let mouseX = 0
 let mouseY = 0
+let focusLightObserver: MutationObserver | null = null
+let focusLightAnimationFrame: number | null = null
 const flashlightX = ref(0)
 const flashlightY = ref(0)
+const focusLightX = ref(-1000)
+const focusLightY = ref(-1000)
 
 store.fetchCards()
 
@@ -260,10 +266,39 @@ const isActualScenarioView = computed(() => {
     && activeQuestionTag !== 'ContinueCampaign'
 })
 
-const realityAcidLightActive = computed(() => {
+const realityAcidLightOverride = ref<boolean | null>(null)
+const realityAcidLightMetaActive = computed(() => {
   const scenario = game.value?.scenario
   return scenario?.id === 'c85001' && scenario.meta?.lightActive === true
 })
+
+const realityAcidLightActive = computed(() => realityAcidLightOverride.value ?? realityAcidLightMetaActive.value)
+
+watch(realityAcidLightMetaActive, () => {
+  realityAcidLightOverride.value = null
+})
+
+watch(question, async () => {
+  await nextTick()
+  updateFocusLight()
+})
+
+const realityAcidLightDevoured = computed(() => {
+  const scenario = game.value?.scenario
+  if (scenario?.id !== 'c85001') return false
+  return realityAcidLightMetaActive.value || scenario.meta?.lightDevoured === true || realityAcidLightOverride.value !== null
+})
+
+const toggleRealityAcidLight = () => {
+  const gameId = game.value?.id
+  if (!gameId) return
+  const active = !realityAcidLightActive.value
+  realityAcidLightOverride.value = active
+  debug.send(gameId, {
+    tag: 'ScenarioSpecific',
+    contents: ['blobSetLightActive', active],
+  })
+}
 
 const activePlayerId = computed(() => game.value?.activePlayerId ?? null)
 
@@ -283,20 +318,69 @@ watch(activePlayerId, (newActivePlayerId, oldActivePlayerId) => {
   playAudioFile('turnIndicator.ogg')
 })
 
-function skipTriggerEntries(g: Arkham.Game): { playerId: string; choiceIdx: number }[] {
-  const result: { playerId: string; choiceIdx: number }[] = []
+type SkipTriggerEntry = { playerId: string; choiceIdx: number; investigatorId: string }
+
+function skipTriggerEntries(g: Arkham.Game): SkipTriggerEntry[] {
+  const result: SkipTriggerEntry[] = []
   for (const pid of Object.keys(g.question)) {
     const cs = ArkhamGame.choices(g, pid)
     const idx = cs.findIndex((c) => c.tag === Message.MessageType.SKIP_TRIGGERS_BUTTON)
-    if (idx !== -1) result.push({ playerId: pid, choiceIdx: idx })
+    const choice = idx === -1 ? null : cs[idx]
+    if (choice?.tag === Message.MessageType.SKIP_TRIGGERS_BUTTON) {
+      result.push({ playerId: pid, choiceIdx: idx, investigatorId: choice.investigatorId })
+    }
   }
   return result
 }
 
+function investigatorBelongsToPlayer(g: Arkham.Game, investigatorId: string, targetPlayerId: string) {
+  return g.investigators[investigatorId]?.playerId === targetPlayerId
+}
+
+function isInvestigatorTurn(g: Arkham.Game) {
+  return g.phaseStep?.tag === 'InvestigationPhaseStep'
+    && [
+      'NextInvestigatorsTurnBeginsStep',
+      'NextInvestigatorsTurnBeginsWindow',
+      'InvestigatorTakesActionStep',
+      'InvestigatorsTurnEndsStep',
+    ].includes(g.phaseStep.contents)
+}
+
+function canCurrentPlayerSkipAllWindows(g: Arkham.Game, currentPlayerId: string) {
+  if (solo.value) return true
+
+  if (g.skillTest) {
+    return investigatorBelongsToPlayer(g, g.skillTest.investigator, currentPlayerId)
+  }
+
+  if (isInvestigatorTurn(g)) {
+    return investigatorBelongsToPlayer(g, g.activeInvestigatorId, currentPlayerId)
+  }
+
+  return true
+}
+
+function authorizedSkipTriggerEntries(g: Arkham.Game): SkipTriggerEntry[] {
+  if (!playerId.value) return []
+  if (!canCurrentPlayerSkipAllWindows(g, playerId.value)) return []
+  return skipTriggerEntries(g)
+}
+
 const skipAllAvailable = computed(() => {
-  if (!solo.value || !game.value) return false
-  return skipTriggerEntries(game.value).length > 1
+  if (!game.value) return false
+  if (skipAllPending.value.size > 0) return true
+
+  const entries = authorizedSkipTriggerEntries(game.value)
+  const distinct = new Set(entries.map((entry) => entry.playerId))
+  if (distinct.size > 1) return true
+  // The authorized player (e.g. the skill-test owner) may be waiting on a
+  // single other player's fast trigger with no window of their own to skip;
+  // let them skip that lone window too. Solo keeps the stricter rule.
+  return !solo.value && distinct.size === 1 && !distinct.has(playerId.value ?? '')
 })
+
+const skipAllInProgress = computed(() => skipAllPending.value.size > 0)
 
 function setGameQuestion(question: Record<string, Question>) {
   if (!game.value) return
@@ -317,11 +401,7 @@ watch(
     if (newV === oldV) return
     await fetchGame(props.gameId, props.spectate).then(
       async ({ game: newGame, playerId: newPlayerId, multiplayerMode }) => {
-        try {
-          await loadAllImages(newGame)
-        } catch (e) {
-          console.error(e)
-        }
+        preloadImages(newGame)
         ;(window as Window & { g?: Arkham.Game }).g = newGame
         game.value = newGame
         solo.value = multiplayerMode === 'Solo'
@@ -397,23 +477,29 @@ function scheduleApplyUpdate(payload: string) {
   Arkham.gameDecoder
     .decodePromise(payload)
     .then((updatedGame) => {
-      game.value = updatedGame
+      const locked = uiLock.value
+      // Behind a revelation: refresh the board but keep the question hidden so the
+      // player can't act until they dismiss it. On unlock the queued GameUpdate is
+      // replayed (locked === false) and restores the real question + side effects.
+      game.value = locked ? { ...updatedGame, question: {} } : updatedGame
       updateGameLog(updatedGame.log)
       preloadImages(updatedGame)
-      if (solo.value === true) {
-        if (Object.keys(game.value.question).length == 1) {
-          playerId.value = Object.keys(game.value.question)[0]
-        } else if (game.value.activePlayerId !== playerId.value) {
-          if (playerId.value && Object.keys(game.value.question).includes(playerId.value)) {
-            playerId.value = game.value.activePlayerId
-          } else {
+      if (!locked) {
+        if (solo.value === true) {
+          if (Object.keys(game.value.question).length == 1) {
+            playerId.value = Object.keys(game.value.question)[0]
+          } else if (game.value.activePlayerId !== playerId.value) {
+            if (playerId.value && Object.keys(game.value.question).includes(playerId.value)) {
+              playerId.value = game.value.activePlayerId
+            } else {
+              playerId.value = Object.keys(game.value.question)[0]
+            }
+          } else if (playerId.value && !Object.keys(game.value.question).includes(playerId.value)) {
             playerId.value = Object.keys(game.value.question)[0]
           }
-        } else if (playerId.value && !Object.keys(game.value.question).includes(playerId.value)) {
-          playerId.value = Object.keys(game.value.question)[0]
         }
+        continueSkipAll()
       }
-      continueSkipAll()
     })
     .finally(() => {
       decoding = false
@@ -437,7 +523,7 @@ function playAudioFile(fileName: string) {
 function continueSkipAll() {
   if (skipAllPending.value.size === 0) return
   if (!game.value) return
-  const next = skipTriggerEntries(game.value).find((e) => skipAllPending.value.has(e.playerId))
+  const next = authorizedSkipTriggerEntries(game.value).find((e) => skipAllPending.value.has(e.playerId))
   if (!next) {
     skipAllPending.value = new Set()
     return
@@ -461,7 +547,12 @@ function sendSkipFor(targetPlayerId: string, choiceIdx: number) {
 
 function skipAllTriggers() {
   if (!game.value || props.spectate) return
-  const entries = skipTriggerEntries(game.value)
+  if (skipAllPending.value.size > 0) {
+    if (!processing.value) continueSkipAll()
+    return
+  }
+
+  const entries = authorizedSkipTriggerEntries(game.value)
   if (entries.length === 0) return
   skipAllPending.value = new Set(entries.map((e) => e.playerId))
   const first = entries[0]
@@ -597,12 +688,12 @@ const handleResult = (result: ServerResult) => {
         })
       return
     case 'GameUpdate':
-      if (uiLock.value) {
-        qPush(result)
-        if (game.value) setGameQuestion({})
-      } else {
-        scheduleApplyUpdate(result.contents)
-      }
+      // Flush the latest state onto the board even while a revelation/modal holds
+      // the UI lock, so the table behind it reflects the current situation instead
+      // of freezing on the pre-revelation state (issue #4817). Keep it queued so
+      // the pending question is only restored once every revelation is dismissed.
+      if (uiLock.value) qPush(result)
+      scheduleApplyUpdate(result.contents)
       return
   }
 }
@@ -618,7 +709,7 @@ watch(uiLock, async () => {
   }
 })
 
-const undoScenarioDialog = useTemplateRef<HTMLDialogElement>('undoScenarioDialog')
+const confirmingUndoScenario = ref(false)
 
 const actionMap = computed<Map<string, () => void>>(() => {
   const map = new Map<string, () => void>()
@@ -767,7 +858,7 @@ const handleKeyPress = (event: KeyboardEvent) => {
     }
     if (k === 's' && canUndoScenario.value) {
       clearUndoChord()
-      undoScenarioDialog.value?.showModal()
+      confirmingUndoScenario.value = true
       return
     }
     // Pressing U again while armed = single undo (re-pressing the prefix)
@@ -934,7 +1025,7 @@ async function undo() {
 }
 
 async function undoScenario() {
-  undoScenarioDialog.value?.close()
+  confirmingUndoScenario.value = false
   processing.value = true
   if (game.value) setGameQuestion({})
   resultQueue.value = []
@@ -1019,22 +1110,26 @@ async function loadAllImages(game: Arkham.Game): Promise<void> {
   for (const card of Object.values(game.cards)) {
     const { cardCode, isFlipped } = toCardContents(card)
     const url = imgsrc(`cards/${cardCode.replace(/^c/, '')}${isFlipped ? 'b' : ''}.avif`)
-    if (!preloaded.has(url)) pending.push(url)
+    if (!preloaded.has(url) && !preloading.has(url)) pending.push(url)
   }
   if (pending.length === 0) return
+  pending.forEach((url) => preloading.add(url))
 
   await Promise.all(
     pending.map(
       (url) =>
-        new Promise<void>((resolve, reject) => {
+        new Promise<void>((resolve) => {
           const img = new Image()
           img.onload = () => {
             preloaded.add(url)
+            preloading.delete(url)
             resolve()
           }
           img.onerror = () => {
             preloaded.add(url)
-            reject(`Could not load ${url}`)
+            preloading.delete(url)
+            console.warn(`Could not preload ${url}`)
+            resolve()
           }
           img.src = url
         }),
@@ -1088,6 +1183,15 @@ async function choosePaymentAmounts(amounts: Record<string, number>): Promise<vo
         contents: { amounts, questionVersion, playerId: playerId.value },
       }),
     )
+  }
+}
+
+async function scenarioSpecificAnswer(key: string, value: unknown): Promise<void> {
+  if (game.value && !props.spectate) {
+    oldQuestion.value = game.value.question
+    setGameQuestion({})
+    processing.value = true
+    send(JSON.stringify({ tag: 'ScenarioSpecificAnswer', contents: [key, value] }))
   }
 }
 
@@ -1155,17 +1259,49 @@ provide('chooseDeckList', chooseDeckList)
 provide('send', send)
 provide('choosePaymentAmounts', choosePaymentAmounts)
 provide('chooseAmounts', chooseAmounts)
+provide('scenarioSpecificAnswer', scenarioSpecificAnswer)
 provide('switchInvestigator', switchInvestigator)
 provide('solo', solo)
 provide('skipAllTriggers', skipAllTriggers)
 provide('skipAllAvailable', skipAllAvailable)
+provide('skipAllInProgress', skipAllInProgress)
 provide('showOtherPlayersHands', showOtherPlayersHands)
+
+function updateFocusLight() {
+  const highlighted = [...document.querySelectorAll<HTMLElement>(
+    '.source-highlight, .ability-target, .card-frame-inner.highlighted, .cards-under-indicator--highlighted',
+  )].find((el) => {
+    if (el.closest('.scenario-cards')) return false
+    const rect = el.getBoundingClientRect()
+    return rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.right >= 0
+      && rect.top <= window.innerHeight && rect.left <= window.innerWidth
+  })
+
+  if (!highlighted) {
+    focusLightX.value = -1000
+    focusLightY.value = -1000
+    return
+  }
+
+  const rect = highlighted.getBoundingClientRect()
+  focusLightX.value = rect.left + rect.width / 2
+  focusLightY.value = rect.top + rect.height / 2
+}
+
+function scheduleFocusLightUpdate() {
+  if (focusLightAnimationFrame !== null) return
+  focusLightAnimationFrame = requestAnimationFrame(() => {
+    focusLightAnimationFrame = null
+    updateFocusLight()
+  })
+}
 
 const onMove = (event: MouseEvent) => {
   mouseX = event.clientX
   mouseY = event.clientY
   flashlightX.value = event.clientX
   flashlightY.value = event.clientY
+  scheduleFocusLightUpdate()
 }
 
 // callbacks
@@ -1188,6 +1324,9 @@ onMounted(() => {
   ;(window as any).undo = undo
   ;(window as any).debugChoose = choose
   document.addEventListener('mousemove', onMove, { passive: true })
+  focusLightObserver = new MutationObserver(scheduleFocusLightUpdate)
+  focusLightObserver.observe(document.body, { attributes: true, attributeFilter: ['class'], subtree: true })
+  scheduleFocusLightUpdate()
   document.addEventListener('keydown', handleKeyPress)
   window.addEventListener('arkham-setting-change', handleSettingChange)
 })
@@ -1196,6 +1335,9 @@ onBeforeRouteLeave(() => close())
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeyPress)
   document.removeEventListener('mousemove', onMove)
+  focusLightObserver?.disconnect()
+  focusLightObserver = null
+  if (focusLightAnimationFrame !== null) cancelAnimationFrame(focusLightAnimationFrame)
   window.removeEventListener('arkham-setting-change', handleSettingChange)
   delete (window as any).sendDebug
   delete (window as any).undo
@@ -1240,6 +1382,12 @@ onUnmounted(() => {
       v-if="realityAcidLightActive"
       class="reality-acid-flashlight"
       :style="{ '--flashlight-x': `${flashlightX}px`, '--flashlight-y': `${flashlightY}px` }"
+      aria-hidden="true"
+    ></div>
+    <div
+      v-if="realityAcidLightActive"
+      class="reality-acid-focus-light"
+      :style="{ '--focus-light-x': `${focusLightX}px`, '--focus-light-y': `${focusLightY}px` }"
       aria-hidden="true"
     ></div>
     <Draggable v-if="showShortcuts">
@@ -1371,7 +1519,7 @@ onUnmounted(() => {
     <div class="game-bar">
       <div class="game-bar-item">
         <div>
-          <button @click="router.push({ name: 'CampaignLog', params: { gameId } })">
+          <button @click="showLog = !showLog">
             <DocumentTextIcon aria-hidden="true" />
             {{ showLog ? $t('gameBar.closeLog') : $t('gameBar.viewLog') }}
           </button>
@@ -1481,7 +1629,7 @@ onUnmounted(() => {
                 <button
                   class="undo-jump scope-scenario"
                   :class="{ active }"
-                  @click="undoScenarioDialog && undoScenarioDialog.showModal()"
+                  @click="confirmingUndoScenario = true"
                 >
                   <FlagIcon aria-hidden="true" />
                   <span class="undo-jump-label">{{ $t('gameBar.restartScenario') }}</span>
@@ -1532,7 +1680,14 @@ onUnmounted(() => {
         :game="game"
         :cards="cards"
         :playerId="playerId"
-      />
+      >
+        <template #header-leading>
+          <button class="back-button" @click="showLog = false">
+            <font-awesome-icon icon="arrow-left" class="back-icon" />
+            <span>{{ $t('back') }}</span>
+          </button>
+        </template>
+      </CampaignLog>
       <div v-else class="game-main">
         <div v-if="showTheSilenceModal" class="the-silence-modal-backdrop">
           <div class="the-silence-modal" role="dialog" aria-modal="true" aria-labelledby="the-silence-modal-title">
@@ -1627,8 +1782,11 @@ onUnmounted(() => {
           :gameLog="gameLog"
           :playerId="playerId"
           :campaign="game.campaign"
+          :realityAcidLightDevoured="realityAcidLightDevoured"
+          :realityAcidLightActive="realityAcidLightActive"
           @choose="choose"
           @update="update"
+          @toggleRealityAcidLight="toggleRealityAcidLight"
         />
         <ScenarioSettings
           v-else-if="
@@ -1642,8 +1800,11 @@ onUnmounted(() => {
           v-else-if="game.scenario && !gameOver"
           :game="game"
           :playerId="playerId"
+          :realityAcidLightDevoured="realityAcidLightDevoured"
+          :realityAcidLightActive="realityAcidLightActive"
           @choose="choose"
           @update="update"
+          @toggleRealityAcidLight="toggleRealityAcidLight"
         />
         <div
           class="sidebar"
@@ -1673,31 +1834,79 @@ onUnmounted(() => {
         ></div>
       </div>
     </template>
-    <dialog id="undoScenarioDialog" ref="undoScenarioDialog">
-      <p>{{ $t('game.areYouSureUndoScenario') }}</p>
-      <div class="buttons">
-        <button @click="undoScenario()">{{ $t('Yes') }}</button>
-        <button @click="undoScenarioDialog?.close()">{{ $t('No') }}</button>
-      </div>
-    </dialog>
+    <Prompt
+      v-if="confirmingUndoScenario"
+      prompt="$game.areYouSureUndoScenario"
+      :yes="undoScenario"
+      :no="() => confirmingUndoScenario = false"
+    />
   </div>
 </template>
 
 <style lang="scss" scoped>
+.back-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
+  font-family: teutonic, sans-serif;
+  font-size: 0.95em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+
+  .back-icon {
+    font-size: 0.85em;
+    transition: transform 0.15s;
+  }
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: #f0f0f0;
+
+    .back-icon {
+      transform: translateX(-3px);
+    }
+  }
+}
+
 .reality-acid-flashlight {
   --flashlight-x: 50vw;
   --flashlight-y: 50vh;
   position: fixed;
   inset: 0;
-  z-index: 9998;
+  z-index: var(--z-index-9998);
   pointer-events: none;
   background: radial-gradient(
-    circle 190px at var(--flashlight-x) var(--flashlight-y),
-    rgba(0, 0, 0, 0) 0 42%,
-    rgba(0, 0, 0, 0.45) 58%,
-    rgba(0, 0, 0, 0.9) 100%
+    circle 330px at var(--flashlight-x) var(--flashlight-y),
+    rgba(0, 0, 0, 0) 0 52%,
+    rgba(0, 0, 0, 0.12) 68%,
+    rgba(0, 0, 0, 0.82) 100%
   );
-  mix-blend-mode: multiply;
+}
+
+.reality-acid-focus-light {
+  --focus-light-x: -1000px;
+  --focus-light-y: -1000px;
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-index-9998) + 1);
+  pointer-events: none;
+  background: radial-gradient(
+    circle 205px at var(--focus-light-x) var(--focus-light-y),
+    rgba(255, 248, 190, 0.72) 0 18%,
+    rgba(255, 230, 128, 0.42) 46%,
+    rgba(255, 226, 120, 0) 76%
+  );
+  mix-blend-mode: screen;
+  opacity: 0.95;
 }
 
 .action {
@@ -1868,7 +2077,7 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   display: flex;
-  z-index: 100;
+  z-index: var(--z-index-100);
 
   justify-content: center;
   align-items: center;
@@ -1898,7 +2107,7 @@ onUnmounted(() => {
     height: 100dvh;
     width: min(85vw, 360px);
     max-width: none;
-    z-index: 200;
+    z-index: var(--z-index-200);
     box-shadow: -2px 0 16px rgba(0, 0, 0, 0.45);
     animation: sidebar-slide-in 0.18s ease-out;
   }
@@ -1920,7 +2129,7 @@ onUnmounted(() => {
     position: fixed;
     inset: 0;
     background: rgba(0, 0, 0, 0.5);
-    z-index: 199;
+    z-index: var(--z-index-199);
     animation: sidebar-fade-in 0.18s ease-out;
   }
 }
@@ -1997,7 +2206,7 @@ header {
       content: '';
       display: none;
       position: absolute;
-      z-index: 9998;
+      z-index: var(--z-index-9998);
       top: 35px;
       left: 15px;
       width: 0;
@@ -2012,7 +2221,7 @@ header {
       content: 'Copied!';
       display: none;
       position: absolute;
-      z-index: 9999;
+      z-index: var(--z-index-9999);
       top: var(--nav-height);
       left: -37px;
       width: 114px;
@@ -2171,7 +2380,7 @@ header {
 .the-silence-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 30000;
+  z-index: var(--z-index-30000);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2252,7 +2461,7 @@ header {
 .revelation {
   position: absolute;
   transform: all 0.5s;
-  z-index: 1000;
+  z-index: var(--z-index-1000);
   color: white;
   text-align: center;
   margin: auto;
@@ -2712,7 +2921,7 @@ button:hover .shortcut {
   padding-block: 10px;
   width: 50%;
   display: flex;
-  z-index: 100;
+  z-index: var(--z-index-100);
   display: flex;
   flex-direction: column;
   border: 0;
@@ -2759,7 +2968,7 @@ button:hover .shortcut {
   }
 }
 .loader {
-  z-index: 1000;
+  z-index: var(--z-index-1000);
   position: absolute;
   top: 50px;
   left: 20px;
@@ -2788,7 +2997,7 @@ button:hover .shortcut {
 }
 
 .processing {
-  z-index: 1000;
+  z-index: var(--z-index-1000);
   position: absolute;
   top: 5px;
   left: 00px;
@@ -2857,7 +3066,7 @@ dialog {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: var(--z-index-1000);
 }
 
 .debug-playability-modal {
