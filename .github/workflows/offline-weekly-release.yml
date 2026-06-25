@@ -22,6 +22,7 @@ jobs:
           ref: ${{ env.BRANCH }}
           fetch-depth: 0
           fetch-tags: true
+          token: ${{ secrets.RELEASE_PAT }}
 
       - name: Merge upstream (prefer ours on conflict)
         run: |
@@ -42,3 +43,5 @@ jobs:
           git tag -a "$TAG" -m "Weekly release $TAG"
           git push origin "$TAG"
           echo "Pushed tag: $TAG"
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PAT }}

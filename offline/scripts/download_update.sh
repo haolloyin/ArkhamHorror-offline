@@ -45,9 +45,6 @@ if [ ! -d "$GAME_DIR" ]; then
     die "未找到 game/ 目录：${GAME_DIR}"
 fi
 
-echo "    Arkham Horror LCG — 下载更新"
-echo "  =================================="
-
 BASE_REPO_URL="https://github.com/haolloyin/ArkhamHorror-offline/"
 GH_PROXY_URL="https://gh-proxy.org/"
 
@@ -305,7 +302,7 @@ elif [ "$IS_DIRECT_NETWORK" = true ] && [ -z "$LATEST_TAG" ]; then
 elif [ "$IS_DIRECT_NETWORK" = false ] && [ -n "$LATEST_TAG" ]; then
     build_archive_info "$LATEST_TAG" "$GH_PROXY_URL"
 
-    print_download_plan "正在通过 gh-proxy 下载"
+    print_download_plan "正在通过代理下载"
 
     if ! do_download "$DOWNLOAD_URL" "$DEST_PATH"; then
         die "代理下载失败：${DOWNLOAD_URL}"
@@ -317,7 +314,7 @@ else
     TRIES=0
     LATEST_TAG=""
 
-    info "通过 gh-proxy 按日期递减探测下载（最多 ${MAX_RETRIES} 次）..."
+    info "按日期递减探测是否有新版本（最多 ${MAX_RETRIES} 次），请稍等1~2分钟..."
 
     while [ "$TRIES" -lt "$MAX_RETRIES" ]; do
         TARGET_DATE="$(offset_date "$TRIES")"
