@@ -3,11 +3,12 @@ import { watch, ref, computed, onMounted, onUnmounted } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { useRoute, useRouter } from 'vue-router'
 import * as Arkham from '@/arkham/types/Deck'
-import { fetchDecks, newGame } from '@/arkham/api'
+import { fetchDecks, newGame, createEvent } from '@/arkham/api'
+import { useEventStore } from '@/arkham/stores/event'
 import type { Difficulty } from '@/arkham/types/Difficulty'
 import type { Scenario, Campaign } from '@/arkham/data'
 import { storeToRefs } from 'pinia'
-import type { GameMode, MultiplayerVariant, CampaignType } from '@/arkham/types/NewGame'
+import type { GameMode, MultiplayerVariant, CampaignType, AiSlotConfig } from '@/arkham/types/NewGame'
 
 import campaignJSON from '@/arkham/data/campaigns'
 import scenarioJSON from '@/arkham/data/scenarios'
@@ -21,6 +22,7 @@ type Step = 'ChooseMode' | 'GameOptions'
 
 const store = useUserStore()
 const { currentUser } = storeToRefs(store)
+const eventStore = useEventStore()
 
 const route = useRoute()
 const router = useRouter()
@@ -51,8 +53,28 @@ const campaignName = ref<string | null>(null)
 const multiplayerVariant = ref<MultiplayerVariant>('WithFriends')
 const returnTo = ref(false)
 
+// Per-seat AI configuration (dev-only, Solo games only); see GameOptions.vue.
+const aiPlayers = ref<(AiSlotConfig | null)[]>([])
+
 const fullCampaignOptionKey = ref<string | null>(null)
 const recommendedOptionState = ref<Record<string, boolean>>({})
+
+// "Epic Multiplayer" side-story mode state (only meaningful for epic-capable
+// side stories; see GameOptions.vue / side-stories.json).
+type EpicGroup = { name: string; playerCount: number }
+const epicMode = ref(false)
+const epicGroupCount = ref(2)
+const epicGroups = ref<EpicGroup[]>([
+  { name: 'Group A', playerCount: 2 },
+  { name: 'Group B', playerCount: 2 },
+])
+// Shared time limit (epic only). On by default; sends 0 minutes when off.
+const imposeTimeLimit = ref(true)
+const timeLimitMinutes = ref(180)
+
+// "Mini-campaign" side-story mode (only meaningful for side stories flagged
+// `miniCampaign` in side-stories.json, e.g. The Labyrinths of Lunacy).
+const miniCampaign = ref(false)
 
 const scenarios = computed<Scenario[]>(() => gate(scenarioJSON))
 const sideStories = computed<Scenario[]>(() => gate(sideStoriesJSON))
@@ -69,6 +91,11 @@ const campaign = computed(() =>
     ? campaigns.value.find((c) => c.id === selectedCampaign.value)
     : null
 )
+
+const scenarioSupportsEpic = computed(
+  () => gameMode.value === 'SideStory' && scenario.value?.epicMultiplayer === true,
+)
+const isEpicMode = computed(() => scenarioSupportsEpic.value && epicMode.value)
 
 const selectedCampaignReturnTo = computed(() => {
   const c = campaigns.value.find((x) => x.id === selectedCampaign.value)
@@ -209,6 +236,14 @@ watch(gameMode, (mode) => {
 
 watch(selectedScenario, () => {
   if (gameMode.value === 'SideStory') sideStoryMode.value = 'campaign'
+  // Re-arm to the default single-group mode whenever the chosen side story changes.
+  epicMode.value = false
+  miniCampaign.value = false
+})
+
+watch(gameMode, () => {
+  epicMode.value = false
+  miniCampaign.value = false
 })
 
 watch(selectedCampaign, (id) => {
@@ -256,8 +291,38 @@ async function start() {
 
   const options = [
     ...enabledRecommendedOptions,
-    ...variant
+    ...variant,
+    ...(miniCampaign.value ? [{ tag: 'PlayAsMiniCampaign' }] : [])
   ]
+
+  // AI seats are only meaningful (and only sent) for Solo/multihanded games.
+  const aiPlayersForCreate = multiplayerVariant.value === 'Solo' ? aiPlayers.value : undefined
+
+  // Epic Multiplayer side story: spin up an event aggregate (N group games +
+  // shared state) instead of a single game, and land on the organizer dashboard.
+  if (isEpicMode.value && scenario.value && currentCampaignName.value) {
+    // Off -> 0 (no limit). On with a bad/empty value -> fall back to the 180 default
+    // so an "imposed" limit can never silently become "no limit".
+    const minutes = imposeTimeLimit.value
+      ? (Number.isFinite(timeLimitMinutes.value) && timeLimitMinutes.value > 0
+          ? Math.floor(timeLimitMinutes.value)
+          : 180)
+      : 0
+    const details = await createEvent({
+      name: currentCampaignName.value,
+      scenarioId: scenario.value.id,
+      difficulty: selectedDifficulty.value,
+      includeTarotReadings: includeTarotReadings.value,
+      timeLimitMinutes: minutes,
+      groups: epicGroups.value.map((g, i) => ({
+        name: g.name.trim() === '' ? `Group ${String.fromCharCode(65 + i)}` : g.name.trim(),
+        playerCount: g.playerCount,
+      })),
+    })
+    eventStore.setEvent(details)
+    router.push(`/events/${details.id}`)
+    return
+  }
 
   if (fullCampaign.value === 'Standalone' || gameMode.value === 'SideStory') {
     if (scenario.value && currentCampaignName.value) {
@@ -284,7 +349,8 @@ async function start() {
         multiplayerVariant.value,
         includeTarotReadings.value,
         options,
-        strictAsIfAt.value
+        strictAsIfAt.value,
+        aiPlayersForCreate
       ).then((game) => router.push(`/games/${game.id}`))
     }
   } else {
@@ -302,7 +368,8 @@ async function start() {
         multiplayerVariant.value,
         includeTarotReadings.value,
         options,
-        strictAsIfAt.value
+        strictAsIfAt.value,
+        aiPlayersForCreate
       ).then((game) => router.push(`/games/${game.id}`))
     }
   }
@@ -343,6 +410,13 @@ async function start() {
           v-model:campaignName="campaignName"
           v-model:fullCampaignOptionKey="fullCampaignOptionKey"
           v-model:recommendedOptionState="recommendedOptionState"
+          v-model:epicMode="epicMode"
+          v-model:epicGroupCount="epicGroupCount"
+          v-model:epicGroups="epicGroups"
+          v-model:imposeTimeLimit="imposeTimeLimit"
+          v-model:timeLimitMinutes="timeLimitMinutes"
+          v-model:miniCampaign="miniCampaign"
+          v-model:aiPlayers="aiPlayers"
           :gameMode="gameMode"
           :campaign="campaign"
           :scenario="scenario"
@@ -375,6 +449,10 @@ async function start() {
 </template>
 
 <style scoped>
+:global(html) {
+  scrollbar-gutter: stable;
+}
+
 .new-campaign-content {
   width: 70vw;
   max-width: 98vw;
@@ -592,7 +670,7 @@ input[type='image'] {
 }
 
 .wizard-actions .action:active:not(:disabled) {
-  transform: translateY(0px);
+  transform: translateY(0px) scale(0.97);
 }
 
 .wizard-actions .action.primary {

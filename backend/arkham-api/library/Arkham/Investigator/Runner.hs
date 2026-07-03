@@ -1,4 +1,5 @@
 {-# LANGUAGE TypeAbstractions #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module Arkham.Investigator.Runner (module Arkham.Investigator.Runner, module X) where
@@ -39,7 +40,6 @@ import Arkham.Card.PlayerCard
 import Arkham.Card.Settings
 import Arkham.Classes.HasGame
 import Arkham.CommitRestriction
-import Arkham.Customization
 import Arkham.Deck qualified as Deck
 import Arkham.DefeatedBy
 import Arkham.Discover
@@ -66,6 +66,7 @@ import Arkham.Helpers.Card (
  )
 import Arkham.Helpers.Cost (getCanAffordCost)
 import Arkham.Helpers.Criteria (passesCriteria)
+import Arkham.Helpers.Customization
 import Arkham.Helpers.Discover
 import Arkham.Helpers.Game (withAlteredGame)
 import Arkham.Helpers.Location (
@@ -112,6 +113,7 @@ import Arkham.Matcher (
   CardMatcher (..),
   EnemyMatcher (..),
   EventMatcher (..),
+  ExtendedCardMatcher (..),
   ForPlay (..),
   InvestigatorMatcher (..),
   LocationMatcher (..),
@@ -119,12 +121,12 @@ import Arkham.Matcher (
   assetControlledBy,
   assetIs,
   at_,
+  basic,
   cardIs,
   coveredByAnyInPlayEnemy,
   locationWithInvestigator,
   oneOf,
   orConnected,
-  pattern AnyInPlayEnemy,
   pattern AssetWithAnyClues,
  )
 import Arkham.Message qualified as Msg
@@ -137,6 +139,7 @@ import Arkham.Modifier qualified as Modifier
 import Arkham.Movement
 import Arkham.Phase
 import Arkham.Placement
+import Arkham.PlayerCard qualified as PlayerCard
 import Arkham.Plural
 import Arkham.Prelude
 import Arkham.Projection
@@ -232,11 +235,11 @@ getAllAbilitiesSkippable attrs windows = allM (getWindowSkippable attrs windows)
 
 getWindowSkippable :: (Tracing m, HasGame m) => InvestigatorAttrs -> [Window] -> Window -> m Bool
 getWindowSkippable
-  attrs
+  _attrs
   ws
   ( windowTiming &&& windowType ->
       (Timing.When, Window.PlayCard iid (Window.CardPlay card@(PlayerCard pc) asAction))
-    ) | iid == toId attrs = do
+    ) = do
     allModifiers <- getModifiers card
     mCost <- getModifiedCardCost iid card
     isFast <- cardIsFast' (\_ -> pure allModifiers) card
@@ -275,9 +278,9 @@ getWindowSkippable
 
       liftGuardM
         $ withAlteredGame withoutCanModifiers
-        $ getCanAffordCost (toId attrs) pc [#play] ws (ResourceCost $ max 0 $ cost - additionalResources)
+        $ getCanAffordCost iid pc [#play] ws (ResourceCost $ max 0 $ cost - additionalResources)
       when (not isFast && asAction) do
-        liftGuardM $ getCanAffordCost (toId attrs) pc [#play] ws (ActionCost 1)
+        liftGuardM $ getCanAffordCost iid pc [#play] ws (ActionCost 1)
       liftGuardM $ withAlteredGame withoutCanModifiers $ passesLimits iid card
 getWindowSkippable
   attrs
@@ -513,7 +516,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
           filter
             ( and
                 . sequence
-                  [ (`notElem` investigatorStartsWithInHand) . toCardDef
+                  [ (`notElem` map toCardCode investigatorStartsWithInHand) . toCardCode
                   , not
                       . ( `cardMatch`
                             oneOf [cardIs Treacheries.falseAwakening, cardIs Treacheries.falseAwakeningPointOfNoReturn]
@@ -853,7 +856,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
         _ -> original
       applyMatcherModifiers _ n = n
       canFightMatcher = case overrides of
-        [] -> if choose.overriden then AnyInPlayEnemy else CanFightEnemy source
+        [] -> if choose.overriden then AnyEnemy else CanFightEnemy source
         [o] -> CanFightEnemyWithOverride o
         _ -> error "multiple overrides found"
     smods <- filter (== IgnoreAloof) <$> getModifiers choose.skillTest
@@ -998,7 +1001,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
         _ -> original
       applyMatcherModifiers _ n = n
       canEvadeMatcher = case overrides of
-        [] -> if choose.overriden then AnyInPlayEnemy else CanEvadeEnemy source
+        [] -> if choose.overriden then AnyEnemy else CanEvadeEnemy source
         [o] -> CanEvadeEnemyWithOverride o
         _ -> error "multiple overrides found"
     enemyIds <-
@@ -1116,23 +1119,23 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
   InvestigatorDoAssignDamage iid source damageStrategy _ 0 0 damageTargets horrorTargets
     | iid == toId a
     , isDeferredStrategy damageStrategy ->
-        handleInvestigatorDoAssignDamageDeferred a iid source damageStrategy damageTargets horrorTargets
+        finalizeDeferredDamageAssignment a iid source damageStrategy damageTargets horrorTargets
   InvestigatorDoAssignDamage iid source damageStrategy _ 0 0 damageTargets horrorTargets
     | iid == toId a ->
-        handleInvestigatorDoAssignDamage a iid source damageStrategy damageTargets horrorTargets
+        finalizeDamageAssignment a iid source damageStrategy damageTargets horrorTargets
   InvestigatorDoAssignDamage iid source DamageEvenly matcher health 0 damageTargets horrorTargets
     | iid == toId a ->
-        handleInvestigatorDoAssignDamageV2 a iid source matcher health damageTargets horrorTargets
+        assignHealthDamageEvenly a iid source matcher health damageTargets horrorTargets
   InvestigatorDoAssignDamage iid source DamageEvenly matcher 0 sanity damageTargets horrorTargets
     | iid == toId a ->
-        handleInvestigatorDoAssignDamageV3 a iid source matcher sanity damageTargets horrorTargets
-  InvestigatorDoAssignDamage iid _ DamageEvenly _ _ _ _ _ | iid == investigatorId -> handleInvestigatorDoAssignDamageV4 a iid
+        assignHorrorEvenly a iid source matcher sanity damageTargets horrorTargets
+  InvestigatorDoAssignDamage iid _ DamageEvenly _ _ _ _ _ | iid == investigatorId -> assignDamageEvenlyUnsupported a iid
   InvestigatorDoAssignDamage iid source SingleTarget matcher health sanity damageTargets horrorTargets
     | iid == toId a ->
-        handleInvestigatorDoAssignDamageV5 a iid source matcher health sanity damageTargets horrorTargets
+        assignDamageToSingleTarget a iid source matcher health sanity damageTargets horrorTargets
   InvestigatorDoAssignDamage iid source strategy matcher health sanity damageTargets horrorTargets
     | iid == toId a ->
-        handleInvestigatorDoAssignDamageV6
+        assignDamageDivided
           a
           iid
           source
@@ -1844,10 +1847,8 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     includeStory <- not <$> hasCampaignOption PlayersDoNotControlStoryAssetClues
     let storyWrapper = if includeStory then id else (<> AssetNonStory)
     assetsWithClues <- select $ storyWrapper $ assetControlledBy iid <> AssetWithAnyClues
-    if null assetsWithClues
-      then push $ Do msg
-      else push $ DoStep n msg
-    pushM $ checkAfter $ Window.SpentClues iid n
+    afterWindow <- checkAfter $ Window.SpentClues iid n
+    pushAll [if null assetsWithClues then Do msg else DoStep n msg, afterWindow]
     pure a
   DoStep n msg'@(InvestigatorSpendClues iid _) | n > 0 && iid == investigatorId -> do
     assets <- select $ assetControlledBy iid <> AssetWithAnyClues
@@ -2172,8 +2173,92 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
   PutCardOnTopOfDeck _ _ card -> handlePutCardOnTopOfDeckV2 a card
   PutCardOnBottomOfDeck _ (Deck.InvestigatorDeck iid) card | iid == toId a -> handlePutCardOnBottomOfDeck a iid card
   PutCardOnBottomOfDeck _ _ card -> handlePutCardOnBottomOfDeckV2 a card
-  DebugAddToHand iid cardId | iid == investigatorId -> do
+  DebugCustomize iid cardId | iid == investigatorId -> do
     card <- getCard cardId
+    case card of
+      PlayerCard pc -> do
+        let customizations = cdCustomizations $ toCardDef card
+        let availableCustomizations = filter (not . hasCustomization_ customizations (pcCustomizations pc)) (keys customizations)
+        player <- getPlayer iid
+        unless (null availableCustomizations) do
+          push
+            $ Msg.chooseOne
+              player
+              [ Label
+                  ("$customizations." <> tshow customization)
+                  [DebugIncreaseCustomization iid card.cardCode customization []]
+              | customization <- availableCustomizations
+              ]
+      _ -> pure ()
+    pure a
+  DebugIncreaseCustomization iid cardCode customization choices | iid == investigatorId -> do
+    mcard <- selectOne $ OwnedBy (InvestigatorWithId iid) <> basic (CardWithCardCode cardCode)
+    for_ mcard \card -> do
+      let requiredChoices = choicesRequired customization
+      -- Debug: enable the customization entirely by filling every remaining check mark
+      let fillAll =
+            pushAll
+              $ replicate
+                (fromMaybe 0 $ cardRemainingCheckMarks card customization)
+                (IncreaseCustomization iid cardCode customization choices)
+      if length choices < length requiredChoices
+        then case drop (length choices) requiredChoices of
+          (CustomizationTraitChoice : _) -> do
+            player <- getPlayer iid
+            push
+              $ Msg.chooseOneDropDown
+                player
+                [ ( tshow trait
+                  , DebugIncreaseCustomization iid cardCode customization (ChosenTrait trait : choices)
+                  )
+                | trait <- [minBound ..]
+                ]
+          (CustomizationCardChoice matcher : _) -> do
+            player <- getPlayer iid
+            push
+              $ Msg.chooseOneDropDown
+                player
+                [ ( c
+                  , DebugIncreaseCustomization iid cardCode customization (ChosenCard c : choices)
+                  )
+                | c <-
+                    sort
+                      $ nub
+                      $ map toTitle
+                      $ filter ((`cardMatch` matcher) . (`lookupPlayerCard` nullCardId)) (toList PlayerCard.allPlayerCards)
+                ]
+          (CustomizationSkillChoice : _) -> do
+            player <- getPlayer iid
+            push
+              $ Msg.chooseOneDropDown
+                player
+                [ ( tshow skill
+                  , DebugIncreaseCustomization iid cardCode customization (ChosenSkill skill : choices)
+                  )
+                | skill <- [minBound ..]
+                ]
+          (CustomizationIndexChoice zs : _) -> do
+            player <- getPlayer iid
+            push
+              $ Msg.chooseOneDropDown
+                player
+                [ ( tshow z
+                  , DebugIncreaseCustomization iid cardCode customization (ChosenIndex n : choices)
+                  )
+                | (n, z) <- withIndex zs
+                ]
+          _ -> fillAll
+        else fillAll
+    pure a
+  DebugAddToHand iid cardId | iid == investigatorId -> do
+    card <- setOwner iid =<< getCard cardId
+    bondedCards <- concatForM (cdBondedWith $ toCardDef card) \(n, cCode) -> do
+      case lookupCardDef cCode of
+        Nothing -> error "missing bonded card"
+        Just def -> do
+          cs <- replicateM n (genCard def)
+          traverse (Arkham.Card.setTaboo a.taboo <=< setOwner iid) cs
+    pushAll $ map (PlaceInBonded iid) bondedCards
     liftRunMessage (AddToHand iid [card]) a
   DrawToHandFrom iid deck cards | iid == investigatorId -> handleDrawToHandFrom a iid deck cards
   DrawToHand iid cards | iid == investigatorId -> handleDrawToHand a iid cards
@@ -2372,7 +2457,8 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     windows <- case mAction of
       Just Action.Investigate -> concat <$> traverse goLocation (maybeToList mTarget)
       Just Action.Fight -> pure $ goEnemy (Window.SuccessfulAttackEnemy iid source) =<< maybeToList mTarget
-      Just Action.Evade -> pure $ goEnemy (Window.SuccessfulEvadeEnemy iid source) =<< maybeToList mTarget
+      -- SuccessfulEvadeEnemy fires from the enemy's evade resolution (around
+      -- EnemyEvaded) so reactions see the enemy exhausted; see Enemy.Runner.
       _ -> pure []
     pushM $ checkWindows $ mkWhen (Window.PassSkillTest mAction source iid n) : windows
     pure a
@@ -2396,7 +2482,8 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     windows <- case mAction of
       Just Action.Investigate -> concat <$> traverse goLocation (maybeToList mTarget)
       Just Action.Fight -> pure $ goEnemy (Window.SuccessfulAttackEnemy iid source) =<< maybeToList mTarget
-      Just Action.Evade -> pure $ goEnemy (Window.SuccessfulEvadeEnemy iid source) =<< maybeToList mTarget
+      -- SuccessfulEvadeEnemy fires from the enemy's evade resolution (around
+      -- EnemyEvaded) so reactions see the enemy exhausted; see Enemy.Runner.
       _ -> pure []
     pushM $ checkWindows $ mkAfter (Window.PassSkillTest mAction source iid n) : windows
     pure a

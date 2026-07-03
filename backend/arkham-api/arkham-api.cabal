@@ -22,12 +22,14 @@ flag library-only
 
 library
   exposed-modules:
+      Api.Arkham.Epic
       Api.Arkham.Export
       Api.Arkham.Helpers
       Api.Arkham.Types.MultiplayerVariant
       Api.Handler.Arkham.Admin.Metrics
       Api.Handler.Arkham.Cards
       Api.Handler.Arkham.Decks
+      Api.Handler.Arkham.Events
       Api.Handler.Arkham.Game.Bug
       Api.Handler.Arkham.Game.Debug
       Api.Handler.Arkham.Games
@@ -811,6 +813,15 @@ library
       Arkham.Agenda.Runner
       Arkham.Agenda.Sequence
       Arkham.Agenda.Types
+      Arkham.Ai.Decision
+      Arkham.Ai.Decks
+      Arkham.Ai.Focus
+      Arkham.Ai.Helpers
+      Arkham.Ai.Model
+      Arkham.Ai.Orphans
+      Arkham.Ai.Questions
+      Arkham.Ai.State
+      Arkham.Ai.Tags
       Arkham.Aspect
       Arkham.Aspect.Types
       Arkham.Asset
@@ -2950,6 +2961,7 @@ library
       Arkham.EnemyLocation.Runner
       Arkham.EnemyLocation.Types
       Arkham.Entities
+      Arkham.Epic.Types
       Arkham.Evade
       Arkham.Evade.Types
       Arkham.Event
@@ -5345,6 +5357,7 @@ library
       Arkham.Scenarios.TheHeartOfMadness.Pylon
       Arkham.Scenarios.TheHouseAlwaysWins.Helpers
       Arkham.Scenarios.TheLabyrinthsOfLunacy.Helpers
+      Arkham.Scenarios.TheLabyrinthsOfLunacy.Key
       Arkham.Scenarios.TheLabyrinthsOfLunacy.Meta
       Arkham.Scenarios.TheLairOfDagon.Helpers
       Arkham.Scenarios.TheLastKing.Helpers
@@ -6569,9 +6582,11 @@ library
       Entity.Answer
       Entity.Arkham.ArkhamDBDecklist
       Entity.Arkham.Deck
+      Entity.Arkham.Epic
       Entity.Arkham.Game
       Entity.Arkham.GameRaw
       Entity.Arkham.LogEntry
+      Entity.Arkham.MlDecision
       Entity.Arkham.Player
       Entity.Arkham.Step
       Entity.Notification
@@ -6758,6 +6773,110 @@ executable arkham-api
   if flag(library-only)
     buildable: False
 
+executable arkham-extract
+  main-is: Main.hs
+  other-modules:
+      Paths_arkham_api
+  hs-source-dirs:
+      app-extract
+  default-extensions:
+      AllowAmbiguousTypes
+      BlockArguments
+      DataKinds
+      DeriveAnyClass
+      DerivingStrategies
+      DerivingVia
+      ExtendedDefaultRules
+      FunctionalDependencies
+      GADTs
+      LambdaCase
+      MultiWayIf
+      NoImplicitPrelude
+      NoMonomorphismRestriction
+      OverloadedLabels
+      OverloadedRecordDot
+      OverloadedStrings
+      PatternSynonyms
+      RecordWildCards
+      StrictData
+      TypeFamilies
+      TypeFamilyDependencies
+      TypeOperators
+      UndecidableInstances
+      ViewPatterns
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-tool-depends:
+      cards-discover:cards-discover
+  build-depends:
+      MonadRandom
+    , aeson
+    , aeson-diff
+    , arkham-api
+    , base
+    , bytestring
+    , containers
+    , deepseq
+    , hs-opentelemetry-sdk
+    , monad-logger
+    , persistent
+    , persistent-postgresql
+    , text
+    , transformers
+    , unliftio
+    , vector
+  default-language: GHC2021
+  if flag(library-only)
+    buildable: False
+
+executable arkham-ml-export
+  main-is: Main.hs
+  other-modules:
+      Paths_arkham_api
+  hs-source-dirs:
+      app-ml-export
+  default-extensions:
+      AllowAmbiguousTypes
+      BlockArguments
+      DataKinds
+      DeriveAnyClass
+      DerivingStrategies
+      DerivingVia
+      ExtendedDefaultRules
+      FunctionalDependencies
+      GADTs
+      LambdaCase
+      MultiWayIf
+      NoImplicitPrelude
+      NoMonomorphismRestriction
+      OverloadedLabels
+      OverloadedRecordDot
+      OverloadedStrings
+      PatternSynonyms
+      RecordWildCards
+      StrictData
+      TypeFamilies
+      TypeFamilyDependencies
+      TypeOperators
+      UndecidableInstances
+      ViewPatterns
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-tool-depends:
+      cards-discover:cards-discover
+  build-depends:
+      aeson
+    , arkham-api
+    , base
+    , bytestring
+    , containers
+    , monad-logger
+    , persistent
+    , persistent-postgresql
+    , text
+    , vector
+  default-language: GHC2021
+  if flag(library-only)
+    buildable: False
+
 executable arkham-replay
   main-is: Main.hs
   other-modules:
@@ -6804,10 +6923,58 @@ executable arkham-replay
   if flag(library-only)
     buildable: False
 
+executable arkham-self-play
+  main-is: Main.hs
+  other-modules:
+      Paths_arkham_api
+  hs-source-dirs:
+      app-self-play
+  default-extensions:
+      AllowAmbiguousTypes
+      BlockArguments
+      DataKinds
+      DeriveAnyClass
+      DerivingStrategies
+      DerivingVia
+      ExtendedDefaultRules
+      FunctionalDependencies
+      GADTs
+      LambdaCase
+      MultiWayIf
+      NoImplicitPrelude
+      NoMonomorphismRestriction
+      OverloadedLabels
+      OverloadedRecordDot
+      OverloadedStrings
+      PatternSynonyms
+      RecordWildCards
+      StrictData
+      TypeFamilies
+      TypeFamilyDependencies
+      TypeOperators
+      UndecidableInstances
+      ViewPatterns
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-tool-depends:
+      cards-discover:cards-discover
+  build-depends:
+      MonadRandom
+    , arkham-api
+    , base
+    , containers
+    , hs-opentelemetry-sdk
+    , uuid
+  default-language: GHC2021
+  if flag(library-only)
+    buildable: False
+
 test-suite spec
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
+      Arkham.Act.Cards.AFamiliarPatternSpec
+      Arkham.Act.Cards.BlackwatersBaneEpicMultiplayerSpec
+      Arkham.Act.Cards.ExposeTheAnomalyEpicMultiplayerSpec
       Arkham.Act.Cards.FalseStepV2Spec
       Arkham.Agenda.Cards.RestrictedAccessSpec
       Arkham.Agenda.Cards.ShadowsDeepenSpec
@@ -6835,6 +7002,7 @@ test-suite spec
       Arkham.Asset.Assets.DigDeep2Spec
       Arkham.Asset.Assets.DigDeepSpec
       Arkham.Asset.Assets.DiscOfItzamna2Spec
+      Arkham.Asset.Assets.DrHenryArmitage_SpreadingFlamesSpec
       Arkham.Asset.Assets.DrMilanChristopherSpec
       Arkham.Asset.Assets.DukeSpec
       Arkham.Asset.Assets.ElderSignAmulet3Spec
@@ -6906,15 +7074,19 @@ test-suite spec
       Arkham.Campaign.ThePathToCarcosa.ScenariosSpec
       Arkham.Campaign.UsedAbilitiesSpec
       Arkham.DecklistSpec
+      Arkham.Enemy.Cards.DagonsBroodSpec
       Arkham.Enemy.Cards.GuardianOfTheCrystallizerSpec
       Arkham.Enemy.Cards.JeanDevereuxSeekingClosureSpec
       Arkham.Enemy.Cards.MobEnforcerSpec
+      Arkham.Enemy.Cards.MoonBeastSpec
       Arkham.Enemy.Cards.SilverTwilightAcolyteSpec
       Arkham.Enemy.Cards.StalkingHybridSpec
       Arkham.Enemy.Cards.StubbornDetectiveSpec
+      Arkham.Enemy.Cards.Subject8L08EpicMultiplayerSpec
       Arkham.Enemy.Cards.TheMaskedHunterSpec
       Arkham.Enemy.Cards.TonysQuarrySpec
       Arkham.Enemy.Cards.WatcherFromAnotherDimensionSpec
+      Arkham.Epic.EpicMultiplayerSpec
       Arkham.Event.Events.AstoundingRevelationSpec
       Arkham.Event.Events.AtACrossroads1Spec
       Arkham.Event.Events.BackstabSpec
@@ -6951,12 +7123,14 @@ test-suite spec
       Arkham.Event.Events.OopsSpec
       Arkham.Event.Events.PredatorOrPreySpec
       Arkham.Event.Events.RefineSpec
+      Arkham.Event.Events.RightUnderTheirNosesSpec
       Arkham.Event.Events.SearchForTheTruthSpec
       Arkham.Event.Events.SeekingAnswersSpec
       Arkham.Event.Events.SneakAttackSpec
       Arkham.Event.Events.SureGamble3Spec
       Arkham.Event.Events.ToeToToeSpec
       Arkham.Event.Events.Transfiguration2Spec
+      Arkham.Event.Events.TrapLimitSpec
       Arkham.Event.Events.WardOfProtectionSpec
       Arkham.Event.Events.WillToSurvive3Spec
       Arkham.Event.Events.WorkingAHunchSpec
@@ -6971,6 +7145,7 @@ test-suite spec
       Arkham.Investigator.Cards.FatherMateoParallelSpec
       Arkham.Investigator.Cards.JennyBarnesSpec
       Arkham.Investigator.Cards.JimCulverSpec
+      Arkham.Investigator.Cards.JoeDiamondSpec
       Arkham.Investigator.Cards.KymaniJonesSpec
       Arkham.Investigator.Cards.LukeRobinsonSpec
       Arkham.Investigator.Cards.MandyThompsonSpec
@@ -6988,6 +7163,7 @@ test-suite spec
       Arkham.Location.Cards.EnchantedWoodsVillageOfZoogsSpec
       Arkham.Matcher.CoveredByAnyInPlayEnemySpec
       Arkham.Matcher.NearestLocationToMostSpec
+      Arkham.Matcher.OutOfPlayEnemySpec
       Arkham.Scenario.SpecHelpers
       Arkham.Scenario.TheMidwinterGalaSpec
       Arkham.Skill.Cards.DeductionSpec
@@ -7003,6 +7179,7 @@ test-suite spec
       Arkham.Skill.Cards.ViciousBlowSpec
       Arkham.Skill.Cards.WatchThisSpec
       Arkham.Story.Cards.UnfinishedBusinessSpec
+      Arkham.Story.CardsSpec
       Arkham.Treachery.Cards.AbandonedAndAloneSpec
       Arkham.Treachery.Cards.AmnesiaSpec
       Arkham.Treachery.Cards.BloodlustSpec

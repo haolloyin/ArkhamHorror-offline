@@ -222,7 +222,7 @@ function abilitySourceHandledElsewhere(source: any) {
     case 'TreacherySource': return source.contents in props.game.treacheries
     case 'ActSource': return source.contents in props.game.acts
     case 'AgendaSource': return source.contents in props.game.agendas
-    case 'EventSource': return source.contents in props.game.events
+    case 'EventSource': return source.contents in props.game.events || visibleCardIds.value.has(source.contents)
     case 'StorySource': return source.contents in props.game.stories
     case 'InvestigatorSource': return source.contents in props.game.investigators || source.contents in props.game.otherInvestigators
     default: return false
@@ -869,6 +869,7 @@ section {
   color: white;
   border: 1px solid #666;
   cursor: pointer;
+  transition: transform 80ms ease;
 }
 
 .button:hover {
@@ -878,6 +879,7 @@ section {
 .button:active {
   background-color: #666;
   border-color: #111;
+  transform: scale(0.97);
 }
 
 .intro-text {

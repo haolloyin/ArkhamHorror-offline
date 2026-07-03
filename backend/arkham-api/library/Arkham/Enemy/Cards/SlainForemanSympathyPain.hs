@@ -47,10 +47,10 @@ instance RunMessage SlainForemanSympathyPain where
       parley sid iid (attrs.ability 1) attrs #intellect (Fixed $ max 0 $ 6 - n)
       pure e
     PassedThisSkillTest iid (isAbilitySource attrs 1 -> True) -> do
-      flipOverBy iid (attrs.ability 2) attrs
+      flipOver iid attrs
       pure e
     UseThisAbility iid (isSource attrs -> True) 2 -> do
-      flipOverBy iid (attrs.ability 2) attrs
+      flipOver iid attrs
       pure e
     Flip iid _source (isTarget attrs -> True) -> do
       readStoryWithPlacement iid attrs Stories.sympathyPain (enemyPlacement attrs)

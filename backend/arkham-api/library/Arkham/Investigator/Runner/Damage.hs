@@ -380,7 +380,7 @@ handleInvestigatorAssignDamage a@InvestigatorAttrs{..} iid source strategy damag
           <> [InvestigatorDoAssignDamage iid source strategy AnyAsset damage horror' [] []]
   pure a
 
-handleInvestigatorDoAssignDamageDeferred a@InvestigatorAttrs{..} iid source damageStrategy damageTargets horrorTargets = do
+finalizeDeferredDamageAssignment a@InvestigatorAttrs{..} iid source damageStrategy damageTargets horrorTargets = do
   let
     assetDamageMap = Map.fromListWith (+) [(aid, 1 :: Int) | AssetTarget aid <- damageTargets]
     assetHorrorMap = Map.fromListWith (+) [(aid, 1 :: Int) | AssetTarget aid <- horrorTargets]
@@ -452,7 +452,7 @@ handleInvestigatorDoAssignDamageDeferred a@InvestigatorAttrs{..} iid source dama
          ]
   pure a
 
-handleInvestigatorDoAssignDamage a@InvestigatorAttrs{..} iid source damageStrategy damageTargets horrorTargets = do
+finalizeDamageAssignment a@InvestigatorAttrs{..} iid source damageStrategy damageTargets horrorTargets = do
   let
     damageEffect = case source of
       EnemyAttackSource _ -> AttackDamageEffect
@@ -513,7 +513,7 @@ handleInvestigatorDoAssignDamage a@InvestigatorAttrs{..} iid source damageStrate
          ]
   pure a
 
-handleInvestigatorDoAssignDamageV2 a@InvestigatorAttrs{..} iid source matcher health damageTargets horrorTargets = do
+assignHealthDamageEvenly a@InvestigatorAttrs{..} iid source matcher health damageTargets horrorTargets = do
   healthDamageableAssets <-
     toList <$> getHealthDamageableAssets iid matcher source health damageTargets horrorTargets
   healthDamageableInvestigators <- select $ InvestigatorCanBeAssignedDamageBy iid
@@ -566,7 +566,7 @@ handleInvestigatorDoAssignDamageV2 a@InvestigatorAttrs{..} iid source matcher he
   push $ chooseOne player healthDamageMessages
   pure a
 
-handleInvestigatorDoAssignDamageV3 a@InvestigatorAttrs{..} iid source matcher sanity damageTargets horrorTargets = do
+assignHorrorEvenly a@InvestigatorAttrs{..} iid source matcher sanity damageTargets horrorTargets = do
   sanityDamageableAssets <-
     toList <$> getSanityDamageableAssets iid matcher source sanity damageTargets horrorTargets
   sanityDamageableInvestigators <- select $ InvestigatorCanBeAssignedHorrorBy iid
@@ -617,10 +617,10 @@ handleInvestigatorDoAssignDamageV3 a@InvestigatorAttrs{..} iid source matcher sa
   push $ chooseOne player sanityDamageMessages
   pure a
 
-handleInvestigatorDoAssignDamageV4 a@InvestigatorAttrs{..} iid = do
+assignDamageEvenlyUnsupported a@InvestigatorAttrs{..} iid = do
   error "DamageEvenly only works with just horror or just damage, but not both"
 
-handleInvestigatorDoAssignDamageV5 a@InvestigatorAttrs{..} iid source matcher health sanity damageTargets horrorTargets = do
+assignDamageToSingleTarget a@InvestigatorAttrs{..} iid source matcher health sanity damageTargets horrorTargets = do
   healthDamageableAssets <-
     getHealthDamageableAssets iid matcher source health damageTargets horrorTargets
   healthDamageableInvestigators <- select $ InvestigatorCanBeAssignedDamageBy iid
@@ -691,7 +691,15 @@ handleInvestigatorDoAssignDamageV5 a@InvestigatorAttrs{..} iid source matcher he
     <> (if not onlyAssets then map toInvestigatorMessage investigatorsWithCounts else [])
   pure a
 
-handleInvestigatorDoAssignDamageV6 a@InvestigatorAttrs{..} iid source strategy matcher health sanity damageTargets horrorTargets = do
+-- | Header shown while the player assigns damage/horror, so they can see the
+-- total amounts that still need to be applied.
+assignDamageTotalsLabel :: Int -> Int -> Text
+assignDamageTotalsLabel health sanity = case (health, sanity) of
+  (h, 0) -> "Assign " <> tshow h <> " damage"
+  (0, s) -> "Assign " <> tshow s <> " horror"
+  (h, s) -> "Assign " <> tshow h <> " damage and " <> tshow s <> " horror"
+
+assignDamageDivided a@InvestigatorAttrs{..} iid source strategy matcher health sanity damageTargets horrorTargets = do
   healthDamageMessages <-
     if health > 0
       then do
@@ -932,7 +940,13 @@ handleInvestigatorDoAssignDamageV6 a@InvestigatorAttrs{..} iid source strategy m
         go strategy
       else pure []
   player <- getPlayer iid
-  push $ chooseOne player $ healthDamageMessages <> sanityDamageMessages
+  -- Wrap with the damage source so the client highlights it as the actor
+  -- (yellow source-highlight), and with the totals label for the token counts.
+  push
+    $ questionWithSource source player
+    $ QuestionLabel (assignDamageTotalsLabel health sanity) Nothing
+    $ ChooseOne
+    $ healthDamageMessages <> sanityDamageMessages
   pure a
 
 handleDrivenInsane a@InvestigatorAttrs{..} iid = do
@@ -1052,7 +1066,9 @@ handleHealDamage a@InvestigatorAttrs{..} iid source amount' msg = do
   unless cannotHealDamage do
     let n = sum [x | HealingTaken x <- mods]
     let amount = amount' + n
-    whenWindow <- checkWindows [mkWhen $ Window.Healed DamageType (toTarget a) source amount]
+    -- The @when Window.Healed@ window is opened once by ApplyHealing (see
+    -- handleApplyHealing), matching the horror path. Opening one here too would
+    -- double-fire reactions (e.g. Surgical Kit) and let healAdditional over-heal.
     dmgTreacheries <-
       selectWithField TreacheryCard $ treacheryInThreatAreaOf iid <> TreacheryWithModifier IsPointOfDamage
     if null dmgTreacheries
@@ -1061,7 +1077,7 @@ handleHealDamage a@InvestigatorAttrs{..} iid source amount' msg = do
               (investigatorHealthDamage a + investigatorAssignedHealthDamage)
                 - sum (toList investigatorAssignedHealthHeal)
         when (remainingDamage > 0 || canHealAtFull) do
-          pushAll [whenWindow, Do msg]
+          push $ Do msg
       else do
         player <- getPlayer iid
         push
@@ -1072,7 +1088,7 @@ handleHealDamage a@InvestigatorAttrs{..} iid source amount' msg = do
                 : [HealDamage (InvestigatorTarget iid) source (amount - 1) | amount - 1 > 0]
             | (t, c) <- dmgTreacheries
             ]
-          <> [Label "$label.healRemainingDamageNormally" [whenWindow, Do msg] | investigatorHealthDamage a > 0]
+          <> [Label "$label.healRemainingDamageNormally" [Do msg] | investigatorHealthDamage a > 0]
   pure a
 
 handleDoHealDamage a@InvestigatorAttrs{..} iid source amount = do

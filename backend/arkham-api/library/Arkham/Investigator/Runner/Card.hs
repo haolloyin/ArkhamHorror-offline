@@ -617,15 +617,20 @@ handleDrawCards a@InvestigatorAttrs{..} iid cardDraw = do
   drawEncounterCardWindow <- checkWindows [mkWhen $ Window.WouldDrawEncounterCard a.id cid phase]
   if cardDrawAction cardDraw
     then do
+      modifiers' <- getModifiers iid
       beforeWindowMsg <- checkWindows [mkWhen (Window.PerformAction iid #draw)]
       afterWindowMsg <- checkWindows [mkAfter (Window.PerformAction iid #draw)]
       pushAll
         $ [BeginAction, beforeWindowMsg]
         <> [drawEncounterCardWindow | cardDraw.isEncounterDraw]
-        <> [ TakeActions iid [#draw] (ActionCost 1)
-           , Will (CheckAttackOfOpportunity iid False Nothing)
-           , CheckAttackOfOpportunity iid False Nothing
-           , wouldDrawCard
+        <> [TakeActions iid [#draw] (ActionCost 1)]
+        <> [ Will (CheckAttackOfOpportunity iid False Nothing)
+           | ActionDoesNotCauseAttacksOfOpportunity #draw `notElem` modifiers'
+           ]
+        <> [ CheckAttackOfOpportunity iid False Nothing
+           | ActionDoesNotCauseAttacksOfOpportunity #draw `notElem` modifiers'
+           ]
+        <> [ wouldDrawCard
            , DoDrawCards iid
            , DrawEnded cid iid
            , afterWindowMsg
@@ -800,9 +805,12 @@ handleDoDrawCardsV2 a@InvestigatorAttrs{..} iid cardDraw = do
 handleInvestigatorDrewPlayerCardFrom a@InvestigatorAttrs{..} iid card mDeck msg = do
   hasForesight <- hasModifier iid (Foresight $ toTitle card)
   let uiRevelation = getPlayer iid >>= (`sendRevelation` (toJSON $ toCard card))
-  case toCardType card of
-    PlayerEnemyType -> pure ()
-    _ -> when (hasRevelation card) uiRevelation
+  -- Non-treachery revelation cards are shown when their CardIdSource
+  -- revelation resolves. Showing them here as well makes the client display
+  -- the same revelation twice during a normal draw. Player treacheries go
+  -- through DrewTreachery/ResolveTreachery instead, which does not send its
+  -- own revelation display, so keep showing those here.
+  when (hasRevelation card && toCardType card == PlayerTreacheryType) uiRevelation
   mWhenDraw <- for mDeck \deck ->
     checkWindows [mkWhen $ Window.DrawCard iid (toCard card) deck]
   if hasForesight

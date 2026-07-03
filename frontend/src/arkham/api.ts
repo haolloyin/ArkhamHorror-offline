@@ -8,12 +8,23 @@ import { Token } from '@/arkham/types/Token';
 import { DestinyDrawing } from '@/arkham/types/Question';
 import { StandaloneSetting } from '@/arkham/types/StandaloneSetting';
 import { CampaignLogSettings, Key, CampaignOption } from '@/arkham/types/CampaignSettings'
+import { AiQuestion } from '@/arkham/types/AiQuestion'
+import {
+  CreateEventPost,
+  EventDetails,
+  EventListEntry,
+  eventDetailsDecoder,
+  eventListEntryDecoder,
+} from '@/arkham/types/EpicEvent'
 import * as NewGame from '@/arkham/types/NewGame'
 import * as JsonDecoder from 'ts.data.json';
 
 interface FetchData {
   playerId: string
   multiplayerMode: string
+  // The Epic Multiplayer event this game is a group of, resolved server-side
+  // regardless of how the player arrived (null for ordinary, non-event games).
+  eventId: string | null
   game: Game
 }
 
@@ -29,9 +40,9 @@ export const fetchJoinGame = async (gameId: string): Promise<Game> => {
 
 export const fetchGame = async (gameId: string, spectate = false): Promise<FetchData> => {
   const { data } = await api.get(`arkham/games/${gameId}${spectate ? '/spectate' : ''}`)
-  const { playerId, game, multiplayerMode } = data
+  const { playerId, game, multiplayerMode, eventId } = data
   const gameData = await gameDecoder.decodePromise(game)
-  return { playerId, game: gameData, multiplayerMode }
+  return { playerId, game: gameData, multiplayerMode, eventId: eventId ?? null }
 }
 
 export const fetchGameReplay = async (gameId: string, step: number): Promise<FetchReplay> => {
@@ -59,8 +70,6 @@ export const findGame = async (playerId: string): Promise<GameDetailsEntry> => {
 
 export const fetchGames = async (): Promise<GameDetailsEntry[]> => {
   const { data } = await api.get('arkham/games')
-  const failed = data.filter((g: { error?: string }) => g.error !== undefined)
-  if (failed.length > 0) console.log(failed)
   const passed = data.filter((g: { error?: string }) => g.error === undefined)
   return JsonDecoder.array(gameDetailsEntryDecoder, 'GameEntryDetails[]').decodePromise(passed)
 }
@@ -75,8 +84,11 @@ export const fetchDeck = async (deckId: string): Promise<Deck> => {
  return deckDecoder.decodePromise(data)
 }
 
-export const fetchCards = async (includeEncounter = false): Promise<CardDef[]> => {
-  const query = includeEncounter ? "?includeEncounter" : ""
+export type CardPoolMode = 'player' | 'campaign' | 'both'
+
+export const fetchCards = async (cardPool: CardPoolMode | boolean = 'player'): Promise<CardDef[]> => {
+  const mode: CardPoolMode = cardPool === true ? 'both' : cardPool === false ? 'player' : cardPool
+  const query = mode === 'player' ? "" : `?includeEncounter&cardPool=${mode}`
   const { data } = await api.get(`arkham/cards${query}`)
   return JsonDecoder.array(cardDefDecoder, 'ArkhamCardDef[]').decodePromise(data)
 }
@@ -179,7 +191,11 @@ export const newGame = async (
   multiplayerVariant: string,
   includeTarotReadings: boolean,
   options: NewGame.CampaignOption[],
-  strictAsIfAt?: boolean
+  strictAsIfAt?: boolean,
+  // Per-seat AI configuration, parallel to `deckIds` and indexed by seat. Omitted
+  // (the default) preserves today's all-human behavior; entries may be `null` for
+  // human seats. Only sent for Solo/multihanded games (see NewCampaign.start).
+  aiPlayers?: (NewGame.AiSlotConfig | null)[]
 ): Promise<Game> => {
   const { data } = await api.post('arkham/games', {
     deckIds,
@@ -192,7 +208,8 @@ export const newGame = async (
     includeTarotReadings,
     options,
     strictAsIfAt,
-    asIfRuling: strictAsIfAt == null ? undefined : strictAsIfAt ? 'chapter2' : 'chapter1'
+    asIfRuling: strictAsIfAt == null ? undefined : strictAsIfAt ? 'chapter2' : 'chapter1',
+    aiPlayers
   })
   return gameDecoder.decodePromise(data)
 }
@@ -238,3 +255,72 @@ export const fetchOpenSeats = async (gameId: string): Promise<string[]> => {
 export const claimSeat = async (gameId: string, investigatorId: string): Promise<void> => {
   await api.post(`arkham/games/${gameId}/claim-seat`, { investigatorId })
 }
+
+// Dev-only "AI asks questions": a snapshot of the AI's pending questions. The
+// shared `api` axios instance handles auth/baseURL; the payload is already in
+// the AiQuestion shape so we return it as-is (mirrors fetchOpenSeats).
+export const fetchAiQuestions = async (gameId: string): Promise<AiQuestion[]> => {
+  const { data } = await api.get(`arkham/games/${gameId}/ai-questions`)
+  return data as AiQuestion[]
+}
+
+// "Epic Multiplayer" events ---------------------------------------------------
+
+export const fetchEvents = async (): Promise<EventListEntry[]> => {
+  const { data } = await api.get('arkham/events')
+  return JsonDecoder.array(eventListEntryDecoder, 'EventListEntry[]').decodePromise(data)
+}
+
+export const fetchEvent = async (eventId: string): Promise<EventDetails> => {
+  const { data } = await api.get(`arkham/events/${eventId}`)
+  return eventDetailsDecoder.decodePromise(data)
+}
+
+export const createEvent = async (payload: CreateEventPost): Promise<EventDetails> => {
+  const { data } = await api.post('arkham/events', payload)
+  return eventDetailsDecoder.decodePromise(data)
+}
+
+export const adjustEventCounter = (eventId: string, key: string, amount: number): Promise<void> =>
+  api.post(`arkham/events/${eventId}/counter`, { key, amount })
+
+// Mark the caller's group ready at the start barrier. Idempotent server-side; the
+// countdown begins once every group has been marked ready.
+export const markEventReady = async (eventId: string): Promise<void> => {
+  await api.post(`arkham/events/${eventId}/ready`)
+}
+
+// Force all still-playing groups to agenda 3b when the clock runs out. Idempotent
+// server-side, so it's safe for more than one client to fire it.
+export const eventTimeUp = async (eventId: string): Promise<void> => {
+  await api.post(`arkham/events/${eventId}/time-up`)
+}
+
+// Organizer resolves an over-threshold shared act advance for `stage`, choosing how
+// many clues each group spends. `allocation` entries are { ordinal, spend }. The
+// backend clears the awaiting-organizer gate + resets the pool, then broadcasts the
+// updated shared state over the event ws.
+export const resolveEventAdvance = async (
+  eventId: string,
+  stage: number,
+  allocation: { ordinal: number; spend: number }[],
+): Promise<void> => {
+  await api.post(`arkham/events/${eventId}/resolve-advance`, { stage, allocation })
+}
+
+export const deleteEvent = async (eventId: string): Promise<void> => {
+  await api.delete(`arkham/events/${eventId}`)
+}
+
+// Builds a websocket URL for an /api/v1 path: same origin as the page, http(s) ->
+// ws(s) rewrite, and `?token=` auth appended (the GET upgrades to a websocket).
+// Shared by the event socket here and the game socket in views/Game.vue.
+export const buildWebsocketUrl = (path: string, token?: string | null): string => {
+  const baseURL = `${window.location.protocol}//${window.location.hostname}${window.location.port ? `:${window.location.port}` : ''}`
+  return `${baseURL}${path}?token=${token}`
+    .replace(/https/, 'wss')
+    .replace(/http/, 'ws')
+}
+
+export const eventWebsocketUrl = (eventId: string, token: string | null): string =>
+  buildWebsocketUrl(`/api/v1/arkham/events/${eventId}`, token)

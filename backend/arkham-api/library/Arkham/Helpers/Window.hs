@@ -20,6 +20,7 @@ import Arkham.Enemy.Types (Field (EnemyAttacking))
 import Arkham.Event.Types qualified as Field
 import {-# SOURCE #-} Arkham.Game (abilityMatches)
 import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.Game.Settings (settingsStrictAsIfAt)
 import Arkham.Helpers.Act (actMatches)
 import {-# SOURCE #-} Arkham.Helpers.Action (actionMatches)
 import Arkham.Helpers.Card (cardListMatches, extendedCardMatch)
@@ -46,6 +47,7 @@ import Arkham.Matcher qualified as Matcher
 import Arkham.Message
 import Arkham.Prelude
 import Arkham.Projection
+import Arkham.Search (searchSource)
 import Arkham.Skill.Types qualified as Field
 import Arkham.SkillTest.Base (SkillTest (..))
 import Arkham.SkillTest.Type
@@ -846,9 +848,16 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
       Window.AmongSearchedCards _ who -> do
         field InvestigatorSearch who >>= \case
           Nothing -> pure False
-          Just search' ->
+          Just search' -> do
+            -- During setup we suppress scenario/encounter-initiated searches (e.g. searching
+            -- the collection for a random weakness) but still allow player-card-initiated
+            -- searches (e.g. Whitton Greene's reveal-location search) to trigger reactions.
+            allowedInSetup <-
+              getInSetup >>= \case
+                False -> pure True
+                True -> sourceMatches (searchSource search') Matcher.SourceIsPlayerCard
             andM
-              [ not <$> getInSetup
+              [ pure allowedInSetup
               , maybe False (`elem` search'.allFoundCards) <$> sourceToMaybeCard source
               , matchWho iid who whoMatcher
               ]
@@ -1472,6 +1481,20 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
               , matches (attackEnemy details) enemyMatcher
               , enemyAttackMatches iid details enemyAttackMatcher
               ]
+          -- An asset attacked "as if it were an engaged investigator" (Dogs of
+          -- War's Key Locus). Treat it as an investigator at its location, so
+          -- "an investigator at your location" matchers fire for anyone there.
+          -- Under the Chapter 2 "as if" ruling this only applies during action
+          -- resolution, not window triggers, so the window does not match.
+          SingleAttackTarget (AssetTarget aid) ->
+            andM
+              [ not . settingsStrictAsIfAt <$> getSettings
+              , aid <=~> AssetAt (locationWithInvestigator iid)
+              , not <$> isAttackCancelled details
+              , matchWho iid iid whoMatcher
+              , matches (attackEnemy details) enemyMatcher
+              , enemyAttackMatches iid details enemyAttackMatcher
+              ]
           _ -> noMatch
         _ -> noMatch
     Matcher.EnemyAttacksEvenIfCancelled timing whoMatcher enemyAttackMatcher enemyMatcher ->
@@ -1480,6 +1503,14 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
           SingleAttackTarget (InvestigatorTarget who) ->
             andM
               [ matchWho iid who whoMatcher
+              , matches (attackEnemy details) enemyMatcher
+              , enemyAttackMatches iid details enemyAttackMatcher
+              ]
+          SingleAttackTarget (AssetTarget aid) ->
+            andM
+              [ not . settingsStrictAsIfAt <$> getSettings
+              , aid <=~> AssetAt (locationWithInvestigator iid)
+              , matchWho iid iid whoMatcher
               , matches (attackEnemy details) enemyMatcher
               , enemyAttackMatches iid details enemyAttackMatcher
               ]

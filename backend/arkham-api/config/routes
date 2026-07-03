@@ -49,7 +49,16 @@
           /reload ApiV1ArkhamGameReloadR GET
           /playability ApiV1ArkhamGamePlayabilityR POST
           /open-seats ApiV1ArkhamGameOpenSeatsR GET
+          /ai-questions ApiV1ArkhamGameAiQuestionsR GET
           /claim-seat ApiV1ArkhamGameClaimSeatR POST
+      /events ApiV1ArkhamEventsP:
+        / ApiV1ArkhamEventsR GET POST
+        /#ArkhamEpicEventId ApiV1ArkhamEventP:
+          / ApiV1ArkhamEventR GET DELETE
+          !/counter ApiV1ArkhamEventCounterR POST
+          !/time-up ApiV1ArkhamEventTimeUpR POST
+          !/ready ApiV1ArkhamEventReadyR POST
+          !/resolve-advance ApiV1ArkhamEventResolveAdvanceR POST
     /admin AdminP:
       / ApiV1AdminR GET
       /stats ApiV1AdminStatsR GET

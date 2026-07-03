@@ -10,6 +10,8 @@ export interface Scenario {
   dev?: boolean
   standaloneDifficulties?: Difficulty[]
   standalone?: boolean
+  epicMultiplayer?: boolean
+  miniCampaign?: boolean
   show?: boolean
   requiredInvestigator?: string
   deckRequirements?: string[]

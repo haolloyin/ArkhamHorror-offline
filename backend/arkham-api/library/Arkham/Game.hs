@@ -59,6 +59,7 @@ import Arkham.EnemyLocation.EnemyProxy (toEnemyLocationEnemyProxy)
 import Arkham.EnemyLocation.Proxy (toEnemyLocationProxy)
 import Arkham.EnemyLocation.Types (EnemyLocation, EnemyLocationAttrs (..), enemyLocationAsEnemyId)
 import Arkham.Entities
+import Arkham.Epic.Types (HasMaybeEpic (..), SharedDelta (..), SharedKey, epicEnvDeltaRef)
 import Arkham.Event.Types
 import Arkham.ForMovement
 import Arkham.Game.Base as X
@@ -180,7 +181,7 @@ import Arkham.Matcher qualified as M
 import Arkham.Message qualified as Msg
 import Arkham.Metrics (messageTag)
 import Arkham.Modifier hiding (EnemyEvade, EnemyFight)
-import Arkham.Modifier.Builder (buildModifiers)
+import Arkham.Modifier.Builder (buildModifiers, runCacheReaderT)
 import Arkham.ModifierData
 import Arkham.Name
 import Arkham.Phase
@@ -221,6 +222,7 @@ import Arkham.Treachery.Types (
 import Arkham.Window (Window (..), mkWindow)
 import Arkham.Window qualified as Window
 import Control.Lens (each, over, set)
+import Control.Lens.Plated (universe)
 import Control.Monad.Catch (MonadMask)
 import Control.Monad.Reader (runReader)
 import Control.Monad.State.Strict hiding (state)
@@ -242,6 +244,8 @@ import Data.Set qualified as Set
 import Data.Tuple.Extra (dupe)
 import Data.Typeable
 import Data.UUID (nil)
+import Data.UUID qualified as UUID
+import Data.UUID.V4 (nextRandom)
 import OpenTelemetry.Trace.Monad (MonadTracer)
 import Text.Pretty.Simple
 
@@ -253,6 +257,19 @@ newCampaign cid msid = newGame (maybe (This cid) (These cid) msid)
 
 newScenario :: ScenarioId -> Int -> Int -> Difficulty -> Bool -> Game
 newScenario = newGame . That
+
+{- | Bake a scenario-meta flag into a freshly-created scenario 'Game'. Epic
+Multiplayer group games use this at creation time so the scenario can pick its
+epic setup branch at @Setup@, where there is no event context to consult (the
+group activates via the ordinary @PUT /games/:id/join@ path). A no-op for the
+campaign-only mode.
+-}
+setInitialScenarioMeta :: ToJSON a => Key.Key -> a -> Game -> Game
+setInitialScenarioMeta k v =
+  modeL %~ \case
+    This c -> This c
+    That s -> That (overAttrs (Arkham.Scenario.Types.setMetaKey k v) s)
+    These c s -> These c (overAttrs (Arkham.Scenario.Types.setMetaKey k v) s)
 
 newGame :: These CampaignId ScenarioId -> Int -> Int -> Difficulty -> Bool -> Game
 newGame scenarioOrCampaignId seed playerCount difficulty includeTarotReadings =
@@ -634,6 +651,18 @@ instance Tracing Identity where
   defaultSpanArgs = ()
   doTrace _ _ f = f ()
 
+{- | The attacking enemy paired with each target of any open "enemy attacks"
+window, so the client can highlight who/what is currently being attacked and
+overlay the attacker (e.g. during a Dodge window).
+-}
+gameEnemyAttackTargets :: Game -> [Value]
+gameEnemyAttackTargets g =
+  [ object ["enemy" .= dets.enemy, "target" .= t]
+  | ws <- concat (fromMaybe [] (gameWindowStack g))
+  , Window.EnemyAttacks dets <- [windowType ws]
+  , t <- dets.targets
+  ]
+
 instance ToJSON gid => ToJSON (PublicGame gid) where
   toEncoding (FailedToLoadGame e) = pairs ("tag" .= String "FailedToLoadGame" <> "error" .= toJSON e)
   toEncoding (PublicGame gid name glog g@Game {..}) = flip runReader g do
@@ -715,6 +744,7 @@ instance ToJSON gid => ToJSON (PublicGame gid) where
       <> ("roundHistory" .= gameRoundHistory)
       <> ("phaseHistory" .= gamePhaseHistory)
       <> ("turnHistory" .= gameTurnHistory)
+      <> ("enemyAttackTargets" .= gameEnemyAttackTargets g)
    where
     emptyAdditionalData =
       object
@@ -850,6 +880,7 @@ instance ToJSON gid => ToJSON (PublicGame gid) where
         , "roundHistory" .= toJSON gameRoundHistory
         , "phaseHistory" .= toJSON gamePhaseHistory
         , "turnHistory" .= toJSON gameTurnHistory
+        , "enemyAttackTargets" .= toJSON (gameEnemyAttackTargets g)
         ]
    where
     emptyAdditionalData =
@@ -2104,8 +2135,24 @@ getLocationsMatching lmatcher = do
           . view (entitiesL . enemyLocationsL)
           $ g
   let ls = regularLs <> enemyProxies
-  flip runReaderT (g {gameAllowEmptySpaces = doAllowEmpty}) $ go ls lmatcher'
+  -- Common case (matcher does not toggle empty spaces, or gameAllowEmptySpaces
+  -- already equals doAllowEmpty): run 'go' directly in @m@ so its nested
+  -- select/getConnectedMatcher/getModifiers calls hit the live scoped query
+  -- cache (see 'runCachedQuery'/'ModifierBuilder').
+  --
+  -- The IncludeEmptySpace toggle (grid movement: ALL accessibility runs under
+  -- it) needs gameAllowEmptySpaces = True to propagate to nested selects, which
+  -- only happens through the game env. Rather than a plain 'runReaderT' — whose
+  -- HasGame instance has a no-op cache, so every AccessibleTo/ConnectedFrom BFS
+  -- was recomputed uncached (issue #4985 timeout) — 'runCacheReaderT' overrides
+  -- the game env yet delegates the cache to @m@, so the flag=True accessibility
+  -- work shares the surrounding pass cache. 'cached' namespaces those entries
+  -- (NamespaceEmptyKey) so they never collide with flag=False results.
+  if doAllowEmpty == allowEmpty
+    then go ls lmatcher'
+    else runCacheReaderT (g {gameAllowEmptySpaces = doAllowEmpty}) (go ls lmatcher')
  where
+  go :: forall n. (HasGame n, Tracing n) => [Location] -> LocationMatcher -> n [Location]
   go [] = const (pure [])
   go ls = \case
     OutOfGameLocation -> pure [] -- Handled above
@@ -2423,26 +2470,36 @@ getLocationsMatching lmatcher = do
       case mstart of
         Just start -> do
           let
-            go1 :: Int -> LocationId -> Seq LocationId -> StateT PathState (ReaderT Game m) ()
-            go1 0 _ _ = pure ()
-            go1 n loc path = do
-              doesMatch <- lift $ loc <=~> destinationMatcher
-              ps@PathState {..} <- get
-              put
-                $ ps
-                  { _psVisitedLocations = insertSet loc _psVisitedLocations
-                  , _psPaths = if doesMatch then Map.insertWith (<>) loc [path] _psPaths else _psPaths
-                  }
-              connections <-
-                lift
-                  $ select
-                  $ AccessibleFrom ForMovement (LocationWithId loc)
-                  <> CanEnterLocation investigatorMatcher
-              for_ connections \conn -> do
-                unless (conn `elem` _psVisitedLocations) do
-                  go1 (n - 1) conn (path |> loc)
+            -- Breadth-first by distance layer: reach every location via a
+            -- shortest path so the depth budget is never starved by a longer
+            -- route to a hub location. A global-visited DFS could reach the hub
+            -- via a 2-step path first and then drop genuinely 3-away locations
+            -- (issue #4939).
+            go1 :: Int -> [(LocationId, Seq LocationId)] -> StateT PathState n ()
+            go1 0 _ = pure ()
+            go1 _ [] = pure ()
+            go1 n frontier = do
+              for_ frontier \(loc, path) -> do
+                doesMatch <- lift $ loc <=~> destinationMatcher
+                when doesMatch
+                  $ modify \ps -> ps {_psPaths = Map.insertWith (<>) loc [path] (_psPaths ps)}
+              nextFrontier <- fmap concat $ for frontier \(loc, path) -> do
+                connections <-
+                  lift
+                    $ select
+                    $ AccessibleFrom ForMovement (LocationWithId loc)
+                    <> CanEnterLocation investigatorMatcher
+                let path' = path |> loc
+                fmap catMaybes $ for connections \conn -> do
+                  visited <- gets _psVisitedLocations
+                  if conn `member` visited
+                    then pure Nothing
+                    else do
+                      modify \ps -> ps {_psVisitedLocations = insertSet conn (_psVisitedLocations ps)}
+                      pure $ Just (conn, path')
+              go1 (n - 1) nextFrontier
           PathState {_psPaths} <-
-            execStateT (go1 (distance + 1) start mempty) (PathState (singleton start) mempty)
+            execStateT (go1 (distance + 1) [(start, mempty)]) (PathState (singleton start) mempty)
 
           imods <- getModifiers investigator
           let
@@ -2498,7 +2555,7 @@ getLocationsMatching lmatcher = do
           field InvestigatorLocation investigator >>= \case
             Just start -> do
               let
-                go1 :: LocationId -> Seq LocationId -> StateT PathState (ReaderT Game m) ()
+                go1 :: LocationId -> Seq LocationId -> StateT PathState n ()
                 go1 loc path = do
                   doesMatch <- lift $ loc <=~> destinationMatcher
                   ps@PathState {..} <- get
@@ -2554,7 +2611,7 @@ getLocationsMatching lmatcher = do
       destinations <- select destinationMatcher
       valids <- concatForM starts \start -> do
         let
-          go1 :: LocationId -> Seq LocationId -> StateT PathState (ReaderT Game m) ()
+          go1 :: LocationId -> Seq LocationId -> StateT PathState n ()
           go1 loc path = do
             doesMatch <- lift $ loc <=~> endMatcher
             ps@PathState {..} <- get
@@ -3521,6 +3578,36 @@ getMaybeOutOfPlayEnemy outOfPlayZone eid = do
   isCorrectOutOfPlay e = case e.placement of
     OutOfPlay zone -> zone == outOfPlayZone
     _ -> False
+
+{- | Enemy queries default to enemies that are NOT sitting in an out-of-play
+zone (@OutOfPlay VoidZone/PursuitZone/TheDepths/SetAsideZone/...@). To reach
+those, a matcher must decorate itself (@OutOfPlayEnemy zone@,
+@IncludeOutOfPlayEnemy@, @EnemyWithPlacement (OutOfPlay ...)@, or
+@DefeatedEnemy@); when it does, we leave the full candidate set intact so the
+decorator can find them. This makes @InPlayEnemy@ redundant (a no-op) for its
+one real job of excluding zone-resident enemies. Non-zone placements that are
+also \"not in play\" (hidden-in-hand, limbo, on-top-of-deck, unplaced) are
+left matchable exactly as before -- this only scopes the OutOfPlay zones.
+-}
+restrictToInPlayZones :: EnemyMatcher -> [Enemy] -> [Enemy]
+restrictToInPlayZones matcher es
+  | referencesOutOfPlay matcher = es
+  | otherwise = filter (not . isOutOfPlayZone . attr enemyPlacement) es
+ where
+  isOutOfPlayZone = \case
+    OutOfPlay {} -> True
+    _ -> False
+
+referencesOutOfPlay :: EnemyMatcher -> Bool
+referencesOutOfPlay = any isOutOfPlayReference . universe
+ where
+  isOutOfPlayReference = \case
+    OutOfPlayEnemy {} -> True
+    IncludeOutOfPlayEnemy {} -> True
+    DefeatedEnemy {} -> True
+    EnemyWithPlacement p -> isOutOfPlayPlacement p
+    _ -> False
+
 getEnemiesMatching :: (HasCallStack, HasGame m, Tracing m) => EnemyMatcher -> m [Enemy]
 getEnemiesMatching matcher' = do
   case matcher' of
@@ -3554,7 +3641,9 @@ getEnemiesMatching matcher' = do
               . view (entitiesL . enemyLocationsL)
               $ g
       let allGameEnemies = regularEnemies <> enemyLocationProxies
-      enemyMatcherFilter allGameEnemies (matcher <> EnemyWithoutModifier Omnipotent)
+      enemyMatcherFilter
+        (restrictToInPlayZones matcher allGameEnemies)
+        (matcher <> EnemyWithoutModifier Omnipotent)
 
 enemyMatcherFilter :: (HasCallStack, HasGame m, Tracing m) => [Enemy] -> EnemyMatcher -> m [Enemy]
 enemyMatcherFilter [] _ = pure []
@@ -4765,7 +4854,7 @@ getEnemyField f e = do
       case mTotalHealth of
         Nothing -> pure Nothing
         Just totalHealth -> do
-          pure $ Just (totalHealth - enemyDamage attrs)
+          pure $ Just (max 0 $ totalHealth - enemyDamage attrs)
     EnemyForcedRemainingHealth -> do
       totalHealth <- fieldJust EnemyHealth (toId e)
       pure (totalHealth - enemyDamage attrs)
@@ -5584,8 +5673,8 @@ instance Query ExtendedCardMatcher where
           if cdUnique def && cdCardType def == AssetType
             then
               not <$> case nameSubtitle (cdName def) of
-                Nothing -> selectAny (AssetWithTitle $ nameTitle $ cdName def)
-                Just subtitle -> selectAny (AssetWithFullTitle (nameTitle $ cdName def) subtitle)
+                Nothing -> selectAny (InPlayAsset $ AssetWithTitle $ nameTitle $ cdName def)
+                Just subtitle -> selectAny (InPlayAsset $ AssetWithFullTitle (nameTitle $ cdName def) subtitle)
             else pure True
       WillGoIntoSlot s -> do
         flip filterM cs \c -> do
@@ -6214,9 +6303,25 @@ popMessageWithPriority = withQueue \case
   isPriority (Priority _) = True
   isPriority _ = False
 
+{- | Capture a shared-counter mutation emitted during an Epic Multiplayer group's
+action. Appends an invertible 'SharedDelta' to the event's per-action delta
+buffer; the commit path applies the buffer under the locked event row. A no-op
+when the game is not part of an event (so ordinary games are unaffected).
+-}
+captureSharedDelta
+  :: (MonadIO m, MonadReader env m, HasMaybeEpic env)
+  => SharedKey -> Int -> m ()
+captureSharedDelta key amount = do
+  mEpic <- asks getMaybeEpicEnv
+  for_ mEpic \epic -> do
+    did <- UUID.toText <$> liftIO nextRandom
+    let d = SharedDelta {sharedDeltaId = did, sharedDeltaKey = key, sharedDeltaAmount = amount}
+    liftIO $ atomicModifyIORef' (epicEnvDeltaRef epic) \ds -> (ds <> [d], ())
+
 runMessages
   :: ( HasGameRef env
      , HasStdGen env
+     , HasMaybeEpic env
      , HasQueue Message m
      , MonadReader env m
      , HasGameLogger m
@@ -6333,6 +6438,12 @@ runMessages gameId mLogger = do
             Run msgs -> do
               pushAll msgs
               runMessages gameId mLogger
+            -- Epic Multiplayer: shared-counter mutations never touch this game's
+            -- state. When the game belongs to an event we capture them as
+            -- invertible deltas (drained under the locked event row at commit);
+            -- for ordinary games they are inert no-ops.
+            SpendShared k n -> captureSharedDelta k (negate n) >> runMessages gameId mLogger
+            RaiseShared k n -> captureSharedDelta k n >> runMessages gameId mLogger
             ClearUI -> runWithEnv (overGameM $ runMessage ClearUI) >> runMessages gameId mLogger
             Ask _ (ChooseOneAtATime []) -> runMessages gameId mLogger
             Ask _ (ChooseOneAtATimeWithAuto _ []) -> runMessages gameId mLogger

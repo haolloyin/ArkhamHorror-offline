@@ -11,7 +11,7 @@ import Arkham.PlayerCard
 import Arkham.Prelude hiding (optional, try, (<|>))
 import Arkham.Taboo.Types
 import Data.Aeson
-import Data.Aeson.Key (fromText)
+import Data.Aeson.Key (fromText, toText)
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.IntMap qualified as IntMap
 import Data.Map.Strict qualified as Map
@@ -80,7 +80,7 @@ loadExtraDeck decklist = do
       pure $ T.splitOn "," s
 
   case mResult of
-    Nothing -> loadDecklistCards sideSlots decklist
+    Nothing -> loadDecklistCards sideSlotsWithoutAttachments decklist
     Just codes -> do
       let convert =
             applyDecklistCardMeta decklist
@@ -150,9 +150,29 @@ parseCustomizations = IntMap.fromList <$> sepBy parseEntry (char ',')
       Success x -> pure $ ChosenTrait x
       _ -> unexpected ("invalid trait: " ++ t)
 
-decklistAttachments :: ArkhamDBDecklist -> Map CardCode [CardCode]
-decklistAttachments decklist = fromMaybe mempty do
+attachmentLimit :: CardCode -> Int
+attachmentLimit "03264" = 3 -- Stick to the Plan
+attachmentLimit "07303" = 5 -- Ancestral Knowledge
+attachmentLimit "10079" = 3 -- Bewitching
+attachmentLimit _ = maxBound
+
+sideSlotsWithoutAttachments :: ArkhamDBDecklist -> Map CardCode Int
+sideSlotsWithoutAttachments decklist = foldr removeCard (sideSlots decklist) (concat $ Map.elems $ decklistAttachments decklist)
+ where
+  removeCard cardCode = Map.update (\n -> guard (n > 1) $> n - 1) cardCode
+
+metaDecklistAttachments :: ArkhamDBDecklist -> Map CardCode [CardCode]
+metaDecklistAttachments decklist = fromMaybe mempty do
   meta' <- meta decklist
-  ArkhamDBDecklistMeta {attachments_09077, attachments_11080} <- decode (encodeUtf8 $ fromStrict meta')
-  let parseAttachments cardCode = maybe [] (\codes -> [(CardCode cardCode, map CardCode $ filter (/= "") $ T.splitOn "," codes)])
-  pure $ Map.fromList $ parseAttachments "09077" attachments_09077 <> parseAttachments "11080" attachments_11080
+  Object o <- decode (encodeUtf8 $ fromStrict meta')
+  pure $ Map.fromList $ mapMaybe parseAttachments $ KeyMap.toList o
+ where
+  parseAttachments (key, String codes) = do
+    cardCode <- T.stripPrefix "attachments_" $ toText key
+    let attachments = map CardCode $ filter (/= "") $ T.splitOn "," codes
+    guard $ notNull attachments
+    pure (CardCode cardCode, attachments)
+  parseAttachments _ = Nothing
+
+decklistAttachments :: ArkhamDBDecklist -> Map CardCode [CardCode]
+decklistAttachments = Map.mapWithKey (take . attachmentLimit) . metaDecklistAttachments

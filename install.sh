@@ -50,6 +50,18 @@ mkdir -p scripts
 curl -fsSL "$REPO_RAW/scripts/fetch-assets.sh" -o scripts/fetch-assets.sh
 chmod +x scripts/fetch-assets.sh
 
+info "Downloading upgrade.sh"
+curl -fsSL "$REPO_RAW/upgrade.sh" -o upgrade.sh
+chmod +x upgrade.sh
+
+info "Downloading migrations (for the migrate service)"
+mkdir -p migrations/deploy
+curl -fsSL "$REPO_RAW/migrate.sh" -o migrate.sh
+curl -fsSL "$REPO_RAW/migrations/sqitch.plan" -o migrations/sqitch.plan
+grep -vE '^[[:space:]]*(%|#|$)' migrations/sqitch.plan | awk '{print $1}' | while read -r m; do
+  curl -fsSL "$REPO_RAW/migrations/deploy/$m.sql" -o "migrations/deploy/$m.sql"
+done
+
 # ── Generate Postgres password ────────────────────────────────────────────────
 
 if [ ! -f config/postgres_password.txt ]; then
@@ -114,7 +126,7 @@ echo "  App:     http://localhost:3000"
 echo ""
 echo "  Stop:    cd $INSTALL_DIR && docker compose down"
 echo "  Restart: cd $INSTALL_DIR && docker compose restart web"
-echo "  Update:  cd $INSTALL_DIR && docker compose pull && docker compose up -d"
+echo "  Upgrade: cd $INSTALL_DIR && ./upgrade.sh   # pulls images, runs migrations, re-syncs local images"
 echo ""
 if [ -z "$fetch_target" ]; then
   echo "Images are currently loading from the CDN."

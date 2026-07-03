@@ -1,5 +1,6 @@
 import * as JsonDecoder from 'ts.data.json';
-import { v2Optional } from '@/arkham/parser';
+import { v2Optional, withDefault } from '@/arkham/parser';
+import { AiFocus } from '@/arkham/types/NewGame';
 import { Investigator, InvestigatorDetails, investigatorDecoder, investigatorDetailsDecoder } from '@/arkham/types/Investigator';
 import { Modifier, modifierDecoder } from '@/arkham/types/Modifier';
 import { ConcealedCard, concealedCardDecoder } from '@/arkham/types/ConcealedCard';
@@ -31,11 +32,40 @@ type GameState = { tag: 'IsPending', contents: string[] } | { tag: 'IsActive' } 
 
 type AsIfRuling = 'chapter1' | 'chapter2'
 
+// Per-seat AI state serialized into the game blob (Arkham.Ai.State.AiPlayerState),
+// surfaced under `settings.aiPlayers` keyed by playerId so the UI can read which
+// seats are AI, their enable flag, focus override, response delay, and priorities.
+export type AiPlayerState = {
+  aiEnabled: boolean
+  aiInvestigatorCode: string
+  aiFocusOverride: AiFocus | null
+  aiPriorities: Target[]
+  aiResponseDelayMs: number
+}
+
 type GameSettings = {
   settingsAbilitiesCannotReactToThemselves: boolean
   settingsAsIfRuling: AsIfRuling
   settingsStrictAsIfAt: boolean
+  aiPlayers: Record<string, AiPlayerState>
 }
+
+const aiFocusDecoder = JsonDecoder.oneOf<AiFocus>([
+  JsonDecoder.literal('combat'),
+  JsonDecoder.literal('investigate'),
+  JsonDecoder.literal('evade'),
+  JsonDecoder.literal('support'),
+  JsonDecoder.literal('survival'),
+  JsonDecoder.literal('mobility'),
+], 'AiFocus')
+
+const aiPlayerStateDecoder = JsonDecoder.object<AiPlayerState>({
+  aiEnabled: withDefault(true, JsonDecoder.boolean()),
+  aiInvestigatorCode: JsonDecoder.string(),
+  aiFocusOverride: withDefault<AiFocus | null>(null, aiFocusDecoder),
+  aiPriorities: withDefault<Target[]>([], JsonDecoder.array(targetDecoder, 'Target[]')),
+  aiResponseDelayMs: withDefault(1500, JsonDecoder.number()),
+}, 'AiPlayerState')
 
 const gameSettingsDecoder = JsonDecoder.object<GameSettings>({
   settingsAbilitiesCannotReactToThemselves: JsonDecoder.boolean(),
@@ -44,6 +74,7 @@ const gameSettingsDecoder = JsonDecoder.object<GameSettings>({
     JsonDecoder.literal('chapter2'),
   ], 'AsIfRuling'),
   settingsStrictAsIfAt: JsonDecoder.boolean(),
+  aiPlayers: withDefault<Record<string, AiPlayerState>>({}, JsonDecoder.record<AiPlayerState>(aiPlayerStateDecoder, 'Dict<PlayerId, AiPlayerState>')),
 }, 'GameSettings')
 
 export const gameStateDecoder = JsonDecoder.oneOf<GameState>(
@@ -134,7 +165,13 @@ export type Game = {
   roundHistory: Record<string, History>;
   phaseHistory: Record<string, History>;
   turnHistory: Record<string, History>;
+  enemyAttackTargets: EnemyAttackTarget[];
 }
+
+export type EnemyAttackTarget = {
+  enemy: string;
+  target: Target;
+};
 
 const choicesCache = new WeakMap<Game, Map<string, Message[]>>();
 const choicesSourceCache = new WeakMap<Game, Map<string, Source | null>>();
@@ -237,6 +274,40 @@ export function choicesTooltip(game: Game, playerId: string): string | null {
   });
 }
 
+// When the player is assigning damage/horror, the engine wraps the assignment
+// `ChooseOne` in a `QuestionLabel` whose label states the totals still to apply
+// (e.g. "Assign 2 damage and 1 horror"). Returns the remaining token counts so
+// the UI can show the tokens that still need placing (and suppress the modal).
+export function damageAssignmentTokens(
+  game: Game,
+  playerId: string,
+): { damage: number; horror: number } | null {
+  // The assignment ChooseOne may be wrapped in a QuestionLabel (totals) and a
+  // QuestionWithSource (damage source highlight). Walk down to the ChooseOne,
+  // remembering the label that carries the remaining counts.
+  let question: Question | undefined = game.question[playerId];
+  let label: string | null = null;
+  while (question) {
+    if (question.tag === 'QuestionLabel') label = question.label;
+    if (question.tag === 'ChooseOne') break;
+    question = 'question' in question ? question.question : undefined;
+  }
+  if (!question || question.tag !== 'ChooseOne' || label === null) return null;
+  const assigningDamage = question.choices.some(
+    (c) =>
+      c.tag === MessageType.COMPONENT_LABEL &&
+      'tokenType' in c.component &&
+      (c.component.tokenType === 'DamageToken' || c.component.tokenType === 'HorrorToken'),
+  );
+  if (!assigningDamage) return null;
+  const damageMatch = label.match(/(\d+)\s+damage/);
+  const horrorMatch = label.match(/(\d+)\s+horror/);
+  return {
+    damage: damageMatch ? parseInt(damageMatch[1], 10) : 0,
+    horror: horrorMatch ? parseInt(horrorMatch[1], 10) : 0,
+  };
+}
+
 type Mode = {
   This?: Campaign;
   That?: Scenario;
@@ -328,6 +399,7 @@ export const gameDecoder: JsonDecoder.Decoder<Game> = JsonDecoder.object(
     roundHistory: v2Optional(JsonDecoder.record<History>(historyDecoder, 'Dict<InvestigatorId, History>')),
     phaseHistory: v2Optional(JsonDecoder.record<History>(historyDecoder, 'Dict<InvestigatorId, History>')),
     turnHistory: v2Optional(JsonDecoder.record<History>(historyDecoder, 'Dict<InvestigatorId, History>')),
+    enemyAttackTargets: JsonDecoder.fallback([], JsonDecoder.array(JsonDecoder.object<EnemyAttackTarget>({ enemy: JsonDecoder.string(), target: targetDecoder }, 'EnemyAttackTarget'), 'EnemyAttackTarget[]')),
   },
   'Game',
 ).map(({mode, killedInvestigators, settings, gameSettings, inAction, undoActionStep, undoTurnStep, undoPhaseStep, undoRoundStep, roundHistory, phaseHistory, turnHistory, ...game}) => ({
@@ -339,6 +411,7 @@ export const gameDecoder: JsonDecoder.Decoder<Game> = JsonDecoder.object(
     settingsAbilitiesCannotReactToThemselves: true,
     settingsAsIfRuling: 'chapter1',
     settingsStrictAsIfAt: false,
+    aiPlayers: {},
   },
   undoActionStep: undoActionStep ?? null,
   undoTurnStep: undoTurnStep ?? null,

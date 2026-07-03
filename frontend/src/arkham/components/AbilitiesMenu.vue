@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Game } from '@/arkham/types/Game';
 import { OnClickOutside } from '@vueuse/components'
-import { ref, watch, computed, nextTick } from 'vue';
+import { ref, watch, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import type { AbilityMessage } from '@/arkham/types/Message';
 import AbilityButton from '@/arkham/components/AbilityButton.vue'
 
@@ -11,7 +11,8 @@ const props = withDefaults(defineProps<{
   frame: HTMLElement | null;
   position?: 'top' | 'bottom' | 'left' | 'right';
   showMove?: boolean
-}>(), {showMove: true});
+  hostHasSwarm?: boolean
+}>(), {showMove: true, hostHasSwarm: false});
 
 const emits = defineEmits<{
   (e: 'choose', index: number): void;
@@ -36,33 +37,33 @@ function calculatePosition() {
     const menuWidth = menuRect?.width ?? 160;
     const margin = 8;
     const maxLeft = Math.max(margin, window.innerWidth - menuWidth - margin);
-    const clampedLeft = (left: number) => `${Math.min(Math.max(left, margin), maxLeft) + window.scrollX}px`;
+    const clampedLeft = (left: number) => `${Math.min(Math.max(left, margin), maxLeft)}px`;
     const positionStyle: Record<string, string> = {};
 
     switch (positionClass.value) {
       case 'bottom':
-        positionStyle.top = `${rect.bottom + window.scrollY}px`;
+        positionStyle.top = `${rect.bottom}px`;
         positionStyle.left = clampedLeft(rect.left);
         break;
       case 'left':
-        positionStyle.top = `${rect.top + window.scrollY}px`;
+        positionStyle.top = `${rect.top}px`;
         if (rect.left - menuWidth - margin < 0) {
           positionStyle.left = clampedLeft(rect.right + margin);
         } else {
-          positionStyle.right = `${window.innerWidth - rect.left + window.scrollX}px`;
+          positionStyle.right = `${window.innerWidth - rect.left}px`;
         }
         break;
       case 'right':
-        positionStyle.top = `${rect.top + window.scrollY}px`;
+        positionStyle.top = `${rect.top}px`;
         if (rect.right + menuWidth + margin > window.innerWidth) {
-          positionStyle.right = `${window.innerWidth - rect.left + margin + window.scrollX}px`;
+          positionStyle.right = `${window.innerWidth - rect.left + margin}px`;
         } else {
           positionStyle.left = clampedLeft(rect.right + margin);
         }
         break;
       case 'top':
       default:
-        positionStyle.bottom = `${window.innerHeight - rect.top - window.scrollY}px`;
+        positionStyle.bottom = `${window.innerHeight - rect.top}px`;
         positionStyle.left = clampedLeft(rect.left);
         break;
     }
@@ -93,17 +94,32 @@ watch(showAbilities, (newValue) => {
     nextTick(() => calculatePosition());
   }
 });
+
+function updatePosition() {
+  if (showAbilities.value) calculatePosition();
+}
+
+onMounted(() => {
+  window.addEventListener('resize', updatePosition);
+  window.addEventListener('scroll', updatePosition, true);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('resize', updatePosition);
+  window.removeEventListener('scroll', updatePosition, true);
+});
 </script>
 
 <template>
   <Teleport to="body">
     <OnClickOutside @trigger="showAbilities = false" v-if="showAbilities" :options="{ ignore: [frame] }">
-      <div class="abilities" :class="position" :style="abilitiesPosition" ref="abilitiesRef" >
+      <div class="abilities" :class="positionClass" :style="abilitiesPosition" ref="abilitiesRef" >
         <AbilityButton
           v-for="{index, contents} in abilities"
           :key="index"
           :ability="contents"
           :show-move="showMove"
+          :host-has-swarm="hostHasSwarm"
           :game="game"
           @click="chooseAbility(index)"
         />
@@ -115,17 +131,16 @@ watch(showAbilities, (newValue) => {
 
 <style scoped>
 .abilities {
-  position: absolute;
+  position: fixed;
   padding: min(3px, 1vw);
   background: rgba(0, 0, 0, 0.8);
   border-radius: calc(10px - min(3px, 1vw));
   display: flex;
   flex-direction: column;
   gap: 5px;
-  z-index: var(--z-index-1000);
+  z-index: var(--z-modal-overlay);
   button {
-    padding-block: min(3px, 1vw);
-    padding-inline: min(6px, 2vw);
+    padding: 0;
     margin-top: 0;
     display: flex;
     align-items: center;
@@ -139,6 +154,11 @@ watch(showAbilities, (newValue) => {
         font-size: 2.0em !important;
       }
     }
+  }
+
+  :deep(.button-label) {
+    padding-block: min(3px, 1vw);
+    padding-inline: min(6px, 2vw);
   }
 
   :deep(span) {

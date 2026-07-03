@@ -1014,8 +1014,8 @@ instance RunMessage EnemyAttrs where
               pure $ a & movedFromHunterKeywordL .~ True
             ls -> do
               push
-                $ chooseOrRunOne
-                  lead
+                $ questionWithSourceWithTooltip (EnemySource enemyId) (Tooltip "$hunter.move") lead
+                $ ChooseOne
                   [ targetLabel
                       l
                       [ CheckWindows [Window.mkWhen $ Window.MovedFromHunter enemyId]
@@ -1048,8 +1048,8 @@ instance RunMessage EnemyAttrs where
                 ]
             ls -> do
               push
-                $ chooseOrRunOne
-                  lead
+                $ questionWithSourceWithTooltip (EnemySource enemyId) (Tooltip "$patrol.move") lead
+                $ ChooseOne
                   [ targetLabel
                       l
                       [ EnemyMove enemyId l
@@ -1319,7 +1319,10 @@ instance RunMessage EnemyAttrs where
       let alternateSuccess = [t | AlternateSuccess t <- mods]
       for_ alternateSuccess $ \target' ->
         push $ Successful (Action.Evade, toTarget a) iid source target' n
-      pushWhen (null alternateSuccess) $ EnemyEvaded iid enemyId
+      -- Fire the SuccessfulEvadeEnemy windows around EnemyEvaded (When -> exhaust
+      -- -> After) so "after you evade" reactions see the enemy already exhausted
+      -- and disengaged (e.g. Right Under Their Noses vs Terror of the Stars).
+      when (null alternateSuccess) $ Evade.pushSuccessfulEvade iid source enemyId n
       pure a
     When (FailedSkillTest iid (Just Action.Evade) _source (Initiator target) _ n) | isActionTarget a target -> do
       pushM $ checkWindows [mkWhen $ Window.FailEvadeEnemy iid enemyId n]
@@ -1511,6 +1514,25 @@ instance RunMessage EnemyAttrs where
                , attackExhaustsEnemy details
                , DoNotExhaust `notElem` mods
                ]
+        -- An enemy attacking an asset "as if it were an engaged investigator"
+        -- (e.g. Dogs of War's Key Locus). Horror is dealt as damage. Must not
+        -- re-emit ScenarioSpecific "enemyAttacked" here or the act handler that
+        -- initiates this attack would loop.
+        SingleAttackTarget (AssetTarget aid) -> do
+          let total = healthDamage + sanityDamage
+          pushAll
+            $ [ DealAssetDamageWithCheck aid (EnemyAttackSource enemyId) total 0 True
+              | allowAttack
+              , not details.cancelled
+              ]
+            <> [ Exhaust (mkExhaustion a a)
+               | allowAttack
+               , swarmExhaust
+               , attackExhaustsEnemy details
+               , DoNotExhaust `notElem` mods
+               ]
+            <> ignoreWindows
+            <> [After (EnemyAttack details)]
         _ -> error $ "Unhandled attack target: " <> show (attackTarget details)
 
       -- Retaliate happens inside an investigator's fight action, so the
@@ -1583,7 +1605,7 @@ instance RunMessage EnemyAttrs where
       let mDamageAssignment = lookup source enemyAssignedDamage
       case mDamageAssignment of
         Nothing -> do
-          hasSwarm <- selectAny $ InPlayEnemy $ SwarmOf (toId a)
+          hasSwarm <- selectAny $ SwarmOf (toId a)
           canBeDefeated <- withoutModifier a CannotBeDefeated
           modifiers' <- getModifiers (toTarget a)
           let
@@ -1608,7 +1630,7 @@ instance RunMessage EnemyAttrs where
                 pushAll $ [whenMsg, afterMsg] <> defeatMsgs
           pure a
         Just da -> do
-          hasSwarm <- selectAny $ InPlayEnemy $ SwarmOf (toId a)
+          hasSwarm <- selectAny $ SwarmOf (toId a)
           canBeDefeated <- withoutModifier a CannotBeDefeated
           modifiers' <- getModifiers (toTarget a)
           let

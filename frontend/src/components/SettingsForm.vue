@@ -1,9 +1,12 @@
 <script lang="ts" setup>
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n'
+import { storeToRefs } from 'pinia'
 import type { User } from '@/types';
 import { useDbCardStore } from '@/stores/dbCards'
+import { useSettings } from '@/stores/settings'
 import { checkImageExists } from '@/arkham/helpers'
+import { isDevBuild } from '@/arkham/displayRules'
 import { loadLocaleMessages, normalizeLocale } from '@/locales/messages'
 
 const props = defineProps<{
@@ -13,12 +16,27 @@ const props = defineProps<{
 }>()
 
 const store = useDbCardStore()
+const settings = useSettings()
+const { epicMultiplayerStored, aiInvestigatorsStored } = storeToRefs(settings)
+const dev = isDevBuild()
 const { availableLocales, locale, setLocaleMessage } = useI18n({ useScope: 'global' })
 const language = ref(localStorage.getItem('language') || locale.value)
 const beta = ref(props.user.beta ? "On" : "Off")
 const showDeleteConfirm = ref(false)
 
 const betaUpdate = async () => props.updateBeta(beta.value == "On")
+
+// Dev-only Epic Multiplayer flag, bound to the persisted store value via On/Off.
+const epicMultiplayer = computed({
+  get: () => (epicMultiplayerStored.value ? 'On' : 'Off'),
+  set: (value: string) => settings.setEpicMultiplayerEnabled(value === 'On'),
+})
+
+// Dev-only AI Investigators flag (WIP), bound to the persisted store value.
+const aiInvestigators = computed({
+  get: () => (aiInvestigatorsStored.value ? 'On' : 'Off'),
+  set: (value: string) => settings.setAiInvestigatorsEnabled(value === 'On'),
+})
 
 const updateLanguage = async (a: Event) => {
   const target = a.target as HTMLSelectElement;
@@ -79,6 +97,37 @@ const updateLanguage = async (a: Event) => {
       <section class="box column danger-zone">
         <h3 class="danger-title">{{ $t('settingsForm.dangerZone') }}</h3>
         <p>{{ $t('settingsForm.dangerZoneDescription') }} <strong>{{ $t('settingsForm.cannotBeUndone') }}</strong></p>
+
+        <div v-if="dev" class="dev-flag">
+          <h4>{{ $t('settingsForm.epicMultiplayer') }}</h4>
+          <p class="warning">{{ $t('settingsForm.epicMultiplayerWarning') }}</p>
+          <div class="row">
+            <label class="radio-label">
+              <input type="radio" name="epicMultiplayer" value="On" v-model="epicMultiplayer" />
+              {{ $t('On') }}
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="epicMultiplayer" value="Off" v-model="epicMultiplayer" />
+              {{ $t('Off') }}
+            </label>
+          </div>
+        </div>
+
+        <div v-if="dev" class="dev-flag">
+          <h4>{{ $t('settingsForm.aiInvestigators') }}</h4>
+          <p class="warning">{{ $t('settingsForm.aiInvestigatorsWarning') }}</p>
+          <div class="row">
+            <label class="radio-label">
+              <input type="radio" name="aiInvestigators" value="On" v-model="aiInvestigators" />
+              {{ $t('On') }}
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="aiInvestigators" value="Off" v-model="aiInvestigators" />
+              {{ $t('Off') }}
+            </label>
+          </div>
+        </div>
+
         <div v-if="!showDeleteConfirm">
           <button class="btn-danger" @click="showDeleteConfirm = true">{{ $t('settingsForm.deleteAccount') }}</button>
         </div>
@@ -158,5 +207,19 @@ input[type="radio"] {
 .warning {
   color: var(--delete);
   font-weight: bold;
+}
+
+.dev-flag {
+  margin: 8px 0 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--box-border);
+}
+
+.dev-flag h4 {
+  margin: 0 0 4px;
+  color: var(--title);
+  font-family: teutonic, sans-serif;
+  font-size: 1.2em;
+  text-transform: uppercase;
 }
 </style>

@@ -57,6 +57,7 @@ export type ModifierType
   | GainVictory
   | ActionCostSetToModifier
   | OtherModifier
+  | RemoveTrait
   | UIModifier
   | SkillModifier
   | SetSkillValue
@@ -71,6 +72,8 @@ export type ModifierType
   | HandSizeCardCount
   | HandSize
   | ScenarioModifierValue
+  | AsIfInHand
+  | AsIfInHandFor
 
 export type BaseSkillOf = {
   tag: "BaseSkillOf"
@@ -234,8 +237,23 @@ export type Hollow = {
   contents: string
 }
 
+export type AsIfInHand = {
+  tag: "AsIfInHand"
+  contents: Card
+}
+
+export type AsIfInHandFor = {
+  tag: "AsIfInHandFor" | "AsIfInHandForPlay"
+  contents: unknown
+}
+
 export type OtherModifier = {
   tag: "OtherModifier"
+  contents: string
+}
+
+export type RemoveTrait = {
+  tag: "RemoveTrait"
   contents: string
 }
 
@@ -361,6 +379,11 @@ const modifierTypeDecoder = JsonDecoder.oneOf<ModifierType>([
       tag: JsonDecoder.literal('CannotEnter'),
       contents: JsonDecoder.string()
     }, 'CannotEnter'),
+  JsonDecoder.object<RemoveTrait>(
+    {
+      tag: JsonDecoder.literal('RemoveTrait'),
+      contents: JsonDecoder.string()
+    }, 'RemoveTrait'),
   JsonDecoder.object<Hollow>(
     {
       tag: JsonDecoder.literal('Hollow'),
@@ -420,6 +443,27 @@ const modifierTypeDecoder = JsonDecoder.oneOf<ModifierType>([
       tag: JsonDecoder.literal('DoNotDrawConnection'),
       contents: JsonDecoder.tuple([JsonDecoder.string(), JsonDecoder.string()], 'DoNotDrawConnection')
     }, 'DoNotDrawConnection'),
+  JsonDecoder.object<AsIfInHand>(
+    {
+      tag: JsonDecoder.literal('AsIfInHand'),
+      contents: cardDecoder,
+    }, 'AsIfInHand'),
+  JsonDecoder.object<AsIfInHandFor>(
+    {
+      tag: JsonDecoder.literal('AsIfInHandFor'),
+      contents: JsonDecoder.oneOf<unknown>([
+        JsonDecoder.string(),
+        JsonDecoder.tuple([JsonDecoder.succeed(), JsonDecoder.string()], 'AsIfInHandForContents'),
+      ], 'AsIfInHandForContents'),
+    }, 'AsIfInHandFor'),
+  JsonDecoder.object<AsIfInHandFor>(
+    {
+      tag: JsonDecoder.literal('AsIfInHandForPlay'),
+      contents: JsonDecoder.oneOf<unknown>([
+        JsonDecoder.string(),
+        JsonDecoder.tuple([JsonDecoder.succeed(), JsonDecoder.string()], 'AsIfInHandForPlayContents'),
+      ], 'AsIfInHandForPlayContents'),
+    }, 'AsIfInHandForPlay'),
   JsonDecoder.object<UIModifier>(
     {
       tag: JsonDecoder.literal('UIModifier'),

@@ -3,6 +3,8 @@
 module Arkham.Game.Runner where
 
 import Arkham.Ability
+import Arkham.Ai.Helpers (overAiPlayers, overAiSeat)
+import Arkham.Ai.State (AiPlayerState (..))
 import Arkham.Act
 import Arkham.Act.Types (Field (..))
 import Arkham.Action qualified as Action
@@ -106,7 +108,7 @@ import Arkham.Matcher hiding (
 import Arkham.Message qualified as Msg
 import Arkham.Message.Lifted (removeLocation)
 import Arkham.Message.Lifted qualified as Lifted
-import Arkham.Modifier (Modifier (Modifier, modifierSource, modifierType), ModifierType (AsIfInHandFor))
+import Arkham.Modifier (Modifier (Modifier, modifierSource, modifierType))
 import Arkham.Movement
 import Arkham.Name
 import Arkham.Phase
@@ -175,6 +177,12 @@ runGameMessage msg g = case msg of
     when (any (\w -> Window.windowType w == Window.FastPlayerWindow) currentWindows) do
       push $ Do (CheckWindows currentWindows)
     pure $ g {gameSettings = g.gameSettings {settingsAsIfRuling = ruling}}
+  RegisterAiPlayer pid st -> pure $ overAiPlayers (Map.insert pid st) g
+  SetAiFocusOverride pid mFocus -> pure $ overAiSeat pid (\s -> s {aiFocusOverride = mFocus}) g
+  AddAiPriority pid target -> pure $ overAiSeat pid (\s -> s {aiPriorities = s.aiPriorities <> [target]}) g
+  RemoveAiPriority pid target -> pure $ overAiSeat pid (\s -> s {aiPriorities = filter (/= target) s.aiPriorities}) g
+  SetAiEnabled pid b -> pure $ overAiSeat pid (\s -> s {aiEnabled = b}) g
+  SetAiResponseDelay pid n -> pure $ overAiSeat pid (\s -> s {aiResponseDelayMs = n}) g
   ResetLocationOffsets -> pure $ g & locationOffsetsL .~ mempty
   SetGameRunWindows b -> pure $ g & runWindowsL .~ b
   SetGameState s -> pure $ g & gameStateL .~ s
@@ -234,7 +242,7 @@ runGameMessage msg g = case msg of
       setCardAttachments (cCode, attachments) =
         flip Map.alter cCode \case
           Nothing -> Just $ defaultPerCardSettings {cardAttachments = attachments}
-          Just current -> Just $ current {cardAttachments = attachments <> cardAttachments current}
+          Just current -> Just $ current {cardAttachments = attachments}
     let investigator =
           updateAttrs (lookupInvestigator iid' playerId) \ia ->
             ia
@@ -296,7 +304,7 @@ runGameMessage msg g = case msg of
       setCardAttachments (cCode, attachments) =
         flip Map.alter cCode \case
           Nothing -> Just $ defaultPerCardSettings {cardAttachments = attachments}
-          Just current -> Just $ current {cardAttachments = attachments <> cardAttachments current}
+          Just current -> Just $ current {cardAttachments = attachments}
     let investigator =
           updateAttrs (lookupInvestigator iid' playerId) \ia ->
             ia
@@ -333,12 +341,12 @@ runGameMessage msg g = case msg of
     investigator <- getInvestigator investigatorId
     let playerId = attr investigatorPlayerId investigator
     let iid' = dl.investigator
-    -- let sideDeck = decklistExtraDeck dl
+    let sideDeck = dl.extra
     let
       setCardAttachments (cCode, attachments) =
         flip Map.alter cCode \case
           Nothing -> Just $ defaultPerCardSettings {cardAttachments = attachments}
-          Just current -> Just $ current {cardAttachments = attachments <> cardAttachments current}
+          Just current -> Just $ current {cardAttachments = attachments}
     let investigator' =
           overAttrs
             ( \ia ->
@@ -354,6 +362,7 @@ runGameMessage msg g = case msg of
                   }
             )
             investigator
+    when (notNull sideDeck) $ push $ LoadSideDeck investigatorId sideDeck
     push $ UpgradeDeck investigatorId decklist.url (Deck cards)
 
     pure
@@ -528,12 +537,33 @@ runGameMessage msg g = case msg of
       keepCardCache =
         Persist `elem` map modifierType (Map.findWithDefault [] GameTarget (gameModifiers g))
       difficulty = these difficultyOf difficultyOfScenario (const . difficultyOf) (g ^. modeL)
-      mCampaignLog =
-        these (const Nothing) (Just . attr scenarioStandaloneCampaignLog) (\_ _ -> Nothing) (g ^. modeL)
-      playerDecks = these (const mempty) (attr scenarioPlayerDecks) (\_ _ -> mempty) (g ^. modeL)
+      -- Read a value from the current mode that only exists for a STANDALONE
+      -- scenario (the @That@ arm); campaigns (the @This@/@These@ arms) get the
+      -- fallback. A standalone scenario restarts itself here (That -> That), so
+      -- these reads carry the prior scenario's state across the rebuild.
+      extractStandaloneOnly :: a -> (Scenario -> a) -> a
+      extractStandaloneOnly fallback extractor = these (const fallback) extractor (\_ _ -> fallback) (g ^. modeL)
+      mCampaignLog = extractStandaloneOnly Nothing (Just . attr scenarioStandaloneCampaignLog)
+      playerDecks = extractStandaloneOnly mempty (attr scenarioPlayerDecks)
       setCampaignLog = case mCampaignLog of
         Nothing -> id
         Just cl -> overAttrs (standaloneCampaignLogL .~ cl)
+
+      -- Carry the scenario meta across the rebuild (e.g. Epic Multiplayer's
+      -- "epicMultiplayer" flag from setInitialScenarioMeta). Without this, the
+      -- fresh lookupScenario resets meta to Null and the scenario's Setup picks
+      -- its non-epic branch. Standalone only — a campaign moving to a NEW scenario
+      -- must not inherit the prior scenario's meta.
+      scenarioMetaValue = extractStandaloneOnly Null (attr scenarioMeta)
+      setScenarioMeta' = overAttrs (\s -> s {scenarioMeta = scenarioMetaValue})
+
+      -- Likewise carry the standalone scenario's counts across the rebuild. At
+      -- game start the only counts present are external mirrors (e.g. Epic
+      -- Multiplayer's EpicShared pool values injected just before StartScenario) —
+      -- there is no scenario-local progress yet — so a group's shared enemy/pool
+      -- is correctly populated at Setup instead of reading 0.
+      scenarioCountsValue = extractStandaloneOnly mempty (attr scenarioCounts)
+      setScenarioCounts' = overAttrs (\s -> s {scenarioCounts = scenarioCounts s <> scenarioCountsValue})
 
       standalone = isNothing $ modeCampaign $ g ^. modeL
       setPlayerDecks = overAttrs (playerDecksL .~ playerDecks)
@@ -547,7 +577,7 @@ runGameMessage msg g = case msg of
       <> [LoadScenario opts]
     pure
       $ g
-      & (modeL %~ setScenario (setPlayerDecks $ setCampaignLog $ lookupScenario sid difficulty))
+      & (modeL %~ setScenario (setPlayerDecks $ setCampaignLog $ setScenarioMeta' $ setScenarioCounts' $ lookupScenario sid difficulty))
       & (phaseL .~ InvestigationPhase)
       & (cardsL %~ if keepCardCache then id else filterMap (not . isEncounterCard))
   PerformTarotReading -> do
@@ -885,21 +915,22 @@ runGameMessage msg g = case msg of
         Nothing -> id
         Just location ->
           let la = toAttrs location
-          in overAttrs \a ->
+           in overAttrs \a ->
                 a
-                  { enemyLocationBase = (enemyLocationBase a)
-                      { locationId = locationId la
-                      , locationCardId = locationCardId la
-                      , locationTokens = locationTokens la
-                      , locationWithoutClues = Token.countTokens Token.Clue (locationTokens la) == 0
-                      , locationLabel = locationLabel la
-                      , locationPosition = locationPosition la
-                      , locationPlacement = locationPlacement la
-                      , locationConnectedMatchers = locationConnectedMatchers la
-                      , locationConnectsTo = locationConnectsTo la
-                      , locationDirections = locationDirections la
-                      , locationRevealedConnectedMatchers = locationRevealedConnectedMatchers la
-                      }
+                  { enemyLocationBase =
+                      (enemyLocationBase a)
+                        { locationId = locationId la
+                        , locationCardId = locationCardId la
+                        , locationTokens = locationTokens la
+                        , locationWithoutClues = Token.countTokens Token.Clue (locationTokens la) == 0
+                        , locationLabel = locationLabel la
+                        , locationPosition = locationPosition la
+                        , locationPlacement = locationPlacement la
+                        , locationConnectedMatchers = locationConnectedMatchers la
+                        , locationConnectsTo = locationConnectsTo la
+                        , locationDirections = locationDirections la
+                        , locationRevealedConnectedMatchers = locationRevealedConnectedMatchers la
+                        }
                   }
       el = inheritLocationData $ lookupEnemyLocation (flippedCardCode $ toCardCode card) lid (toCardId card)
 
@@ -929,7 +960,7 @@ runGameMessage msg g = case msg of
         Nothing -> id
         Just el ->
           let la = enemyLocationBase (toAttrs el)
-          in overAttrs \a ->
+           in overAttrs \a ->
                 a
                   { locationId = locationId la
                   , locationCardId = locationCardId la
@@ -2004,7 +2035,7 @@ runGameMessage msg g = case msg of
                     _ -> matches eid (#ready <> #unengaged <> not_ (EnemyAt $ LocationWithInvestigator Anyone))
                 -- War of the Outer Gods: warring enemies move during this
                 -- step and are batched with hunters
-                Keyword.ScenarioKeyword "Warring" -> matches eid (ReadyEnemy <> UnengagedEnemy)
+                Keyword.ScenarioKeyword "Warring" -> matches eid (AnyEnemy <> ReadyEnemy <> UnengagedEnemy)
                 _ -> pure False
               pure (target, msgs)
           FailSkillTestGroup -> pure targetMap
@@ -3701,20 +3732,20 @@ preloadEntities g = do
 -- too late.
 instance RunMessage Game where
   runMessage msg g =
-      ( (modeL . here) (runMessage msg) g
-          >>= (modeL . there) (runMessage msg)
-          >>= entitiesL (runMessage msg)
-          >>= actionRemovedEntitiesL (runMessage msg)
-          >>= itraverseOf (inHandEntitiesL . itraversed) (\i -> runMessage (InHand i msg))
-          >>= itraverseOf (inDiscardEntitiesL . itraversed) (\i -> runMessage (InDiscard i msg))
-          >>= (inDiscardEntitiesL . itraversed) (runMessage msg)
-          >>= encounterDiscardEntitiesL (runMessage msg)
-          >>= inSearchEntitiesL (runMessage (InSearch msg))
-          >>= (skillTestL . traverse) (runMessage msg)
-          >>= (activeCostL . traverse) (runMessage msg)
-          >>= runGameMessage msg
-        )
-        <&> handleActionDiff g
+    ( (modeL . here) (runMessage msg) g
+        >>= (modeL . there) (runMessage msg)
+        >>= entitiesL (runMessage msg)
+        >>= actionRemovedEntitiesL (runMessage msg)
+        >>= itraverseOf (inHandEntitiesL . itraversed) (\i -> runMessage (InHand i msg))
+        >>= itraverseOf (inDiscardEntitiesL . itraversed) (\i -> runMessage (InDiscard i msg))
+        >>= (inDiscardEntitiesL . itraversed) (runMessage msg)
+        >>= encounterDiscardEntitiesL (runMessage msg)
+        >>= inSearchEntitiesL (runMessage (InSearch msg))
+        >>= (skillTestL . traverse) (runMessage msg)
+        >>= (activeCostL . traverse) (runMessage msg)
+        >>= runGameMessage msg
+    )
+      <&> handleActionDiff g
 
 runPreGameMessage :: Runner Game
 runPreGameMessage msg g = case msg of
@@ -3738,7 +3769,8 @@ runPreGameMessage msg g = case msg of
         let tick' = gameWindowTick g + 1
         pure
           $ g
-          & windowDepthL +~ 1
+          & windowDepthL
+          +~ 1
           & (windowStackL %~ Just . maybe [ws] (ws :))
           & (windowTickL .~ tick')
           & (windowTickStackL %~ (tick' :))
