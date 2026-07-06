@@ -798,13 +798,24 @@ find_available_pg_port() {
 
 # Detect system DNS resolvers for nginx.
 # Prefers non-loopback entries from /etc/resolv.conf (Linux/WSL),
-# falls back to scutil --dns (macOS), then to public DNS as last resort.
+# falls back to scutil --dns (macOS). Public DNS is always appended so the
+# final resolver directive never consists solely of link-local/ULA addresses
+# that cannot resolve external hostnames (e.g. the CDN fallback host).
+#
+# nginx quirks handled here:
+#  - IPv6 addresses must be wrapped in [] in the resolver directive
+#    ("ipv6=off" only disables IPv6 answers, not the parse rule).
+#  - IPv6 zone identifiers (e.g. fe80::1%en0) are not supported and must
+#    be stripped.
+#  - link-local (fe80::/10) and ULA (fc00::/7) addresses are unlikely to
+#    resolve public names; filter them out even when advertised by the OS.
 detect_resolvers() {
     local resolvers=""
     if [ -r /etc/resolv.conf ]; then
         resolvers=$(grep -E '^nameserver' /etc/resolv.conf \
             | awk '{print $2}' \
-            | grep -vE '^(127\.|::1$)' \
+            | sed 's/%.*//' \
+            | grep -vE '^(127\.|::1$|fe[89ab][0-9a-f]:|fc[0-9a-f]{2}:|fd[0-9a-f]{2}:)' \
             | head -3 \
             | sed -E '/:/ s/.*/[&]/' \
             | tr '\n' ' ')
@@ -813,15 +824,20 @@ detect_resolvers() {
         resolvers=$(scutil --dns 2>/dev/null \
             | grep 'nameserver\[' \
             | awk '{print $3}' \
-            | grep -vE '^(127\.|::1$)' \
+            | sed 's/%.*//' \
+            | grep -vE '^(127\.|::1$|fe[89ab][0-9a-f]:|fc[0-9a-f]{2}:|fd[0-9a-f]{2}:)' \
             | sort -u \
             | head -3 \
             | sed -E '/:/ s/.*/[&]/' \
             | tr '\n' ' ')
     fi
-    if [ -z "$resolvers" ]; then
-        resolvers="223.5.5.5 8.8.8.8"
-    fi
+    # Always append public DNS as a safety net. The leading space is explicit
+    # (rather than relying on the trailing space produced by tr '\n' ' ' above)
+    # so this stays correct if the pipeline is ever refactored.
+    # Order note: nginx polls resolvers round-robin (not primary/backup), so the
+    # order does not imply priority. 1.1.1.1 (Cloudflare) + 223.5.5.5 (Alibaba)
+    # gives reasonable reachability in both mainland China and overseas networks.
+    resolvers="${resolvers} 1.1.1.1 223.5.5.5"
     echo "$resolvers"
 }
 
@@ -999,6 +1015,7 @@ do_stop() {
                  "$DATA_DIR/psql.log" \
                  "$PG_DUMP_LOG" \
                  "$PG_RESTORE_LOG" \
+                 "$DATA_DIR/pg_migrate.log" \
                  "$DATA_DIR/arkham-api.log" \
                  "$NGINX_LOG_DIR/error.log" \
                  "$NGINX_LOG_DIR/access.log"; do
@@ -1072,6 +1089,108 @@ listen_addresses = '127.0.0.1'
 PG_CONF_EOF
 
     info "Database schema initialization complete."
+}
+
+# ── Apply pending sqitch migrations ─────────────────────────────────────────
+# Mirrors migrate.sh from the docker deployment: reads data/migrations/sqitch.plan,
+# tracks applied migrations in arkham_schema_migrations, and applies any
+# deploy/<name>.sql file that is not yet recorded.
+#
+# The bundled setup.sql is a pg_dump baseline that is only refreshed manually.
+# It can lag the sqitch plan, so any migration added after the baseline must be
+# applied incrementally on every start (idempotent thanks to the tracking table).
+#
+# Baseline: name of the last migration whose changes are already contained in
+# setup.sql. Anything after this in sqitch.plan is applied on top.
+# Keep in sync with BASELINE_THROUGH in migrate.sh at the repo root.
+MIGRATION_BASELINE_THROUGH="add_step_constraint"
+
+apply_migrations() {
+    local mig_dir="$DATA_DIR/migrations"
+    local plan="$mig_dir/sqitch.plan"
+    local deploy_dir="$mig_dir/deploy"
+    local log="$DATA_DIR/pg_migrate.log"
+
+    # Legacy packages built before this feature don't ship migrations; skip silently.
+    if [ ! -f "$plan" ]; then
+        return 0
+    fi
+
+    # Extract migration names in plan order. The plan format is one migration
+    # per line with metadata after; awk '{print $1}' picks the name. Skip
+    # pragma (%), comment (#), and blank lines.
+    local names
+    names="$(grep -vE '^[[:space:]]*(%|#|$)' "$plan" | awk '{print $1}')"
+    if [ -z "$names" ]; then
+        return 0
+    fi
+
+    : > "$log"
+
+    # Detect whether the tracking table already exists BEFORE we create it.
+    # A fresh cluster initialized from setup.sql has no tracking table, so we
+    # seed the baseline through $MIGRATION_BASELINE_THROUGH; otherwise the
+    # already-applied set drives the loop below.
+    local existed
+    existed="$(psql_cmd -d "$PG_DB" -tAc \
+        "SELECT to_regclass('public.arkham_schema_migrations') IS NOT NULL" \
+        2>/dev/null | tr -d '[:space:]')"
+
+    if ! psql_cmd -d "$PG_DB" -v ON_ERROR_STOP=1 -q -c \
+        "CREATE TABLE IF NOT EXISTS arkham_schema_migrations (
+           name text PRIMARY KEY,
+           applied_at timestamptz NOT NULL DEFAULT now()
+         );" >> "$log" 2>&1; then
+        die 2011 "Failed to create arkham_schema_migrations tracking table" "$log"
+    fi
+
+    if [ "$existed" != "t" ]; then
+        info "Seeding schema baseline through '$MIGRATION_BASELINE_THROUGH' ..."
+        local vals="" n
+        for n in $names; do
+            if [ -z "$vals" ]; then
+                vals="('$n')"
+            else
+                vals="${vals},('$n')"
+            fi
+            [ "$n" = "$MIGRATION_BASELINE_THROUGH" ] && break
+        done
+        if ! psql_cmd -d "$PG_DB" -v ON_ERROR_STOP=1 -q -c \
+            "INSERT INTO arkham_schema_migrations(name) VALUES ${vals} ON CONFLICT DO NOTHING;" \
+            >> "$log" 2>&1; then
+            die 2012 "Failed to seed migration baseline" "$log"
+        fi
+    fi
+
+    # Fetch already-applied migration names as a space-separated string,
+    # padded so the case-glob membership test can match either end.
+    local applied
+    applied="$(psql_cmd -d "$PG_DB" -tAc \
+        "SELECT string_agg(name, ' ') FROM arkham_schema_migrations" 2>/dev/null)"
+    applied=" ${applied} "
+
+    local count=0 n f
+    for n in $names; do
+        case "$applied" in *" $n "*) continue ;; esac
+        f="$deploy_dir/${n}.sql"
+        if [ ! -f "$f" ]; then
+            die 2013 "Migration file missing: $f" "$log"
+        fi
+        info "Applying migration: $n"
+        if ! psql_cmd -d "$PG_DB" -v ON_ERROR_STOP=1 -q -f "$f" >> "$log" 2>&1; then
+            die 2014 "Migration failed: $n" "$log"
+        fi
+        if ! psql_cmd -d "$PG_DB" -v ON_ERROR_STOP=1 -q -c \
+            "INSERT INTO arkham_schema_migrations(name) VALUES ('$n') ON CONFLICT DO NOTHING;" \
+            >> "$log" 2>&1; then
+            die 2015 "Failed to record migration '$n'" "$log"
+        fi
+        count=$((count + 1))
+    done
+
+    if [ "$count" -gt 0 ]; then
+        info "Applied $count schema migration(s)."
+    fi
 }
 
 # ── Start ────────────────────────────────────────────────────────────────────
@@ -1249,6 +1368,11 @@ do_start() {
             || die 2007 "Schema import failed" "$DATA_DIR/psql.log"
         info "Database recreation complete."
     fi
+
+    # Apply pending sqitch migrations on top of setup.sql. Idempotent: already-applied
+    # migrations (recorded in arkham_schema_migrations) are skipped, so this is
+    # cheap on subsequent starts and safe on both fresh and restored clusters.
+    apply_migrations
 
     # 2. arkham-api (port 3002)
     info "Starting backend API ..."
@@ -1723,7 +1847,7 @@ echo ""
 
 # ── 0. Trying download latest release version ───────────────────────────────
 if [ -f "${GAME_DIR}/download_update.sh" ]; then
-    bash "${GAME_DIR}/download_update.sh" 2>/dev/null || true
+    bash "${GAME_DIR}/download_update.sh" || true
 fi
 
 
@@ -2068,13 +2192,43 @@ main() {
     local pg_share="${DEPS_DIR}/postgres/share"
     [ -d "$pg_share" ] && { ensure_dir "${PKG_DIR}/game/pgsql/share"; cp -r "${pg_share}/"* "${PKG_DIR}/game/pgsql/share/" 2>/dev/null || true; }
 
-    # setup.sql is a full production database dump (tables + columns + constraints + indexes + triggers)
-    # Docker initializes the database directly from this file instead of composing Sqitch migrations
+    # setup.sql is a pg_dump baseline (tables + columns + constraints + indexes + triggers)
+    # up to and including MIGRATION_BASELINE_THROUGH in the launcher (add_step_constraint).
+    # Any sqitch migration added after that baseline is applied incrementally at
+    # start-up by apply_migrations() using data/migrations/.
     if [ -f "$SETUP_SQL" ]; then
         cp "$SETUP_SQL" "${PKG_DIR}/game/data/setup.sql"
-        substep "setup.sql copied to game/data/ (full production database dump)"
+        substep "setup.sql copied to game/data/ (pg_dump baseline)"
     else
         warn "setup.sql not found"
+    fi
+
+    # Sqitch migrations: bundle sqitch.plan + every deploy/*.sql so the launcher
+    # can apply anything newer than setup.sql on first start (and on every start
+    # thereafter — apply_migrations is idempotent via arkham_schema_migrations).
+    local migrations_src="${PROJECT_ROOT}/migrations"
+    if [ -f "${migrations_src}/sqitch.plan" ] && [ -d "${migrations_src}/deploy" ]; then
+        ensure_dir "${PKG_DIR}/game/data/migrations/deploy"
+        cp "${migrations_src}/sqitch.plan" "${PKG_DIR}/game/data/migrations/sqitch.plan"
+        # Copy every plan-declared migration; fail loud if a referenced file is missing.
+        local plan_names missing=""
+        plan_names="$(grep -vE '^[[:space:]]*(%|#|$)' "${migrations_src}/sqitch.plan" | awk '{print $1}')"
+        local n
+        for n in $plan_names; do
+            if [ -f "${migrations_src}/deploy/${n}.sql" ]; then
+                cp "${migrations_src}/deploy/${n}.sql" "${PKG_DIR}/game/data/migrations/deploy/${n}.sql"
+            else
+                missing="${missing} ${n}"
+            fi
+        done
+        if [ -n "$missing" ]; then
+            die 1 "Missing migration deploy files:${missing}"
+        fi
+        local mig_count
+        mig_count="$(printf '%s\n' $plan_names | grep -c . || true)"
+        substep "sqitch.plan + ${mig_count} deploy/*.sql copied to game/data/migrations/"
+    else
+        warn "migrations/sqitch.plan or migrations/deploy/ not found; launcher will skip incremental migrations"
     fi
 
     # Config files
@@ -2258,7 +2412,7 @@ main() {
     # Verification
     echo ""
     substep "Verifying distribution integrity ..."
-    local required=("game/bin/arkham-api" "game/bin/nginx" "game/pgsql/bin/postgres" "game/pgsql/bin/initdb" "game/pgsql/bin/pg_ctl" "game/pgsql/bin/pg_dump" "game/pgsql/bin/pg_restore" "game/frontend/dist/index.html" "game/start.sh" "game/update.sh" "game/download_update.sh")
+    local required=("game/bin/arkham-api" "game/bin/nginx" "game/pgsql/bin/postgres" "game/pgsql/bin/initdb" "game/pgsql/bin/pg_ctl" "game/pgsql/bin/pg_dump" "game/pgsql/bin/pg_restore" "game/frontend/dist/index.html" "game/start.sh" "game/update.sh" "game/download_update.sh" "game/data/setup.sql" "game/data/migrations/sqitch.plan")
     if [ "$OS" = "linux" ]; then
         required+=("Start-ArkhamHorror.bat" "Update-ArkhamHorror.bat")
     elif [ "$OS" = "macos" ]; then
