@@ -1246,7 +1246,7 @@ getInvestigatorsMatching MatcherFunc {..} matcher = do
           pure $ maybe False (`elem` locations) mlid
     InvestigatorWithId iid -> pure $ flip runMatches as $ (== iid) . toId
     InvestigatorIs cardCode -> pure $ flip runMatches as \a ->
-      toCardCode a == cardCode || case a.form of
+      cardCode `elem` (toCardDef (toAttrs a)).cardCodes || case a.form of
         TransfiguredForm c -> c == cardCode
         YithianForm -> coerce (toId a) == cardCode
         HomunculusForm -> coerce (toId a) == cardCode
@@ -6447,6 +6447,7 @@ runMessages gameId mLogger = do
             ClearUI -> runWithEnv (overGameM $ runMessage ClearUI) >> runMessages gameId mLogger
             Ask _ (ChooseOneAtATime []) -> runMessages gameId mLogger
             Ask _ (ChooseOneAtATimeWithAuto _ []) -> runMessages gameId mLogger
+            Ask _ (ChooseN _ []) -> runMessages gameId mLogger
             Ask pid q -> do
               -- if we are choosing decks, we do not want to clobber other ChooseDeck
               moreChooseDecks <-
