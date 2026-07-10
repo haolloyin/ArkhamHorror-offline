@@ -37,6 +37,7 @@ import Arkham.Prelude
 import Arkham.Projection
 import Arkham.SideStory
 import Arkham.Tarot
+import Arkham.UltimatumsAndBoons
 import Arkham.Xp
 import Data.Aeson.Key qualified as Aeson
 import Data.Map.Strict qualified as Map
@@ -82,8 +83,13 @@ defaultCampaignRunner msg a = case msg of
     -- between two scenarios
     killed <- select KilledInvestigator
     insane <- select InsaneInvestigator
+    -- Ultimatum of Survival: a killed or insane investigator's player is
+    -- eliminated from the campaign and cannot continue with a new
+    -- investigator, so they get no replacement-deck prompt.
+    survival <- hasUltimatum UltimatumOfSurvival
     case nub (killed <> insane) of
       [] -> pure ()
+      _ | survival -> pure ()
       xs -> push . chooseUpgradeDecks =<< traverse getPlayer xs
     pure a
   CampaignStep (ScenarioStepWithOptions sid opts) -> do
@@ -108,7 +114,16 @@ defaultCampaignRunner msg a = case msg of
     -- [ALERT] Update TheDreamEaters if this alters a
     pure a
   CampaignStep (UpgradeDeckStep _) -> do
-    investigators <- select InvestigatorCanAddCardsToDeck
+    investigators <- do
+      candidates <- select InvestigatorCanAddCardsToDeck
+      -- Ultimatum of Survival: eliminated players don't return with a new
+      -- investigator, so killed/insane seats get no upgrade/replacement prompt.
+      survival <- hasUltimatum UltimatumOfSurvival
+      if survival
+        then do
+          eliminated <- nub <$> liftA2 (<>) (select KilledInvestigator) (select InsaneInvestigator)
+          pure $ filter (`notElem` eliminated) candidates
+        else pure candidates
     players <- traverse getPlayer investigators
     pushAll
       [ ResetGame
@@ -180,15 +195,34 @@ defaultCampaignRunner msg a = case msg of
             Just _ -> pure Nothing
         else pure Nothing
 
-    (deck', randomWeaknesses) <- addRandomBasicWeaknessIfNeeded investigatorClass playerCount mDecklist deck
+    (deck', baseRandomWeaknesses) <- addRandomBasicWeaknessIfNeeded investigatorClass playerCount mDecklist deck
+    -- Ultimatum of Disaster: deckbuilding requirements gain 1 additional
+    -- random basic weakness.
+    disaster <- hasUltimatum UltimatumOfDisaster
+    extraWeakness <-
+      if disaster
+        then (: []) <$> (genCard =<< getRandomBasicWeakness investigatorClass playerCount mDecklist)
+        else pure []
+    let randomWeaknesses = baseRandomWeaknesses <> extraWeakness
+    morrigan <- hasBoon BoonOfTheMorrigan
+    weaknessMessages <-
+      if morrigan
+        then
+          concat <$> for randomWeaknesses \_ ->
+            morriganWeaknessMessages
+              iid
+              (genCard =<< getRandomBasicWeakness investigatorClass playerCount mDecklist)
+        else pure $ map (AddCampaignCardToDeck iid ShuffleIn) randomWeaknesses
+    ancients <- hasBoon BoonOfTheAncients
     purchaseTrauma <- initDeckTrauma deck' iid CampaignTarget
     initXp <- initDeckXp deck' iid CampaignTarget
     pushAll
-      $ map (AddCampaignCardToDeck iid ShuffleIn) randomWeaknesses
+      $ weaknessMessages
       <> purchaseTrauma
       <> toList mEldritchBrand
       <> [DoStep 1 msg]
       <> initXp
+      <> (if ancients then ancientsStartingXpMessages iid else [])
 
     pure $ updateAttrs a $ decksL %~ insertMap iid deck'
   DoStep 1 (InitDeck InitDeckAttrs {initDeckInvestigator = iid, initDeckDeck = deck}) -> do
@@ -422,6 +456,14 @@ defaultCampaignRunner msg a = case msg of
         case step.unwrap.normalize of
           EpilogueStep -> push $ CampaignStep step
           _ -> pushAll [HandleKilledOrInsaneInvestigators, CampaignStep step]
+    -- Ultimatum of The Scream: strip banned allies from every player's deck.
+    -- Stored campaign decks plus seated investigators (a deck may not be
+    -- stored yet mid-transition). Pushed after the step messages so the
+    -- removals process before them.
+    investigators <- getInvestigators
+    pushAll
+      =<< screamedAllyCleanupMessages
+        (nub $ Map.keys (campaignDecks $ toAttrs a) <> investigators)
     pure
       $ updateAttrs a
       $ \attrs ->

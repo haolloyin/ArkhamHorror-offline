@@ -19,7 +19,9 @@ const props = withDefaults(defineProps<{
   card: Card | CardContents
   revealed?: boolean
   playerId: string
-}>(), { revealed: false })
+  allowAbilityButtons?: boolean
+  allowInteractions?: boolean
+}>(), { revealed: false, allowAbilityButtons: true, allowInteractions: true })
 
 const emit = defineEmits<{
   choose: [value: number]
@@ -77,6 +79,7 @@ const image = computed(() => {
 })
 
 const id = computed(() => props.card.tag === 'VengeanceCard' ? props.card.contents.contents.id : cardContents.value.id)
+const isHighlighted = computed(() => props.game.highlightedCards.includes(id.value))
 const choices = computed(() => ArkhamGame.choices(props.game, props.playerId))
 
 function canInteract(c: Message): boolean {
@@ -105,6 +108,7 @@ function canInteract(c: Message): boolean {
 }
 
 const cardAction = computed(() => {
+  if (!props.allowInteractions) return -1
   return choices.value.findIndex(canInteract)
 })
 
@@ -128,7 +132,7 @@ function isAbility(v: Message): v is AbilityLabel {
   if (source.tag === 'AssetSource' && source.contents) {
     const asset = props.game.assets[source.contents]
     if (asset) {
-      return asset.cardId === id.value && asset.placement.tag === 'StillInHand'
+      return asset.cardId === id.value && (asset.placement.tag === 'StillInHand' || asset.placement.tag === 'StillInDiscard')
     }
   }
 
@@ -136,6 +140,8 @@ function isAbility(v: Message): v is AbilityLabel {
 }
 
 const abilities = computed<AbilityMessage[]>(() => {
+  if (!props.allowAbilityButtons) return []
+
   return choices.value
     .reduce<AbilityMessage[]>((acc, v, i) => {
       if (isAbility(v)) {
@@ -222,10 +228,11 @@ function startDrag(event: DragEvent) {
       class="playing-card-overlay"
     />
     <img
-      :class="{'card--can-interact': cardAction !== -1, 'sideways': forceSideways}"
+      :class="{'card--can-interact': cardAction !== -1, 'card--highlighted': isHighlighted && cardAction === -1, 'sideways': forceSideways}"
       class="card"
       :src="image"
       :data-customizations="JSON.stringify(cardContents.customizations)"
+      :data-chained="cardContents.chained || undefined"
       :data-pc="modifiedPlayingCard ? modifiedPlayingCard : null"
       :draggable="debug.active"
       @dragstart="startDrag"
@@ -284,6 +291,10 @@ function startDrag(event: DragEvent) {
 .card--can-interact {
   border: 2px solid var(--select);
   cursor: pointer;
+}
+
+.card--highlighted {
+  border: 2px solid var(--highlight);
 }
 
 .vengeance {

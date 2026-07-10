@@ -347,6 +347,22 @@ addCampaignCardToDeckChoiceWith choices shouldShuffleIn card f = do
   card' <- fetchCard card
   push $ Msg.addCampaignCardToDeckChoiceWith lead choices shouldShuffleIn card' f
 
+-- | Like 'addCampaignCardToDeckChoice', with a continuation for the players
+-- DECLINING the card (e.g. the "I Don't Trust Her" achievement).
+addCampaignCardToDeckChoiceWhenDeclined
+  :: (FetchCard card, ReverseQueue m)
+  => [InvestigatorId]
+  -> ShuffleIn
+  -> card
+  -> QueueT Message m ()
+  -> m ()
+addCampaignCardToDeckChoiceWhenDeclined choices shouldShuffleIn card whenDeclined = do
+  lead <- getLeadPlayer
+  card' <- fetchCard card
+  declined <- capture whenDeclined
+  push
+    $ Msg.addCampaignCardToDeckChoiceWhenDeclined lead choices shouldShuffleIn card' (const []) declined
+
 forceAddCampaignCardToDeckChoice
   :: (FetchCard card, ReverseQueue m) => [InvestigatorId] -> ShuffleIn -> card -> m ()
 forceAddCampaignCardToDeckChoice choices shouldShuffleIn card = do
@@ -1806,6 +1822,11 @@ focusCards cards body = do
 focusCard :: (ReverseQueue m, IsCard a) => a -> StateT Unfocus m () -> m ()
 focusCard card = focusCards [card]
 
+-- | Visually highlight the given cards (target color) in the current modal.
+-- Cleared automatically when the search/focus ends.
+highlightCards :: (ReverseQueue m, IsCard a) => [a] -> m ()
+highlightCards cards = push $ HighlightCards $ map toCard cards
+
 cancelTokenDraw :: (MonadTrans t, HasQueue Message m) => t m ()
 cancelTokenDraw = lift Msg.cancelTokenDraw
 
@@ -2772,6 +2793,28 @@ automaticallyEvadeEnemy investigator enemy = push $ Msg.EnemyEvaded (asId invest
 
 exhaustEnemy :: (ReverseQueue m, Sourceable source, Targetable target) => source -> target -> m ()
 exhaustEnemy s t = push . Exhaust $ Exhaust.mkExhaustion s t
+
+-- | What a successful evasion resolves to. The DoNot{Disengage,Exhaust}Evaded
+-- modifiers can drop either half; if both are dropped there is no result (see
+-- 'evasionResult').
+data EvasionResult = DisengageOnly | ExhaustOnly | DisengageAndExhaust
+  deriving stock (Eq, Show)
+
+-- | Fold the DoNot{Disengage,Exhaust}Evaded gates into an 'EvasionResult';
+-- 'Nothing' when both halves are suppressed.
+evasionResult :: Bool -> Bool -> Maybe EvasionResult
+evasionResult True True = Just DisengageAndExhaust
+evasionResult True False = Just DisengageOnly
+evasionResult False True = Just ExhaustOnly
+evasionResult False False = Nothing
+
+-- | The mechanical result of a successful evasion: the enemy disengages from
+-- everyone and/or exhausts. Single source of truth shared by the enemy runner
+-- and cards that re-resolve an evasion (e.g. "I'm done runnin'!").
+successfulEvasion :: (ReverseQueue m, ToId enemy EnemyId) => EvasionResult -> enemy -> m ()
+successfulEvasion result (asId -> eid) = do
+  when (result /= ExhaustOnly) $ disengageFromAll eid
+  when (result /= DisengageOnly) $ exhaustEnemy (EnemySource eid) eid
 
 placeInBonded :: (ReverseQueue m, IsCard card) => InvestigatorId -> card -> m ()
 placeInBonded iid = push . PlaceInBonded iid . toCard

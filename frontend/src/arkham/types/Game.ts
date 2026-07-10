@@ -47,6 +47,15 @@ type GameSettings = {
   settingsAbilitiesCannotReactToThemselves: boolean
   settingsAsIfRuling: AsIfRuling
   settingsStrictAsIfAt: boolean
+  settingsUltimatumsAndBoons: string[]
+  settingsUltimatumsAndBoonsEnabled: boolean
+  // Ultimatum of Ultimatums' per-game random roll (a tag like "BoonOfHermes");
+  // re-rolled each scenario.
+  settingsRolledUltimatumOrBoon: string | null
+  // Card codes banned by Ultimatum of The Scream.
+  settingsScreamedAllies: string[]
+  // Whether official campaign achievements are tracked for this game.
+  settingsAchievementsEnabled: boolean
   aiPlayers: Record<string, AiPlayerState>
 }
 
@@ -74,6 +83,11 @@ const gameSettingsDecoder = JsonDecoder.object<GameSettings>({
     JsonDecoder.literal('chapter2'),
   ], 'AsIfRuling'),
   settingsStrictAsIfAt: JsonDecoder.boolean(),
+  settingsUltimatumsAndBoons: withDefault<string[]>([], JsonDecoder.array(JsonDecoder.string(), 'string[]')),
+  settingsUltimatumsAndBoonsEnabled: withDefault(true, JsonDecoder.boolean()),
+  settingsRolledUltimatumOrBoon: withDefault<string | null>(null, JsonDecoder.string()),
+  settingsScreamedAllies: withDefault<string[]>([], JsonDecoder.array(JsonDecoder.string(), 'string[]')),
+  settingsAchievementsEnabled: withDefault(true, JsonDecoder.boolean()),
   aiPlayers: withDefault<Record<string, AiPlayerState>>({}, JsonDecoder.record<AiPlayerState>(aiPlayerStateDecoder, 'Dict<PlayerId, AiPlayerState>')),
 }, 'GameSettings')
 
@@ -146,6 +160,7 @@ export type Game = {
   skillTestResults: SkillTestResults | null;
   treacheries: Record<string, Treachery>;
   focusedCards: Card[];
+  highlightedCards: string[];
   focusedTarotCards: TarotCard[];
   foundCards: Record<string, Card[]>;
   focusedChaosTokens: ChaosToken[];
@@ -380,6 +395,7 @@ export const gameDecoder: JsonDecoder.Decoder<Game> = JsonDecoder.object(
     skillTestResults: JsonDecoder.nullable(skillTestResultsDecoder),
     treacheries: JsonDecoder.record<Treachery>(treacheryDecoder, 'Dict<UUID, Treachery>'),
     focusedCards: JsonDecoder.array<Card>(cardDecoder, 'Card[]'),
+    highlightedCards: JsonDecoder.array<string>(JsonDecoder.string(), 'string[]'),
     focusedTarotCards: JsonDecoder.array<TarotCard>(tarotCardDecoder, 'TarotCard[]'),
     foundCards: JsonDecoder.record<Card[]>(JsonDecoder.array(cardDecoder, 'Card[]'), 'Dict<string, Card[]>'),
     focusedChaosTokens: JsonDecoder.array<ChaosToken>(chaosTokenDecoder, 'Token[]'),
@@ -411,6 +427,11 @@ export const gameDecoder: JsonDecoder.Decoder<Game> = JsonDecoder.object(
     settingsAbilitiesCannotReactToThemselves: true,
     settingsAsIfRuling: 'chapter1',
     settingsStrictAsIfAt: false,
+    settingsUltimatumsAndBoons: [],
+    settingsUltimatumsAndBoonsEnabled: true,
+    settingsRolledUltimatumOrBoon: null,
+    settingsScreamedAllies: [],
+    settingsAchievementsEnabled: true,
     aiPlayers: {},
   },
   undoActionStep: undoActionStep ?? null,

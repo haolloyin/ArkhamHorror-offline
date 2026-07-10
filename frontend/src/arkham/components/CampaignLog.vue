@@ -4,7 +4,8 @@ import { LogContents, LogKey, formatKey, logContentsDecoder } from '@/arkham/typ
 import { toCapitalizedWords, formatContent } from '@/arkham/helpers'
 import { cardArt } from '@/arkham/cardImages'
 import { computed, ref, onMounted, onUnmounted, watch, type Component } from 'vue'
-import { fetchCard } from '@/arkham/api'
+import { fetchCard, fetchGameAchievements } from '@/arkham/api'
+import type { Achievement } from '@/arkham/types/Achievement'
 import type { CardDef } from '@/arkham/types/CardDef'
 import { type Name, simpleName } from '@/arkham/types/Name'
 import { scenarioToI18n, scenarioToKeyI18n, campaignIdToI18n, type Remembered } from '@/arkham/types/Scenario'
@@ -21,12 +22,16 @@ import CampaignLogSpecialRules from '@/arkham/components/CampaignLogSpecialRules
 import CampaignLogRecordedSets from '@/arkham/components/CampaignLogRecordedSets.vue'
 import CampaignLogInvestigatorSection from '@/arkham/components/CampaignLogInvestigatorSection.vue'
 import CampaignLogPartners from '@/arkham/components/CampaignLogPartners.vue'
+import { achievementCatalog } from '@/arkham/achievements'
 import CampaignLogChaosBag from '@/arkham/components/CampaignLogChaosBag.vue'
+import CampaignLogUltimatumsAndBoons from '@/arkham/components/CampaignLogUltimatumsAndBoons.vue'
+import CampaignLogAchievements from '@/arkham/components/CampaignLogAchievements.vue'
 import CampaignLogAdditionalSection from '@/arkham/components/CampaignLogAdditionalSection.vue'
 import campaignJSON from '@/arkham/data/campaigns.json'
 import { useI18n } from 'vue-i18n'
 import { useDbCardStore } from '@/stores/dbCards'
 
+import DiscoveredRunes from '@/arkham/components/TheDrownedCity/DiscoveredRunes.vue'
 import ResidentNotes from '@/arkham/components/TheFeastOfHemlockVale/ResidentNotes.vue'
 import AreasSurveyed from '@/arkham/components/TheFeastOfHemlockVale/AreasSurveyed.vue'
 import DayTimeTracker from '@/arkham/components/TheFeastOfHemlockVale/DayTimeTracker.vue'
@@ -42,8 +47,22 @@ const emit = defineEmits<{ refresh: [] }>()
 const store = useDbCardStore()
 const { t, tm } = useI18n()
 
-type LogTab = 'log' | 'investigators' | 'rules' | `additional:${number}`
+type LogTab = 'log' | 'investigators' | 'rules' | 'achievements' | `additional:${number}`
 const activeTab = ref<LogTab>('log')
+
+const achievements = ref<Achievement[]>([])
+const campaignAchievementEntries = computed(() =>
+  achievementCatalog.filter((entry) => entry.campaignId === props.game.campaign?.id)
+)
+const achievementsEnabled = computed(() =>
+  !!props.game.settings.settingsAchievementsEnabled && campaignAchievementEntries.value.length > 0
+)
+
+onMounted(() => {
+  fetchGameAchievements(props.game.id)
+    .then((rows) => { achievements.value = rows })
+    .catch(() => { achievements.value = [] })
+})
 
 const sectionComponentById: Record<string, Component> = {
   motherRachelNotes: ResidentNotes,
@@ -102,6 +121,10 @@ const visibleSections = computed(() => {
   if (props.game.campaign?.id !== '10') return sections.value
   return sections.value.filter((s) => s.id !== 'areasSurveyed')
 })
+
+// --- Ultimatums and Boons variants -----------------------------------------------
+const ultimatumsAndBoonsEnabled = computed(() => props.game.settings.settingsUltimatumsAndBoonsEnabled)
+const ultimatumsAndBoons = computed(() => props.game.settings.settingsUltimatumsAndBoons)
 
 // --- Determine available logs & titles -----------------------------------------
 const mainLog = computed<LogContents>(() => props.game.campaign?.log || props.game.scenario?.standaloneCampaignLog || EMPTY_LOG)
@@ -508,6 +531,7 @@ const NON_CARD_KEYS = new Set([
   'edgeOfTheEarth.key.suppliesRecovered',
   'edgeOfTheEarth.key.sealsPlaced',
   'edgeOfTheEarth.key.sealsRecovered',
+  'theDrownedCity.key.discoveredGlyphs',
 ])
 
 const findCard = (cardCode: string): CardDef | undefined =>
@@ -716,6 +740,12 @@ onUnmounted(() => {
             @click="activeTab = 'rules'"
           >{{ t('campaignLog.tabs.rules') }}</button>
           <button
+            v-if="achievementsEnabled"
+            type="button"
+            :class="{ active: activeTab === 'achievements' }"
+            @click="activeTab = 'achievements'"
+          >{{ t('achievements.tabTitle') }}</button>
+          <button
             v-for="(section, index) in additionalLogSections"
             :key="section.title"
             type="button"
@@ -753,6 +783,12 @@ onUnmounted(() => {
             :rules="keywordsAndConcepts.rules"
           />
         </template>
+
+        <CampaignLogAchievements
+          v-if="activeTab === 'achievements'"
+          :achievements="achievements"
+          :campaign-id="game.campaign?.id"
+        />
 
         <template v-for="(section, index) in additionalLogSections" :key="section.title">
           <CampaignLogAdditionalSection
@@ -839,6 +875,13 @@ onUnmounted(() => {
             :chaosBag="chaosBag"
           />
 
+          <CampaignLogUltimatumsAndBoons
+            v-if="ultimatumsAndBoons.length > 0"
+            :entries="ultimatumsAndBoons"
+            :enabled="ultimatumsAndBoonsEnabled"
+            :rolled="game.settings.settingsRolledUltimatumOrBoon"
+          />
+
           <CampaignLogSection
             v-if="recorded.length > 0"
             :title="t('campaignLog.campaignNotes')"
@@ -875,9 +918,11 @@ onUnmounted(() => {
             :displayRecordValue="displayRecordValue"
           />
 
+          <DiscoveredRunes v-if="game.campaign?.id === '11'" :log="selectedLog" :game-id="game.id" @refresh="emit('refresh')" />
+
           <!-- Campaign recorded sets + counts -->
           <CampaignLogRecordedSets
-            :entries="Object.entries(recordedSets)"
+            :entries="(Object.entries(recordedSets) as [string, any[]][]).filter(([k]) => !k.toLowerCase().includes('discoveredglyph'))"
             :counts="recordedCounts"
             :displayRecordValue="displayRecordValue"
           />

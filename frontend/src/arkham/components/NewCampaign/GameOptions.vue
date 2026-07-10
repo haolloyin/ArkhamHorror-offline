@@ -7,6 +7,7 @@ import type { Difficulty } from '@/arkham/types/Difficulty'
 import type { Scenario, Campaign } from '@/arkham/data'
 import type { GameMode, MultiplayerVariant, CampaignType, AiFocus, AiSlotConfig } from '@/arkham/types/NewGame'
 import { aiFocuses } from '@/arkham/types/NewGame'
+import { ACHIEVEMENT_CAMPAIGN_IDS } from '@/arkham/achievements'
 import { useSettings } from '@/stores/settings'
 
 type FullCampaignOption = {
@@ -289,6 +290,87 @@ const recommendedOptionState =
 const strictAsIfAt = defineModel<boolean>('strictAsIfAt', { required: true })
 
 const rulesExpanded = ref(false)
+
+// --- Achievement tracking --------------------------------------------------------
+// Only rendered when the effective campaign (Return To swaps the id) has an
+// achievement catalog; unsupported campaigns always create with tracking on.
+const achievementsEnabled = defineModel<boolean>('achievementsEnabled', { required: true })
+
+const effectiveCampaignId = computed<string | null>(() => {
+  if (props.gameMode !== 'Campaign') return null
+  if (returnTo.value && props.selectedCampaignReturnTo?.id) return props.selectedCampaignReturnTo.id
+  return props.chosenCampaignId
+})
+
+const supportsAchievements = computed(
+  () => !!effectiveCampaignId.value && ACHIEVEMENT_CAMPAIGN_IDS.includes(effectiveCampaignId.value)
+)
+
+// --- Ultimatums and Boons variant selection ------------------------------------
+// Selected enum tags flow up to NewCampaign and into the create-game POST body.
+const ultimatumsAndBoons = defineModel<string[]>('ultimatumsAndBoons', { required: true })
+
+// Each group renders as its own collapsed card; per-group expansion state.
+const uabExpanded = ref<Record<string, boolean>>({ boons: false, ultimatums: false })
+
+const uabSelectedCount = (group: { tags: string[] }) =>
+  group.tags.filter((tag) => ultimatumsAndBoons.value.includes(tag)).length
+
+// ponytail: hardcoded catalog; add new tags here + locale entries when they land.
+const uabGroups: { key: 'boons' | 'ultimatums'; beta?: boolean; tags: string[] }[] = [
+  {
+    key: 'boons',
+    tags: [
+      'BoonOfTheAncients',
+      'BoonOfAthena',
+      'BoonOfDestiny',
+      'BoonOfHades',
+      'BoonOfHermes',
+      'BoonOfThoth',
+      'BoonOfOsiris',
+      'BoonOfTheMorrigan',
+      'BoonOfPersephone',
+      'BoonOfTheExplorer',
+      'BoonOfTheChild',
+    ],
+  },
+  {
+    key: 'ultimatums',
+    beta: true,
+    tags: [
+      'UltimatumOfAgony',
+      'UltimatumOfBrokenPromises',
+      'UltimatumOfTheBrokenVeil',
+      'UltimatumOfChaos',
+      'UltimatumOfDisaster',
+      'UltimatumOfDread',
+      'UltimatumOfExile',
+      'UltimatumOfFailure',
+      'UltimatumOfFinality',
+      'UltimatumOfForbiddenKnowledge',
+      'UltimatumOfHardship',
+      'UltimatumOfTheHighlander',
+      'UltimatumOfInduction',
+      'UltimatumOfMalevolence',
+      'UltimatumOfOrthodoxy',
+      'UltimatumOfTheScream',
+      'UltimatumOfTheSpiral',
+      'UltimatumOfSurvival',
+      'UltimatumOfUltimatums',
+    ],
+  },
+]
+
+// Entries enforced at deck construction (deckRestrictions.ts) rather than at
+// runtime — the in-game Ultimatums & Boons on/off toggle does not affect them.
+const UAB_DECKBUILDING_TAGS = new Set([
+  'UltimatumOfChaos',
+  'UltimatumOfDisaster',
+  'UltimatumOfTheHighlander',
+  'UltimatumOfInduction',
+  'UltimatumOfOrthodoxy',
+  'UltimatumOfExile',
+])
 
 type RulesPreset = 'chapter1' | 'chapter2'
 
@@ -623,6 +705,18 @@ function setOptEnabled(o: RecommendedToggle, enabled: boolean) {
         </div>
       </div>
 
+      <div v-if="supportsAchievements" class="card">
+        <div class="card-title">{{ $t('achievements.settingsToggleTitle') }}</div>
+        <div class="segmented segmented-2">
+          <input type="radio" v-model="achievementsEnabled" :value="true" id="achievementsOn" />
+          <label for="achievementsOn">{{ $t('On') }}</label>
+
+          <input type="radio" v-model="achievementsEnabled" :value="false" id="achievementsOff" />
+          <label for="achievementsOff">{{ $t('Off') }}</label>
+        </div>
+        <div class="achievements-desc">{{ $t('achievements.settingsToggleDescription') }}</div>
+      </div>
+
       <div class="card rules-card">
         <button type="button" class="rules-toggle" @click="rulesExpanded = !rulesExpanded">
           <span class="card-title" style="margin-bottom: 0">{{ $t('create.advancedRulesConfiguration') ?? 'Advanced Rules Configuration' }}</span>
@@ -708,6 +802,43 @@ function setOptEnabled(o: RecommendedToggle, enabled: boolean) {
           </div>
         </div>
       </div>
+
+      <template v-for="group in uabGroups" :key="group.key">
+        <div v-if="group.tags.length > 0" class="card rules-card">
+          <button type="button" class="rules-toggle" @click="uabExpanded[group.key] = !uabExpanded[group.key]">
+            <span class="card-title" style="margin-bottom: 0">
+              {{ $t(`ultimatumsAndBoons.${group.key}`) }}
+              <span v-if="group.beta" class="uab-beta-pill">{{ $t('ultimatumsAndBoons.betaBadge') }}</span>
+            </span>
+            <span class="rules-header-right">
+              <span class="preset-pill" :class="{ 'uab-active': uabSelectedCount(group) > 0 }">
+                {{ uabSelectedCount(group) > 0
+                  ? $t('ultimatumsAndBoons.selectedCount', { count: uabSelectedCount(group) })
+                  : $t('ultimatumsAndBoons.noneSelected') }}
+              </span>
+              <span class="rules-chevron" :class="{ expanded: uabExpanded[group.key] }">▸</span>
+            </span>
+          </button>
+          <transition name="slide">
+            <div v-if="uabExpanded[group.key]" class="rules-body subcard">
+              <div class="uab-group">
+                <label v-for="tag in group.tags" :key="tag" class="uab-row">
+                  <input type="checkbox" :value="tag" v-model="ultimatumsAndBoons" />
+                  <span class="uab-text">
+                    <span class="uab-name">
+                      {{ $t(`ultimatumsAndBoons.entries.${tag}.name`) }}
+                      <span v-if="UAB_DECKBUILDING_TAGS.has(tag)" class="uab-deckbuilding-badge">
+                        {{ $t('ultimatumsAndBoons.deckbuildingBadge') }}
+                      </span>
+                    </span>
+                    <span class="uab-desc">{{ $t(`ultimatumsAndBoons.entries.${tag}.text`) }}</span>
+                  </span>
+                </label>
+              </div>
+            </div>
+          </transition>
+        </div>
+      </template>
     </section>
   </div>
 </template>
@@ -1229,6 +1360,13 @@ input[type='radio']:checked + label {
   text-transform: capitalize;
 }
 
+.achievements-desc {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.6);
+}
+
 .recommended-list {
   display: grid;
   gap: 10px;
@@ -1405,6 +1543,88 @@ input[type='radio']:checked + label {
 
 .rules-chevron.expanded {
   transform: rotate(90deg);
+}
+
+.preset-pill.uab-active {
+  background: rgba(110, 134, 64, 0.25);
+  border-color: rgba(110, 134, 64, 0.55);
+  color: rgba(180, 210, 120, 0.9);
+}
+
+.uab-group {
+  display: grid;
+  gap: 8px;
+}
+
+.uab-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.uab-row:has(input:checked) {
+  background: rgba(110, 134, 64, 0.2);
+  border-color: rgba(110, 134, 64, 0.6);
+}
+
+.uab-row input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  accent-color: rgb(110, 134, 64);
+}
+
+.uab-text {
+  display: grid;
+  gap: 4px;
+}
+
+.uab-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.uab-desc {
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.uab-deckbuilding-badge {
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  margin-left: 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 211, 112, 0.35);
+  background: rgba(95, 65, 10, 0.35);
+  color: rgba(255, 226, 154, 0.95);
+  white-space: nowrap;
+}
+
+/* matches the campaign-box beta ribbon color (darkgoldenrod), pill-shaped */
+.uab-beta-pill {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 1px 8px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: darkgoldenrod;
+  color: white;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 .recommended-icon {

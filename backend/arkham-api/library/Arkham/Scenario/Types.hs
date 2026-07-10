@@ -78,6 +78,7 @@ data instance Field Scenario :: Type -> Type where
   ScenarioResolvedStories :: Field Scenario [StoryId]
   ScenarioChaosBag :: Field Scenario ChaosBag
   ScenarioInResolution :: Field Scenario Bool
+  ScenarioIsPrelude :: Field Scenario Bool
   ScenarioSetAsideCards :: Field Scenario [Card]
   ScenarioSetAsideKeys :: Field Scenario (Set ArkhamKey)
   ScenarioKeys :: Field Scenario (Set ArkhamKey)
@@ -118,6 +119,9 @@ data ScenarioAttrs = ScenarioAttrs
   , scenarioStandaloneCampaignLog :: CampaignLog
   , scenarioSetAsideCards :: [Card]
   , scenarioInResolution :: Bool
+  , scenarioUseHardExpertReference :: Bool
+  -- ^ Ultimatum of Malevolence: use the Hard/Expert reference side while
+  -- nominally playing Easy/Standard (isEasyStandard/isHardExpert honor this)
   , scenarioNoRemainingInvestigatorsHandler :: Target
   , scenarioVictoryDisplay :: [Card]
   , scenarioChaosBag :: ChaosBag
@@ -140,6 +144,7 @@ data ScenarioAttrs = ScenarioAttrs
   , scenarioTimesPlayed :: Int
   , scenarioDefeatedEnemies :: Map EnemyId DefeatedEnemyAttrs
   , scenarioIsSideStory :: Bool
+  , scenarioIsPrelude :: Bool
   , scenarioInShuffle :: Bool
   , scenarioSearch :: Maybe Search
   , scenarioStarted :: Bool
@@ -315,6 +320,7 @@ scenario f cardCode name difficulty layout =
       , scenarioStandaloneCampaignLog = mkCampaignLog
       , scenarioCardsUnderScenarioReference = mempty
       , scenarioInResolution = False
+      , scenarioUseHardExpertReference = False
       , scenarioNoRemainingInvestigatorsHandler = ScenarioTarget
       , scenarioVictoryDisplay = mempty
       , scenarioChaosBag = emptyChaosBag
@@ -339,6 +345,7 @@ scenario f cardCode name difficulty layout =
       , scenarioTimesPlayed = 0
       , scenarioDefeatedEnemies = mempty
       , scenarioIsSideStory = False
+      , scenarioIsPrelude = False
       , scenarioInShuffle = False
       , scenarioXpBreakdown = Nothing
       , scenarioCampaignStep = Nothing
@@ -439,6 +446,7 @@ instance FromJSON ScenarioAttrs where
     scenarioStandaloneCampaignLog <- o .: "standaloneCampaignLog"
     scenarioSetAsideCards <- o .: "setAsideCards"
     scenarioInResolution <- o .: "inResolution"
+    scenarioUseHardExpertReference <- o .:? "useHardExpertReference" .!= False
     scenarioNoRemainingInvestigatorsHandler <- o .: "noRemainingInvestigatorsHandler"
     scenarioVictoryDisplay <- o .: "victoryDisplay"
     scenarioChaosBag <- o .: "chaosBag"
@@ -461,6 +469,7 @@ instance FromJSON ScenarioAttrs where
     scenarioTimesPlayed <- o .: "timesPlayed"
     scenarioDefeatedEnemies <- o .: "defeatedEnemies"
     scenarioIsSideStory <- o .:? "isSideStory" .!= False
+    scenarioIsPrelude <- o .:? "isPrelude" .!= False
     scenarioInShuffle <- o .:? "inShuffle" .!= False
     scenarioStoryCards :: Map InvestigatorId [Card] <-
       (o .: "storyCards") <|> (map (toCard @PlayerCard) <$$> (o .: "storyCards"))

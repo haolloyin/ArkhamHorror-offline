@@ -8,6 +8,7 @@ import Arkham.Card.CardDef (CardDef)
 import Arkham.Helpers.FlavorText
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
+import Data.Text qualified as T
 
 newtype TheDrownedCity = TheDrownedCity CampaignAttrs
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity, HasModifiersFor)
@@ -50,6 +51,7 @@ instance RunMessage TheDrownedCity where
         flavor $ setTitle "title" >> p "artifacts"
         flavor $ setTitle "title" >> p "alienGlyphs"
       scope "newKeywords" $ flavor $ setTitle "title" >> p "body"
+      scope "prologue" $ flavor $ setTitle "title" >> p "body"
       nextCampaignStep
       pure c
     CampaignStep (InterludeStep 1 _) -> scope "anOfferYouCantRefuse" do
@@ -68,8 +70,7 @@ instance RunMessage TheDrownedCity where
             scope "task" $ scope lbl $ flavor $ setTitle "title" >> p "body"
       pure c
     DoStep 2 (CampaignStep (InterludeStep 1 _)) -> scope "anOfferYouCantRefuse" do
-      flavor $ setTitle "title" >> p "interlude2"
-      leadChooseOneM do
+      storyWithChooseOneM' (setTitle "title" >> p "interlude2") do
         labeled' "refuse" do
           flavor $ setTitle "title" >> p "interlude3"
           gameOver
@@ -78,16 +79,28 @@ instance RunMessage TheDrownedCity where
           nextCampaignStep
       pure c
     CampaignStep (InterludeStep 2 _) -> scope "expeditionToRlyeh" do
-      flavor $ setTitle "title" >> p "body"
-      leadChooseOneM do
+      storyWithChooseOneM' (setTitle "title" >> p "body") do
         labeled' "west" do
-          flavor $ setTitle "title" >> p "westernExpedition"
           record TheExpeditionHeadedWest
+          flavor do
+            setTitle "title"
+            p "westernExpedition"
+            ul do
+              li "theExpeditionHeadedWest"
+              li "andyVanNortwick"
+              li "westernChaosTokens"
+              li "proceedToTheWesternWall"
           addCampaignCardToDeckChoice_ Assets.andyVanNortwick
           setNextCampaignStep TheWesternWall
         labeled' "east" do
-          flavor $ setTitle "title" >> p "easternExpedition"
           record TheExpeditionHeadedEast
+          flavor do
+            setTitle "title"
+            p "easternExpedition"
+            ul do
+              li "theExpeditionHeadedEast"
+              li "rubyStandish"
+              li "proceedToObsidianCanyons"
           addCampaignCardToDeckChoice_ Assets.rubyStandish
           -- TODO: swap a chaos token (remove 1 / add 1) for the remainder of the
           -- campaign, per the Eastern Expedition setup.
@@ -103,4 +116,17 @@ instance RunMessage TheDrownedCity where
       flavor $ setTitle "title" >> p "body"
       setNextCampaignStep TheDoomOfArkhamPartI
       pure c
+    -- Glyph cards push @campaignSpecific "translateGlyph" ("rune_<letter>", "<word>")@
+    -- when translated; record the rune letter into the DiscoveredGlyphs set so the
+    -- Campaign Log glyph page (DiscoveredRunes.vue) lights it up.
+    CampaignSpecific "translateGlyph" v -> do
+      let (glyph, _word) = toResult v :: (Text, Text)
+      for_ (glyphLetter glyph) \letter -> recordSetInsert DiscoveredGlyphs [String letter]
+      pure c
     _ -> lift $ defaultCampaignRunner msg c
+
+-- | Extract the uppercase rune letter from a @"rune_<letter>"@ glyph id.
+glyphLetter :: Text -> Maybe Text
+glyphLetter g = case T.stripPrefix "rune_" g of
+  Just s | not (T.null s) -> Just (T.toUpper (T.take 1 s))
+  _ -> Nothing

@@ -42,6 +42,12 @@ standaloneI18n s a = withI18n $ scope "standalone" $ scope s a
 getIsReturnTo :: (HasGame m, Tracing m) => m Bool
 getIsReturnTo = selectJust TheScenario <&> \(ScenarioId c) -> T.take 1 (unCardCode c) == "5"
 
+-- | True when the active scenario is a prelude (e.g. Feast of Hemlock Vale's
+-- day preludes). Used to skip per-scenario effects that would otherwise
+-- double-count across a prelude and the scenario it leads into.
+getIsPrelude :: (HasGame m, Tracing m) => m Bool
+getIsPrelude = fromMaybe False <$> scenarioFieldMaybe ScenarioIsPrelude
+
 scenarioField :: (HasCallStack, HasGame m, Tracing m) => Field Scenario a -> m a
 scenarioField fld = scenarioFieldMap fld id
 
@@ -100,13 +106,15 @@ toChaosTokenValue attrs t esVal heVal =
 byDifficulty :: ScenarioAttrs -> a -> a -> a
 byDifficulty attrs a b = if isEasyStandard attrs then a else b
 
+-- Ultimatum of Malevolence flips the reference side without changing the
+-- actual difficulty (chaos bag construction etc. still use the real value).
 isEasyStandard :: ScenarioAttrs -> Bool
-isEasyStandard ScenarioAttrs {scenarioDifficulty} =
-  scenarioDifficulty `elem` [Easy, Standard]
+isEasyStandard ScenarioAttrs {scenarioDifficulty, scenarioUseHardExpertReference} =
+  not scenarioUseHardExpertReference && scenarioDifficulty `elem` [Easy, Standard]
 
 isHardExpert :: ScenarioAttrs -> Bool
-isHardExpert ScenarioAttrs {scenarioDifficulty} =
-  scenarioDifficulty `elem` [Hard, Expert]
+isHardExpert ScenarioAttrs {scenarioDifficulty, scenarioUseHardExpertReference} =
+  scenarioUseHardExpertReference || scenarioDifficulty `elem` [Hard, Expert]
 
 getScenarioDeck :: (HasGame m, Tracing m) => ScenarioDeckKey -> m [Card]
 getScenarioDeck k = scenarioFieldMap ScenarioDecks (Map.findWithDefault [] k)

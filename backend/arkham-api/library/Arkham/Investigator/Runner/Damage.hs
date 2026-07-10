@@ -57,7 +57,8 @@ import Arkham.Enemy.Types qualified as Field
 import Arkham.Event.Types (Field (..))
 import Arkham.Fight.Types
 import {-# SOURCE #-} Arkham.Game (asIfTurn, withoutCanModifiers)
-import Arkham.Game.Settings (settingsStrictAsIfAt)
+import Arkham.Game.Settings (activeUltimatumsAndBoons, settingsStrictAsIfAt)
+import Arkham.UltimatumsAndBoons.Types (Ultimatum (..), UltimatumOrBoon (..))
 import {-# SOURCE #-} Arkham.GameEnv
 import Arkham.Helpers
 import Arkham.Helpers.Ability (
@@ -343,6 +344,8 @@ handleCancelHorror a@InvestigatorAttrs{..} iid n = lift do
 handleInvestigatorDirectDamage a@InvestigatorAttrs{..} iid source damage horror = do
   unless (investigatorDefeated || investigatorResigned) do
     mods <- getModifiers a
+    -- CannotBeDamaged blocks damage only; horror still applies.
+    let damage' = if CannotBeDamaged `elem` mods then 0 else damage
     let horrorToCancel =
           if any (`elem` mods) [CannotCancelHorror, CannotCancelHorrorFrom source]
             then 0
@@ -350,17 +353,17 @@ handleInvestigatorDirectDamage a@InvestigatorAttrs{..} iid source damage horror 
     let horror' = max 0 (horror - horrorToCancel)
     pushAll
       $ [ CheckWindows
-            $ mkWhen (Window.WouldTakeDamageOrHorror source (toTarget a) damage horror')
-            : [mkWhen (Window.WouldTakeDamage source (toTarget a) damage DamageDirect) | damage > 0]
+            $ mkWhen (Window.WouldTakeDamageOrHorror source (toTarget a) damage' horror')
+            : [mkWhen (Window.WouldTakeDamage source (toTarget a) damage' DamageDirect) | damage' > 0]
               <> [mkWhen (Window.WouldTakeHorror source (toTarget a) horror') | horror' > 0]
-        | damage > 0 || horror' > 0
+        | damage' > 0 || horror' > 0
         ]
       <> [ InvestigatorDoAssignDamage
              iid
              source
              DamageAny
              (AssetWithModifier CanBeAssignedDirectDamage)
-             damage
+             damage'
              horror'
              []
              []
@@ -370,8 +373,10 @@ handleInvestigatorDirectDamage a@InvestigatorAttrs{..} iid source damage horror 
 handleInvestigatorAssignDamage a@InvestigatorAttrs{..} iid source strategy damage horror = do
   unless (investigatorDefeated || investigatorResigned) do
     mods <- getModifiers a
+    -- CannotBeDamaged blocks damage only; horror still applies.
+    let damage' = if CannotBeDamaged `elem` mods then 0 else damage
     if TreatAllDamageAsDirect `elem` mods
-      then push $ InvestigatorDirectDamage iid source damage horror
+      then push $ InvestigatorDirectDamage iid source damage' horror
       else do
         let horrorToCancel =
               if any (`elem` mods) [CannotCancelHorror, CannotCancelHorrorFrom source]
@@ -380,12 +385,12 @@ handleInvestigatorAssignDamage a@InvestigatorAttrs{..} iid source strategy damag
         let horror' = max 0 (horror - horrorToCancel)
         pushAll
           $ [ CheckWindows
-                $ mkWhen (Window.WouldTakeDamageOrHorror source (toTarget a) damage horror')
-                : [mkWhen (Window.WouldTakeDamage source (toTarget a) damage strategy) | damage > 0]
+                $ mkWhen (Window.WouldTakeDamageOrHorror source (toTarget a) damage' horror')
+                : [mkWhen (Window.WouldTakeDamage source (toTarget a) damage' strategy) | damage' > 0]
                   <> [mkWhen (Window.WouldTakeHorror source (toTarget a) horror') | horror' > 0]
-            | damage > 0 || horror' > 0
+            | damage' > 0 || horror' > 0
             ]
-          <> [InvestigatorDoAssignDamage iid source strategy AnyAsset damage horror' [] []]
+          <> [InvestigatorDoAssignDamage iid source strategy AnyAsset damage' horror' [] []]
   pure a
 
 finalizeDeferredDamageAssignment a@InvestigatorAttrs{..} iid source damageStrategy damageTargets horrorTargets = do
@@ -948,13 +953,42 @@ assignDamageDivided a@InvestigatorAttrs{..} iid source strategy matcher health s
         go strategy
       else pure []
   player <- getPlayer iid
+  -- Ultimatum of Agony: as much damage/horror as possible must be assigned to
+  -- a single card before any excess may go to a different card — while the
+  -- most recently assigned target can still absorb the type, it is the only
+  -- offered choice for that type.
+  agony <-
+    elem (Ultimatum UltimatumOfAgony) . activeUltimatumsAndBoons <$> getSettings
+  let
+    componentMatchesTarget tokenType target = \case
+      ComponentLabel (InvestigatorComponent iid' tt) _ -> tt == tokenType && target == toTarget iid'
+      ComponentLabel (AssetComponent aid tt) _ -> tt == tokenType && target == toTarget aid
+      AuxiliaryComponentLabel (InvestigatorComponent iid' tt) _ -> tt == tokenType && target == toTarget iid'
+      AuxiliaryComponentLabel (AssetComponent aid tt) _ -> tt == tokenType && target == toTarget aid
+      _ -> False
+    targetCanAbsorb capacityField = \case
+      InvestigatorTarget _ -> pure True
+      AssetTarget aid -> fieldMap capacityField (maybe False (> 0)) aid
+      _ -> pure False
+    restrictToCurrent tokenType capacityField targets choices
+      | not agony = pure choices
+      | otherwise = case targets of
+          target : _ -> do
+            canAbsorb <- targetCanAbsorb capacityField target
+            let restrictedChoices = filter (componentMatchesTarget tokenType target) choices
+            pure $ if canAbsorb && notNull restrictedChoices then restrictedChoices else choices
+          [] -> pure choices
+  healthDamageMessages' <-
+    restrictToCurrent DamageToken AssetRemainingHealth damageTargets healthDamageMessages
+  sanityDamageMessages' <-
+    restrictToCurrent HorrorToken AssetRemainingSanity horrorTargets sanityDamageMessages
   -- Wrap with the damage source so the client highlights it as the actor
   -- (yellow source-highlight), and with the totals label for the token counts.
   push
     $ questionWithSource source player
     $ QuestionLabel (assignDamageTotalsLabel health sanity) Nothing
     $ ChooseOne
-    $ healthDamageMessages <> sanityDamageMessages
+    $ healthDamageMessages' <> sanityDamageMessages'
   pure a
 
 handleDrivenInsane a@InvestigatorAttrs{..} iid = do

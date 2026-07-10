@@ -9,6 +9,7 @@ import { DestinyDrawing } from '@/arkham/types/Question';
 import { StandaloneSetting } from '@/arkham/types/StandaloneSetting';
 import { CampaignLogSettings, Key, CampaignOption } from '@/arkham/types/CampaignSettings'
 import { AiQuestion } from '@/arkham/types/AiQuestion'
+import { Achievement, achievementDecoder } from '@/arkham/types/Achievement'
 import {
   CreateEventPost,
   EventDetails,
@@ -195,7 +196,12 @@ export const newGame = async (
   // Per-seat AI configuration, parallel to `deckIds` and indexed by seat. Omitted
   // (the default) preserves today's all-human behavior; entries may be `null` for
   // human seats. Only sent for Solo/multihanded games (see NewCampaign.start).
-  aiPlayers?: (NewGame.AiSlotConfig | null)[]
+  aiPlayers?: (NewGame.AiSlotConfig | null)[],
+  // Ultimatums and Boons variant tags (e.g. "BoonOfHades"). Omitted = none.
+  ultimatumsAndBoons?: string[],
+  // Achievement tracking (only meaningful for campaigns with an achievement
+  // catalog); backend defaults to true when omitted.
+  achievementsEnabled = true
 ): Promise<Game> => {
   const { data } = await api.post('arkham/games', {
     deckIds,
@@ -209,10 +215,31 @@ export const newGame = async (
     options,
     strictAsIfAt,
     asIfRuling: strictAsIfAt == null ? undefined : strictAsIfAt ? 'chapter2' : 'chapter1',
-    aiPlayers
+    aiPlayers,
+    ultimatumsAndBoons,
+    achievementsEnabled
   })
   return gameDecoder.decodePromise(data)
 }
+
+export const fetchAchievements = async (): Promise<Achievement[]> => {
+  const { data } = await api.get('arkham/achievements')
+  return JsonDecoder.array(achievementDecoder, 'Achievement[]').decodePromise(data)
+}
+
+export const fetchGameAchievements = async (gameId: string): Promise<Achievement[]> => {
+  const { data } = await api.get(`arkham/games/${gameId}/achievements`)
+  return JsonDecoder.array(achievementDecoder, 'Achievement[]').decodePromise(data)
+}
+
+export type ClearAchievementsScope =
+  | { scope: 'all' }
+  | { scope: 'campaign', campaign: string }
+  | { scope: 'achievement', achievement: string }
+
+// Clears EARNED achievements only; in-progress rows keep accruing.
+export const clearAchievements = (scope: ClearAchievementsScope): Promise<void> =>
+  api.delete('arkham/achievements', { data: scope })
 
 export const joinGame = async (gameId: string): Promise<Game> => {
   const { data } = await api.put(`arkham/games/${gameId}/join`)

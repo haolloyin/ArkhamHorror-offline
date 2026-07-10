@@ -31,9 +31,9 @@ instance HasAbilities CrustaceanHybridInTheLight where
   getAbilities (CrustaceanHybridInTheLight a) =
     extend
       a
-      [ restricted a 1 (isDark a)
+      [ restricted a 1 (isDark a <> youExist LeadInvestigator)
           $ SilentForcedAbility
-          $ oneOf [EnemyEnters #after Anywhere (be a), EnemySpawns #after Anywhere (be a)]
+          $ oneOf [EnemyEnters #when Anywhere (be a), EnemySpawns #when Anywhere (be a)]
       , mkAbility a 2
           $ forced
           $ EnemyTakeDamage #when AttackDamageEffect (be a) (atLeast 2) AnySource
@@ -50,6 +50,6 @@ instance RunMessage CrustaceanHybridInTheLight where
     Flip _ _ (isTarget attrs -> True) -> do
       let darkCard = lookupCard Cards.crustaceanHybridInTheDark attrs.cardId
       push $ ReplaceEnemy attrs.id darkCard Swap
-      checkAfter $ Window.EnemyFlipped attrs.id
+      when (isNothing (enemySpawnDetails attrs)) $ checkAfter $ Window.EnemyFlipped attrs.id
       pure e
     _ -> CrustaceanHybridInTheLight <$> liftRunMessage msg attrs

@@ -3,14 +3,14 @@
 module Arkham.Game.Runner where
 
 import Arkham.Ability
-import Arkham.Ai.Helpers (overAiPlayers, overAiSeat)
-import Arkham.Ai.State (AiPlayerState (..))
 import Arkham.Act
 import Arkham.Act.Types (Field (..))
 import Arkham.Action qualified as Action
 import Arkham.ActiveCost
 import Arkham.Agenda
 import Arkham.Agenda.Types (Field (..), doomL)
+import Arkham.Ai.Helpers (overAiPlayers, overAiSeat)
+import Arkham.Ai.State (AiPlayerState (..))
 import Arkham.Asset
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Asset.Types (Asset, AssetAttrs (..), Field (..), assetIsStory)
@@ -30,6 +30,7 @@ import Arkham.DamageEffect
 import Arkham.Debug
 import Arkham.Deck qualified as Deck
 import Arkham.Decklist
+import Arkham.Difficulty
 import Arkham.Effect
 import Arkham.Effect.Types (EffectAttrs (effectFinished, effectOnDisable))
 import Arkham.Effect.Window (EffectWindow (EffectCardResolutionWindow))
@@ -45,7 +46,14 @@ import Arkham.Event.Types
 import Arkham.Game.Base
 import Arkham.Game.Diff
 import Arkham.Game.Json ()
-import Arkham.Game.Settings (settingsAsIfRuling)
+import Arkham.Game.Settings (
+  activeUltimatumsAndBoons,
+  settingsAsIfRuling,
+  settingsRolledUltimatumOrBoon,
+  settingsScreamedAllies,
+  settingsUltimatumsAndBoons,
+  settingsUltimatumsAndBoonsEnabled,
+ )
 import Arkham.Game.State
 import Arkham.Game.Utils
 import {-# SOURCE #-} Arkham.GameEnv
@@ -143,6 +151,7 @@ import Arkham.Treachery.Types (
   treacheryPlacement,
   treacheryWaiting,
  )
+import Arkham.UltimatumsAndBoons.Types
 import Arkham.Window (Window (..), mkAfter, mkWhen, mkWindow)
 import Arkham.Window qualified as Window
 import Arkham.Zone qualified as Zone
@@ -177,6 +186,14 @@ runGameMessage msg g = case msg of
     when (any (\w -> Window.windowType w == Window.FastPlayerWindow) currentWindows) do
       push $ Do (CheckWindows currentWindows)
     pure $ g {gameSettings = g.gameSettings {settingsAsIfRuling = ruling}}
+  SetUltimatumsAndBoonsEnabled enabled ->
+    pure $ g {gameSettings = g.gameSettings {settingsUltimatumsAndBoonsEnabled = enabled}}
+  RecordScreamedAlly code ->
+    pure
+      $ g
+        { gameSettings =
+            g.gameSettings {settingsScreamedAllies = insertSet code (settingsScreamedAllies g.gameSettings)}
+        }
   RegisterAiPlayer pid st -> pure $ overAiPlayers (Map.insert pid st) g
   SetAiFocusOverride pid mFocus -> pure $ overAiSeat pid (\s -> s {aiFocusOverride = mFocus}) g
   AddAiPriority pid target -> pure $ overAiSeat pid (\s -> s {aiPriorities = s.aiPriorities <> [target]}) g
@@ -201,13 +218,20 @@ runGameMessage msg g = case msg of
             }
         fixSkill a = if toCardId a == cardId then a {skillOwner = iid} else a
         fixAsset a = if toCardId a == cardId then a {assetOwner = Just iid} else a
-    for_ (lookup cardId (g ^. cardsL)) \c -> replaceCard cardId (fixCard c)
+    for_ (lookup cardId (g ^. cardsL)) $ replaceCard cardId . fixCard
     pure
       $ g
-      & cardsL %~ Map.adjust fixCard cardId
-      & entitiesL . investigatorsL %~ Map.map (overAttrs fixInv)
-      & entitiesL . skillsL %~ Map.map (overAttrs fixSkill)
-      & entitiesL . assetsL %~ Map.map (overAttrs fixAsset)
+      & cardsL
+      %~ Map.adjust fixCard cardId
+      & entitiesL
+      . investigatorsL
+      %~ Map.map (overAttrs fixInv)
+      & entitiesL
+      . skillsL
+      %~ Map.map (overAttrs fixSkill)
+      & entitiesL
+      . assetsL
+      %~ Map.map (overAttrs fixAsset)
   SetGameRunWindows b -> pure $ g & runWindowsL .~ b
   SetGameState s -> pure $ g & gameStateL .~ s
   ChoosingDecks -> pure $ g & entitiesL . investigatorsL .~ mempty & gameStateL .~ IsChooseDecks (g ^. playersL)
@@ -476,6 +500,7 @@ runGameMessage msg g = case msg of
           & (entitiesL . assetsL %~ Map.filterWithKey (\k _ -> k `elem` persistedAssets))
           & (entitiesL . locationsL .~ mempty)
           & (entitiesL . enemiesL .~ mempty)
+          & (entitiesL . enemyLocationsL .~ mempty)
           & (entitiesL . actsL .~ mempty)
           & (entitiesL . agendasL .~ mempty)
           & (entitiesL . treacheriesL .~ mempty)
@@ -518,6 +543,7 @@ runGameMessage msg g = case msg of
       & (entitiesL . assetsL %~ Map.filterWithKey (\k _ -> k `elem` persistedAssets))
       & (entitiesL . locationsL .~ mempty)
       & (entitiesL . enemiesL .~ mempty)
+      & (entitiesL . enemyLocationsL .~ mempty)
       & (entitiesL . actsL .~ mempty)
       & (entitiesL . agendasL .~ mempty)
       & (entitiesL . treacheriesL .~ mempty)
@@ -540,6 +566,7 @@ runGameMessage msg g = case msg of
       & (actionRemovedEntitiesL .~ mempty)
       & (activeAbilitiesL .~ mempty)
       & (foundCardsL .~ mempty)
+      & (highlightedCardsL .~ mempty)
       & (cardUsesL .~ mempty)
       & (windowStackL .~ mempty)
       & (windowDepthL .~ 0)
@@ -590,20 +617,51 @@ runGameMessage msg g = case msg of
       setScenarioCounts' = overAttrs (\s -> s {scenarioCounts = scenarioCounts s <> scenarioCountsValue})
 
       standalone = isNothing $ modeCampaign $ g ^. modeL
+      activeVariants = activeUltimatumsAndBoons (gameSettings g)
+      -- Ultimatum of Malevolence: use the Hard/Expert reference side while
+      -- nominally playing Easy/Standard. Only the reference side flips; the
+      -- chaos bag still builds from the real difficulty.
+      useHardExpertReference =
+        Ultimatum UltimatumOfMalevolence `member` activeVariants && difficulty `elem` [Easy, Standard]
+      setUseHardExpertReference = overAttrs (\s -> s {scenarioUseHardExpertReference = useHardExpertReference})
       setPlayerDecks = overAttrs (playerDecksL .~ playerDecks)
       opts =
         (fromMaybe defaultScenarioOptions mopts)
           { scenarioOptionsStandalone = standalone
           , scenarioOptionsPerformTarotReading = gamePerformTarotReadings g
           }
+    -- Ultimatum of Ultimatums (campaign only): roll one non-deckbuilding,
+    -- non-chaos-bag entry for this game only. Re-rolled every StartScenario;
+    -- cleared when the ultimatum isn't active.
+    let
+      eligibleForRoll entry =
+        not (affectsDeckbuildingOrChaosBag entry)
+          && entry
+          `notElem` settingsUltimatumsAndBoons (gameSettings g)
+    rolled <-
+      if not standalone && Ultimatum UltimatumOfUltimatums `member` activeVariants
+        then case nonEmpty (filter eligibleForRoll allUltimatumsAndBoons) of
+          Nothing -> pure Nothing
+          Just pool -> Just <$> sample pool
+        else pure Nothing
     pushAll
       $ [HandleOption option | standalone, option <- maybe [] (toList . campaignLogOptions) mCampaignLog]
       <> [LoadScenario opts]
     pure
       $ g
-      & (modeL %~ setScenario (setPlayerDecks $ setCampaignLog $ setScenarioMeta' $ setScenarioCounts' $ lookupScenario sid difficulty))
+      & ( modeL
+            %~ setScenario
+              ( setPlayerDecks
+                  $ setCampaignLog
+                  $ setScenarioMeta'
+                  $ setScenarioCounts'
+                  $ setUseHardExpertReference
+                  $ lookupScenario sid difficulty
+              )
+        )
       & (phaseL .~ InvestigationPhase)
       & (cardsL %~ if keepCardCache then id else filterMap (not . isEncounterCard))
+      & \g' -> g' {gameSettings = (gameSettings g') {settingsRolledUltimatumOrBoon = rolled}}
   PerformTarotReading -> do
     when (gamePerformTarotReadings g) do
       lead <- getLeadPlayer
@@ -820,7 +878,8 @@ runGameMessage msg g = case msg of
         )
         mEffect
   FocusCards cards -> pure $ g & focusedCardsL %~ (cards :)
-  UnfocusCards -> pure $ g & focusedCardsL %~ drop 1
+  HighlightCards cards -> pure $ g & highlightedCardsL .~ map toCardId cards
+  UnfocusCards -> pure $ g & focusedCardsL %~ drop 1 & highlightedCardsL .~ mempty
   FoundCards cards -> pure $ g & foundCardsL .~ cards
   ClearFound FromDeck -> do
     pure $ g & foundCardsL %~ Map.filterWithKey (\k _ -> not (zoneIsFromDeck k))
@@ -1486,7 +1545,7 @@ runGameMessage msg g = case msg of
       else pushAll [msg', FinishedSearch]
     pure g
   FinishedSearch -> do
-    pure $ g & foundCardsL .~ mempty
+    pure $ g & foundCardsL .~ mempty & highlightedCardsL .~ mempty
   DiscardedCard cardId -> do
     let
       handleCard card = case card of

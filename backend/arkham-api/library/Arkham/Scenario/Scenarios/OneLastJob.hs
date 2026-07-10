@@ -8,7 +8,8 @@ import Arkham.EncounterSet qualified as Set
 import Arkham.Enemy.Cards qualified as Enemies
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Location (connectBothWays)
-import Arkham.Helpers.Xp
+import Arkham.I18n
+import Arkham.Investigator.Cards (wendyAdams, wendyAdamsParallel)
 import Arkham.Location.Cards qualified as Locations
 import Arkham.Matcher
 import Arkham.Message.Lifted hiding (setActDeck, setAgendaDeck)
@@ -30,7 +31,8 @@ oneLastJob difficulty =
     "11501"
     "One Last Job"
     difficulty
-    [ "northside            downtown             easttown"
+    [ ".                    laBellaLuna          hibbsRoadhouse"
+    , "northside            downtown             easttown"
     , "tillinghastEsoterica miskatonicUniversity rivertown"
     ]
 
@@ -38,8 +40,10 @@ instance HasChaosTokenValue OneLastJob where
   getChaosTokenValue iid chaosTokenFace (OneLastJob attrs) = case chaosTokenFace of
     Skull -> do
       criminals <- selectCount $ EnemyWithTrait Criminal
-      let value = byDifficulty attrs (min 4 criminals) (1 + criminals)
-      pure $ ChaosTokenValue Skull (NegativeModifier value)
+      pure
+        $ ChaosTokenValue Skull
+        $ NegativeModifier
+        $ byDifficulty attrs (min 4 criminals) (1 + criminals)
     Tablet -> do
       criminalHere <- selectAny $ EnemyWithTrait Criminal <> enemyAtLocationWith iid
       pure
@@ -52,21 +56,26 @@ instance HasChaosTokenValue OneLastJob where
 instance RunMessage OneLastJob where
   runMessage msg s@(OneLastJob attrs) = runQueueT $ scenarioI18n $ case msg of
     StandaloneSetup -> do
-      setChaosTokens (chaosBagContents attrs.difficulty)
+      setChaosTokens $ chaosBagContents attrs.difficulty
       pure s
     PreScenarioSetup -> do
+      wendy <- selectAny $ mapOneOf investigatorIs [wendyAdams, wendyAdamsParallel]
       flavor $ scope "intro" do
-        setTitle "title"
-        p "body"
+        h "title"
+        p "body1"
+        p.validate wendy "wendy"
+        p "body2"
       pure s
     Setup -> runScenarioSetup OneLastJob attrs do
       setup $ ul do
         li "gatherSets"
-        li "placeLocations"
-        li "startAt"
+        li.nested "locations" do
+          li "placeLocations"
+          li "startAt"
         li "actDeck"
         li "setAside"
         unscoped $ li "shuffleRemainder"
+        unscoped $ li "readyToBegin"
 
       gather Set.OneLastJob
       gather Set.Dreams
@@ -75,8 +84,6 @@ instance RunMessage OneLastJob where
       gather Set.Rats
       gather Set.StrikingFear
 
-      -- One of the two (identical-front) Act 1 copies, chosen at random, decides
-      -- which gang the investigators raid (its back puts the hideout into play).
       act1 <- sample2 Acts.questioningTheGangsV1 Acts.questioningTheGangsV2
       setActDeck [act1]
       setAside
@@ -87,8 +94,6 @@ instance RunMessage OneLastJob where
 
       setAgendaDeck [Agendas.arkhamNightlife, Agendas.longNight]
 
-      -- Midnight Masks city districts (locations only); the removed locations are
-      -- simply never placed.
       placeAll
         [ Locations.northside
         , Locations.downtownFirstBankOfArkham
@@ -107,17 +112,32 @@ instance RunMessage OneLastJob where
         , Enemies.gangEnforcer
         ]
     ScenarioResolution res -> scope "resolutions" do
+      discoveredAnAlienLanguage <- getHasRecord TheInvestigatorsDiscoveredAnAlienLanguage
+      when discoveredAnAlienLanguage do
+        campaignSpecific "translateGlyph" ("rune_a" :: Text, "Depths" :: Text)
+      xp <- allGainXp' attrs
       case res of
-        NoResolution -> do
+        NoResolution -> scope "noResolution" do
           record RubyWonTheBet
-          resolutionWithXp "noResolution" $ allGainXpWithBonus' attrs $ toBonus "bonus" 0
-        Resolution 1 -> do
+          resolutionFlavor do
+            setTitle "title"
+            p "body"
+            popScope $ ul do
+              li "rubyLostTheBet"
+              withXp xp $ li "victory"
+              li.validate discoveredAnAlienLanguage "discoveredAnAlienLanguage"
+              li "proceed"
+        Resolution 1 -> scope "resolution1" do
           record RubyLostTheBet
-          resolutionWithXp "resolution1" $ allGainXpWithBonus' attrs $ toBonus "bonus" 0
+          resolutionFlavor do
+            setTitle "title"
+            p "body"
+            popScope $ ul do
+              li "rubyWonTheBet"
+              withXp xp $ li "victory"
+              li.validate discoveredAnAlienLanguage "discoveredAnAlienLanguage"
+              li "proceed"
         _ -> error $ "Unknown resolution: " <> show res
-      discoveredAlienLanguage <- getHasRecord TheInvestigatorsDiscoveredAnAlienLanguage
-      when discoveredAlienLanguage do
-        campaignSpecific "translateGlyph" ("F" :: Text, "Depths" :: Text)
       endOfScenario
       pure s
     _ -> OneLastJob <$> liftRunMessage msg attrs

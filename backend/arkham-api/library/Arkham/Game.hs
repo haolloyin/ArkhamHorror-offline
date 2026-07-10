@@ -194,6 +194,7 @@ import Arkham.Queue
 import Arkham.Random
 import Arkham.Scenario
 import Arkham.Scenario.Types hiding (scenario)
+import Arkham.UltimatumsAndBoons (ultimatumOrBoonAbilities)
 import Arkham.ScenarioLogKey
 import Arkham.Scenarios.HorrorInHighGear.Helpers (getRear)
 import Arkham.Scenarios.WakingNightmare.InfestationBag
@@ -308,6 +309,7 @@ newGame scenarioOrCampaignId seed playerCount difficulty includeTarotReadings =
         , gameSkillTest = Nothing
         , gameGameState = state
         , gameFocusedCards = mempty
+        , gameHighlightedCards = mempty
         , gameFocusedTarotCards = mempty
         , gameFoundCards = mempty
         , gameFocusedChaosTokens = mempty
@@ -725,6 +727,7 @@ instance ToJSON gid => ToJSON (PublicGame gid) where
       <> ("skillTest" .= skillTest)
       <> ("skillTestChaosTokens" .= skillTestChaosTokens)
       <> ("focusedCards" .= fromMaybe [] (headMay gameFocusedCards))
+      <> ("highlightedCards" .= gameHighlightedCards)
       <> ("focusedTarotCards" .= gameFocusedTarotCards)
       <> ("foundCards" .= gameFoundCards)
       <> ("focusedChaosTokens" .= focusedChaosTokens)
@@ -861,6 +864,7 @@ instance ToJSON gid => ToJSON (PublicGame gid) where
         , "skillTest" .= toJSON skillTest
         , "skillTestChaosTokens" .= toJSON skillTestChaosTokens
         , "focusedCards" .= toJSON (fromMaybe [] $ headMay gameFocusedCards)
+        , "highlightedCards" .= toJSON gameHighlightedCards
         , "focusedTarotCards" .= toJSON gameFocusedTarotCards
         , "foundCards" .= toJSON gameFoundCards
         , "focusedChaosTokens" .= toJSON focusedChaosTokens
@@ -2666,24 +2670,31 @@ getLocationsMatching lmatcher = do
             getShortestPath start (pure . (`elem` matchingLocationIds)) mempty
       pure $ filter ((`elem` matches') . toId) ls
     NearestLocationToMost matcher -> do
-      -- Mirror of FarthestLocationFromAll: among candidates, return the
-      -- location(s) whose maximum distance to any reachable investigator is the
-      -- smallest. Unreachable investigators contribute no distance for that
-      -- candidate, which lets locations in disconnected components still
-      -- qualify (and tie across components).
+      -- "Nearest to the most investigators" is a vote count, not a single
+      -- distance metric: each investigator votes for the candidate location(s)
+      -- at the shortest movement distance from them (on a tie for nearest, an
+      -- investigator votes for each tied location). The result is the
+      -- candidate(s) with the most votes; a remaining tie is broken by the lead
+      -- investigator at the call site. Investigators who cannot reach any
+      -- candidate cast no vote.
       iids <- getInvestigators
       candidates <- map toId <$> getLocationsMatching matcher
-      distances <- for iids \iid -> do
-        distanceSingletons . getMonoidalMap <$> execWriterT do
-          mloc <- getMaybeLocation iid
-          for_ mloc \start -> do
-            for_ candidates \candidate -> do
+      votes <- fmap concat $ for iids \iid -> do
+        getMaybeLocation iid >>= \case
+          Nothing -> pure []
+          Just start -> do
+            present <- fmap catMaybes $ for candidates \candidate -> do
               mDistance <- getDistance start candidate
-              for_ mDistance \(Distance distance) -> do
-                tell $ MonoidalMap.singleton distance [candidate]
+              pure $ fmap (\(Distance d) -> (candidate, d)) mDistance
+            pure $ case minimumMay (map snd present) of
+              Nothing -> []
+              Just nearest -> [candidate | (candidate, d) <- present, d == nearest]
       let
-        overallDistances = distanceAggregates $ foldr (unionWith max) mempty distances
-        resultIds = maybe [] coerce . headMay . map snd . sortOn fst . mapToList $ overallDistances
+        tally = unionsWith (+) (map (`singletonMap` (1 :: Int)) votes) :: Map LocationId Int
+        counts = mapToList tally
+        resultIds = case maximumMay (map snd counts) of
+          Nothing -> []
+          Just best -> [c | (c, n) <- counts, n == best]
       pure $ filter ((`elem` resultIds) . toId) ls
     NearestLocationToAny matcher -> do
       iids <- getInvestigators
@@ -2754,7 +2765,9 @@ getLocationsMatching lmatcher = do
       flip filterM ls $ \l -> do
         matchAny <- getConnectedMatcher forMovement l
         mods <- getModifiers l.id
-        let barricaded = concat [xs | Barricades xs <- mods]
+        investigatorsHere <- select $ investigatorAt l.id
+        canIgnore <- anyM (fmap (CanIgnoreBarriers `elem`) . getModifiers) investigatorsHere
+        let barricaded = if canIgnore then [] else concat [xs | Barricades xs <- mods]
         selectAny $ not_ (beOneOf $ toId l : barricaded) <> Unblocked <> matcher <> matchAny
     UnbarricadedConnectedFrom forMovement matcher -> do
       starts <- select matcher
@@ -4084,6 +4097,12 @@ enemyMatcherFilter es matcher' = do
       let hasRemainingHealth = \case
             Nothing -> pure False
             Just v -> gameValueMatches v valueMatcher
+      filterM (fieldMapM EnemyRemainingHealth hasRemainingHealth . toId) es
+    EnemyWithRemainingHealthLessThan calc -> do
+      n <- calculate calc
+      let hasRemainingHealth = \case
+            Nothing -> pure False
+            Just v -> gameValueMatches v (LessThan $ Static n)
       filterM (fieldMapM EnemyRemainingHealth hasRemainingHealth . toId) es
     EnemyWithoutModifier modifier -> filterM (`withoutModifier` modifier) es
     EnemyWithModifier modifier -> do
@@ -6088,6 +6107,7 @@ instance Projection Scenario where
       ScenarioResolvedStories -> pure scenarioResolvedStories
       ScenarioChaosBag -> pure scenarioChaosBag
       ScenarioInResolution -> pure scenarioInResolution
+      ScenarioIsPrelude -> pure scenarioIsPrelude
       ScenarioSetAsideCards -> do
         enemyCards <- selectField EnemyCard $ EnemyWithPlacement (OutOfPlay SetAsideZone)
         pure $ nubOrdOn (.id) (scenarioSetAsideCards <> enemyCards)
@@ -6703,6 +6723,7 @@ preloadModifiers g = case gameMode g of
           getModifiersFor $ gameEntities g
           traverse_ getModifiersFor $ gameInHandEntities g
           traverse_ getModifiersFor $ gameInDiscardEntities g
+          for_ (activeUltimatumsAndBoons (gameSettings g)) getModifiersFor
           for_ (modeScenario (gameMode g)) getModifiersFor
           for_ (modeCampaign (gameMode g)) \c -> do
             getModifiersFor c
@@ -6802,6 +6823,7 @@ instance HasAbilities Game where
       <> concatMap getAbilities (gameInHandEntities g)
       <> concatMap getAbilities (gameInDiscardEntities g)
       <> getAbilities (gameMode g)
+      <> concatMap ultimatumOrBoonAbilities (toList $ activeUltimatumsAndBoons $ gameSettings g)
 
 instance HasAbilities GameMode where
   getAbilities (This c) = getAbilities c

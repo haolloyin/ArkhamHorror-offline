@@ -7,10 +7,11 @@ import { imgsrc, type InvestigatorClass } from '@/arkham/helpers'
 import { portraitImage as portraitImageHelper } from '@/arkham/cardImages'
 import * as Arkham from '@/arkham/types/Deck'
 import {deckClass} from '@/arkham/types/Deck'
-import { deckInvestigatorCode, deckRequirementDescriptions, deckRestrictionError, type SelectableDeckList } from '@/arkham/deckRestrictions'
+import { deckInvestigatorCode, deckRequirementDescriptions, deckRestrictionError, hasValidatedUltimatumDeckConstraints, type SelectableDeckList } from '@/arkham/deckRestrictions'
 import type { ArkhamDbDecklist, DeckMeta } from '@/arkham/types/Deck'
 import type { Investigator } from '@/arkham/types/Investigator'
 import Question from '@/arkham/components/Question.vue';
+import UltimatumsAndBoonsQuestion from '@/arkham/components/UltimatumsAndBoonsQuestion.vue';
 import NewDeck from '@/arkham/components/NewDeck.vue'
 import DeckToolbar from '@/arkham/components/DeckToolbar.vue'
 import { useI18n } from 'vue-i18n'
@@ -80,7 +81,23 @@ const question = computed(() => props.game.question[props.playerId])
 const deckRequirements = computed(() => deckRequirementDescriptions(props.game.scenario?.id, {
   campaignId: props.game.campaign?.id,
   campaignLog: props.game.campaign?.log,
+  ultimatumsAndBoons: props.game.settings.settingsUltimatumsAndBoons,
 }, t))
+
+// Deckbuilding Ultimatums restrict which decks qualify — like challenge
+// scenarios, but stricter: default the list to valid decks only. The player
+// can still toggle the filter off to see (error-annotated) invalid decks.
+watch(
+  () =>
+    hasValidatedUltimatumDeckConstraints(
+      props.game.settings.settingsUltimatumsAndBoons,
+      !!props.game.campaign,
+    ),
+  (restricted) => {
+    if (restricted) validOnly.value = true
+  },
+  { immediate: true },
+)
 
 const weaknessPoolOptions = [
   { token: 'cycle:core', label: 'Core Set', aliases: ['core'] },
@@ -196,6 +213,13 @@ const questionLabel = computed(() => {
     return question.value.tag === 'QuestionLabel' ? handleEmbeddedI18n(question.value.label, t) : null
 })
 
+// Ultimatums/Boons deckbuilding interruptions (e.g. Boon of the Morrígan's
+// weakness choice) get a dedicated, boon-styled question UI.
+const isUltimatumsAndBoonsQuestion = computed(() =>
+  question.value?.tag === 'QuestionLabel'
+    && question.value.label?.startsWith('$label.ultimatumsAndBoons')
+)
+
 async function setPortrait(src: string) {
   createdPortrait.value = src
 }
@@ -218,6 +242,8 @@ function deckError(deckList: SelectableDeckList): string | null {
   const restrictionError = deckRestrictionError(props.game.scenario?.id, deckList, chosenInvestigatorCodes, {
     campaignId: props.game.campaign?.id,
     campaignLog: props.game.campaign?.log,
+    // Deck legality follows the SELECTED tags, not the runtime on/off toggle.
+    ultimatumsAndBoons: props.game.settings.settingsUltimatumsAndBoons,
   }, t, { isLastPlayer: isLastPlayerChoosing.value })
   if (restrictionError) return restrictionError
 
@@ -338,8 +364,16 @@ const needsReply = computed(() => {
               <img :src="portraitImage(player.contents)" />
             </div>
             <div v-if="question && playerId == player.contents.playerId" class="question">
-              <h2 v-if="questionLabel" class="title question-label">{{ questionLabel }}</h2>
-              <Question :game="game" :playerId="playerId" @choose="chooseChoice" />
+              <UltimatumsAndBoonsQuestion
+                v-if="isUltimatumsAndBoonsQuestion"
+                :game="game"
+                :playerId="playerId"
+                @choose="chooseChoice"
+              />
+              <template v-else>
+                <h2 v-if="questionLabel" class="title question-label">{{ questionLabel }}</h2>
+                <Question :game="game" :playerId="playerId" @choose="chooseChoice" />
+              </template>
             </div>
             <div v-else>
               <div v-if="tabooList(player.contents)" class="taboo-list">

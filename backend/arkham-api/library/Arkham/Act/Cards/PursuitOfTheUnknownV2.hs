@@ -22,10 +22,8 @@ instance HasAbilities PursuitOfTheUnknownV2 where
         1
         (exists (DeckWith $ HasCard $ CardWithTitle "Tekeli-li") <> ScenarioDeckWithCard TekeliliDeck)
         $ actionAbilityWithCost (SpendTokenKeyCost 2 #tablet)
-    , restricted
-        x
-        2
-        (EachUndefeatedInvestigator $ at_ $ "Hidden Tunnel" <> LocationWithoutClues)
+    , onlyOnce
+        $ restricted x 2 (EachUndefeatedInvestigator $ at_ $ "Hidden Tunnel" <> LocationWithoutClues)
         $ Objective
         $ forced AnyWindow
     ]
@@ -44,7 +42,9 @@ instance RunMessage PursuitOfTheUnknownV2 where
       chooseOneM iid $ labeledI "noCardsFound" nothing
       pure a
     SearchFound iid (isTarget attrs -> True) _ cards -> do
-      chooseTargetM iid cards \_ -> shuffleCardsIntoDeck TekeliliDeck cards
+      highlightCards cards
+      continue_ iid
+      shuffleCardsIntoDeck TekeliliDeck cards
       pure a
     UseThisAbility _ (isSource attrs -> True) 2 -> do
       advancedWithOther attrs

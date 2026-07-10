@@ -1,15 +1,24 @@
 {
   "specialRules": [
-    { "title": "Flood Tokens", "body": "@:theDrownedCity.additionalRulesAndClarifications.floodTokens" },
+    {
+      "title": "Flood Tokens",
+      "body": "@:theDrownedCity.additionalRulesAndClarifications.floodTokens"
+    },
     { "title": "Artifacts", "body": "@:theDrownedCity.additionalRulesAndClarifications.artifacts" },
-    { "title": "Alien Glyphs", "body": "@:theDrownedCity.additionalRulesAndClarifications.alienGlyphs" },
+    {
+      "title": "Alien Glyphs",
+      "body": "@:theDrownedCity.additionalRulesAndClarifications.alienGlyphs"
+    },
     { "title": "New Keywords", "body": "@:theDrownedCity.newKeywords.body" }
   ],
   "noAir": "You did not find air. Take 5 direct damage.",
   "intro": {
     "title": "The Risen Deep",
-    "body": "<p class='indent'>“…the nightmare corpse-city of R’lyeh, that was built in measureless aeons behind history by the vast, loathsome shapes that seeped down from the dark stars. There lay great Cthulhu and his hordes, hidden in green slimy vaults and sending out at last, after cycles incalculable, the thoughts that spread fear to the dreams of the sensitive and called imperiously to the faithful to come on a pilgrimage of liberation and restoration.”</p><p class='basic right'>– H. P. Lovecraft, “The Call of Cthulhu”</p>",
-    "cruft": "<h3>April 15</h3><p>Something hasn’t seemed right for a while. It has been an unusually cold year, with heavy snow, rain, and fog keeping the New England sky in a state of perpetual melancholy. A restive nervousness seems to have crept into all aspects of domestic life. Small arguments on street corners come to blows. Muffled shouts and screams resound behind closed doors. A not-insignificant number of students have simply stopped attending classes at Miskatonic University. The people of Arkham feel it in their bones: Something is different. Something feels wrong.</p>"
+    "body": "<p class='indent'>“…the nightmare corpse-city of R’lyeh, that was built in measureless aeons behind history by the vast, loathsome shapes that seeped down from the dark stars. There lay great Cthulhu and his hordes, hidden in green slimy vaults and sending out at last, after cycles incalculable, the thoughts that spread fear to the dreams of the sensitive and called imperiously to the faithful to come on a pilgrimage of liberation and restoration.”</p><p class='basic right'>– H. P. Lovecraft, “The Call of Cthulhu”</p>"
+  },
+  "prologue": {
+    "title": "Prologue",
+    "body": "<p><span class='wolgast'>April 15</span></p><p>Something hasn’t seemed right for a while. It has been an unusually cold year, with heavy snow, rain, and fog keeping the New England sky in a state of perpetual melancholy. A restive nervousness seems to have crept into all aspects of domestic life. Small arguments on street corners come to blows. Muffled shouts and screams resound behind closed doors. A not-insignificant number of students have simply stopped attending classes at Miskatonic University. The people of Arkham feel it in their bones: Something is different. Something feels wrong.</p><p class='basic right'>Proceed to _One Last Job._</p>"
   },
   "additionalRulesAndClarifications": {
     "title": "Additional Rules and Clarifications",
@@ -20,6 +29,37 @@
   "newKeywords": {
     "title": "New Keywords",
     "body": "<h3>Alert</h3><p class='basic'>Some enemies in this campaign have the alert keyword. Each time an investigator fails a skill test while attempting to evade an enemy with the alert keyword, after applying all results for that skill test, that enemy performs an attack against the evading investigator. An enemy does not exhaust after performing an alert attack. This attack occurs whether the enemy is engaged with the evading investigator or not.</p><h3>Patrol</h3><p class='basic'>Some enemies in this campaign have the patrol keyword. During the enemy phase (in framework step 3.2), each ready, unengaged enemy with the patrol keyword moves to a connecting location along the shortest path toward the designated target (as described in parentheses next to the word “patrol”).</p><h3>Relentless</h3><p class='basic'>Some enemies in this campaign have the relentless keyword. During the enemy phase (after framework step 3.3), each enemy with the relentless keyword that has attacked this phase (even if that attack was canceled) readies and attacks the investigator(s) it is engaged with a second time.</p><h3>Seal</h3><p class='basic'>As an additional cost for a card with the seal keyword to enter play, its controller must search the chaos bag for the specified chaos token and place it on top of the card, thereby sealing the token. A sealed chaos token is not considered to be in the chaos bag, and therefore cannot be revealed from the chaos bag as part of a skill test or ability.</p>"
+  },
+  "glyphs": {
+    "title": "Alien Glyphs",
+    "runes": {
+      "a": "Depths",
+      "b": "Plant",
+      "c": "Elder Thing",
+      "d": "Wave",
+      "e": "Darkness",
+      "f": "Stars",
+      "g": "Life",
+      "h": "Y’ch’lecht",
+      "i": "Cthulhu",
+      "j": "Sleep",
+      "k": "Dreams",
+      "l": "Arm",
+      "m": "Earth",
+      "n": "Doom",
+      "o": "Power",
+      "p": "Weather",
+      "q": "Hand",
+      "r": "Time",
+      "s": "Machine",
+      "t": "Air",
+      "u": "Daughters",
+      "v": "Stranger",
+      "w": "Parasite",
+      "x": "Sum",
+      "y": "Knowledge",
+      "z": "City"
+    }
   },
   "key": {
     "rubyWonTheBet": "Ruby won the bet.",

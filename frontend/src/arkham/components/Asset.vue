@@ -194,7 +194,7 @@ function isAbility(v: Message): v is AbilityLabel {
       return source.source.contents === id.value
     }
   } else if (source.tag === 'AssetSource') {
-    return source.contents === id.value
+    return source.contents === id.value && props.asset.placement.tag !== 'StillInDiscard'
   }
 
   return false
@@ -393,6 +393,7 @@ function startDrag(event: DragEvent) {
             @dragstart="startDrag"
             @click="clicked"
             :data-customizations="JSON.stringify(asset.customizations)"
+            :data-chained="asset.chained || undefined"
           />
           <div v-if="investigators.length > 0" class="in-vehicle">
             <div v-for="investigator in investigators" :key="investigator.id">
