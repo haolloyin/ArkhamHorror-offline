@@ -171,7 +171,7 @@ instance RunMessage TheFeastOfHemlockVale where
                 interludeXpAll (toBonus "bonus" 1)
                 flavor $ setTitle "title" >> p "oldBlood2"
               labeled' "leah" do
-                incrementRecordCount JudithParkRelationshipLevel 1
+                incrementRecordCount LeahAtwoodRelationshipLevel 1
                 interludeXpAll (toBonus "bonus" 1)
                 flavor $ setTitle "title" >> p "oldBlood3"
                 when searched do
@@ -179,6 +179,7 @@ instance RunMessage TheFeastOfHemlockVale where
                   flavor $ setTitle "title" >> p "oldBlood4"
           "omega" -> do
             incrementRecordCount TheoPetersRelationshipLevel 1
+            interludeXpAll (toBonus "bonus" 1)
             reunited <- getHasRecord ThePetersFamilyWereReunited
             flavor do
               setTitle "title"
@@ -191,7 +192,6 @@ instance RunMessage TheFeastOfHemlockVale where
               record HelenPetersJoinedTheSurvey
               addCampaignCardToDeckChoice_ Assets.helenPetersTheEldestSister
           "gamma" -> do
-            incrementRecordCount TheoPetersRelationshipLevel 1
             simeonCrossedOut <- getHasRecord SimeonCrossedOut
             unless simeonCrossedOut do
               incrementRecordCount SimeonAtwoodRelationshipLevel 1

@@ -1,6 +1,7 @@
 module Arkham.Agenda.Cards (module Arkham.Agenda.Cards, module X) where
 
 import Arkham.Agenda.CardDefs.Base as X
+import Arkham.Homebrew.Defs qualified as Homebrew
 import Arkham.Agenda.CardDefs.NightOfTheZealot as X
 import Arkham.Agenda.CardDefs.TheDunwichLegacy as X
 import Arkham.Agenda.CardDefs.ThePathToCarcosa as X
@@ -29,7 +30,7 @@ import Arkham.Card.CardDef
 import Arkham.Prelude hiding (fold)
 
 allAgendaCards :: Map CardCode CardDef
-allAgendaCards =
+allAgendaCards = (Homebrew.agendasMap <>) $
   mapFromList
     $ map
       (toCardCode &&& id)

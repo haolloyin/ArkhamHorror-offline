@@ -41,7 +41,7 @@ lessonLearned =
   (event "12022" "Lesson Learned" 1 Guardian)
     { cdCardTraits = setFromList [Insight, Spirit]
     , cdSkills = [#intellect, #combat]
-    , cdFastWindow = Just $ DealtDamage #after (SourceIsEnemyAttack AnyEnemy) You
+    , cdFastWindow = Just $ EnemyAttacks #after You AnyEnemyAttack AnyEnemy
     , cdCriteria = Just canDiscoverCluesAtYourLocation
     }
 
@@ -167,4 +167,5 @@ scrapeBy1 =
     , cdCardTraits = setFromList [Fortune]
     , cdFastWindow = Just $ WouldHaveSkillTestResult #when You (SkillTestWithRevealedChaosToken $ not_ #autofail) #failure
     , cdLevel = Just 1
+    , cdErrata = Just "This card’s ability should read “You succeed at that skill test by 0 instead.”"
     }

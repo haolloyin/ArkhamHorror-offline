@@ -73,10 +73,15 @@ defaultCampaignRunner msg a = case msg of
     aiSeats <- forMaybeM players \pid -> do
       mState <- getAiPlayerState pid
       pure $ (pid,) <$> (bundledDeckFor . aiInvestigatorCode =<< mState)
-    pushAll
-      $ chooseDecksWithAi players aiSeats
-      : [Ask lead PickCampaignSettings | (campaignStep (toAttrs a)).unwrap /= PrologueStep]
-        <> [CampaignStep $ campaignStep $ toAttrs a]
+    batchId <- getId
+    -- The settings prompt and the first campaign step are the barrier's
+    -- continuation: they are held in game state until every seat has finished its
+    -- deck setup, rather than queued behind the deck ask where a seat's InitDeck
+    -- tail could run past them (#5173).
+    push
+      $ chooseDecksWithAi batchId players aiSeats
+      $ [Ask lead PickCampaignSettings | (campaignStep (toAttrs a)).unwrap /= PrologueStep]
+      <> [CampaignStep $ campaignStep $ toAttrs a]
     pure a
   HandleKilledOrInsaneInvestigators -> do
     -- This case is mainly to handle when there is not an upgrade window
@@ -135,7 +140,8 @@ defaultCampaignRunner msg a = case msg of
     pure a
   CampaignStep (ChooseDecksStep _) -> do
     players <- allPlayers
-    pushAll $ chooseDecks players : [FinishedUpgradingDecks]
+    batchId <- getId
+    push $ chooseDecks batchId players [FinishedUpgradingDecks]
     pure a
   CampaignStep (ContinueCampaignStep _step') -> do
     lead <- getLeadPlayer
@@ -171,6 +177,10 @@ defaultCampaignRunner msg a = case msg of
       $ updateAttrs a
       $ (storyCardsL %~ adjustMap (filter ((/= cardDef) . toCardDef)) iid)
       . (decksL %~ adjustMap (withDeck $ filter ((/= cardDef) . toCardDef)) iid)
+  ReplaceCard cardId card ->
+    -- Keep campaign story cards in sync when a card's identity changes (e.g. a
+    -- story asset moved from the encounter pool to the player pool).
+    pure $ updateAttrs a (storyCardsL %~ Map.map (map (\c -> if toCardId c == cardId then card else c)))
   AddChaosToken token -> do
     if token `notElem` [CurseToken, BlessToken]
       then pure $ updateAttrs a (chaosBagL %~ (token :))
@@ -205,24 +215,41 @@ defaultCampaignRunner msg a = case msg of
         else pure []
     let randomWeaknesses = baseRandomWeaknesses <> extraWeakness
     morrigan <- hasBoon BoonOfTheMorrigan
-    weaknessMessages <-
+    morriganSwaps <-
       if morrigan
         then
           concat <$> for randomWeaknesses \_ ->
             morriganWeaknessMessages
               iid
               (genCard =<< getRandomBasicWeakness investigatorClass playerCount mDecklist)
-        else pure $ map (AddCampaignCardToDeck iid ShuffleIn) randomWeaknesses
+        else pure []
+    let weaknessMessages =
+          if morrigan then [] else map (AddCampaignCardToDeck iid ShuffleIn) randomWeaknesses
     ancients <- hasBoon BoonOfTheAncients
     purchaseTrauma <- initDeckTrauma deck' iid CampaignTarget
     initXp <- initDeckXp deck' iid CampaignTarget
+    pid <- getPlayer iid
+
+    -- Every InitDeck runs while decks are still being chosen. Its interactive parts
+    -- (Boon of the Morrígan, trauma, Eldritch Brand, XP) must not park inside that
+    -- window: the message queue is global, so a question parked here leaves the rest
+    -- of this seat's setup sitting in it, and the next seat to answer anything drains
+    -- that tail -- running this seat's setup, and then the campaign, out from under
+    -- its own unanswered question (#5173). Deferred past the barrier instead, they
+    -- resolve one seat at a time once the table is done choosing.
+    --
+    -- DoStep 1 (Spiritual Healing) reads the trauma purchased above, and the XP
+    -- messages follow it, so the whole tail defers together and keeps its order.
     pushAll
       $ weaknessMessages
-      <> purchaseTrauma
-      <> toList mEldritchBrand
-      <> [DoStep 1 msg]
-      <> initXp
-      <> (if ancients then ancientsStartingXpMessages iid else [])
+      <> [ DeferPastSimultaneousAsk pid
+             $ morriganSwaps
+             <> purchaseTrauma
+             <> toList mEldritchBrand
+             <> [DoStep 1 msg]
+             <> initXp
+             <> (if ancients then ancientsStartingXpMessages iid else [])
+         ]
 
     pure $ updateAttrs a $ decksL %~ insertMap iid deck'
   DoStep 1 (InitDeck InitDeckAttrs {initDeckInvestigator = iid, initDeckDeck = deck}) -> do

@@ -1,4 +1,5 @@
 import base from '@/locales/en/base.json'
+import { homebrewMessages } from '@/locales/homebrew'
 import event from '@/locales/en/event.json'
 import log from '@/locales/en/log.json'
 import cards from '@/locales/en/cards.json'
@@ -45,6 +46,7 @@ export default
   , theFeastOfHemlockVale
   , brethrenOfAsh
   , theDrownedCity
+  , ...homebrewMessages()
   , standalone
   , theLabyrinthsOfLunacy: theLabyrinthsOfLunacyLog
   }

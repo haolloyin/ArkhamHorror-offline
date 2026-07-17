@@ -7,6 +7,7 @@ import Scenario from '@/arkham/components/Scenario.vue';
 import UpgradeDeck from '@/arkham/components/UpgradeDeck.vue';
 import ChooseDeck from '@/arkham/components/ChooseDeck.vue';
 import ContinueCampaign from '@/arkham/components/ContinueCampaign.vue';
+import UltimatumsAndBoonsQuestion from '@/arkham/components/UltimatumsAndBoonsQuestion.vue';
 import { handleEmbeddedI18n } from '@/arkham/i18n';
 import { useI18n } from 'vue-i18n';
 
@@ -36,23 +37,15 @@ async function choose(idx: number) {
 
 const chooseDeck = computed(() => {
   if (props.game.campaign && props.game.campaign.step?.tag === 'ChooseDecksStep') return true
-  const question = Object.values(props.game.question)[0]
-
-  if (question === null || question == undefined) {
-    return false
-  }
-
-  const { tag } = question
-
-  if (tag === 'ChooseDeck' || props.game.gameState.tag === 'IsChooseDecks') {
-    return true
-  }
-
-  if (tag === 'QuestionLabel') {
-    return question.question.tag === 'ChooseDeck'
-  }
-
-  return false
+  // Deck screen only while someone actually has a ChooseDeck question parked.
+  // gameState alone is not enough: it can be stuck at IsChooseDecks with a
+  // different question pending (e.g. after a lost DoneChoosingDecks), and
+  // rendering by state would mask that question behind an inert deck screen.
+  return Object.values(props.game.question).some((q) => {
+    if (!q) return false
+    if (q.tag === 'ChooseDeck') return true
+    return q.tag === 'QuestionLabel' && q.question.tag === 'ChooseDeck'
+  })
 })
 
 
@@ -71,8 +64,35 @@ const questionLabel = computed(() => {
   return question.tag === 'QuestionLabel' ? handleEmbeddedI18n(question.label, t) : null
 })
 
+// Boon of the Morrígan's weakness choice is deferred to just after decks are
+// chosen, so the campaign step is already a ContinueCampaignStep (e.g. the
+// prologue) while the choice is still pending. Suppress the campaign "Continue"
+// screen while any player has a pending Ultimatums & Boons question so the
+// asking player's question surfaces (via StoryQuestion) instead of being masked.
+const ultimatumsAndBoonsQuestion = computed(() => {
+  const entry = Object.entries(props.game.question).find(
+    ([, q]) => q?.tag === 'QuestionLabel' && q.label?.startsWith('$label.ultimatumsAndBoons')
+  )
+  return entry ? { playerId: entry[0] } : null
+})
+
+const pendingUltimatumsAndBoonsQuestion = computed(() => ultimatumsAndBoonsQuestion.value !== null)
+
 const continueCampaign = computed(() => {
-  if (props.game.campaign && props.game.campaign.step?.tag === 'ContinueCampaignStep') return props.game.campaign.step.contents
+  if (!props.game.campaign) return null
+  if (pendingUltimatumsAndBoonsQuestion.value) return null
+  // The campaign step records where play will continue, but deferred deck setup
+  // (such as In the Thick of It trauma) can still have its own question pending.
+  // Only render the continuation when the server is actually asking for it.
+  const hasContinueQuestion = Object.values(props.game.question)
+    .some((question) => question?.tag === 'ContinueCampaign')
+  if (!hasContinueQuestion) return null
+
+  const step = props.game.campaign.step
+  if (step?.tag === 'ContinueCampaignStep') return step.contents
+  if (step?.tag === 'StandaloneScenarioStep' && step.contents[1]?.tag === 'ContinueCampaignStep') {
+    return step.contents[1].contents
+  }
   return null
 })
 
@@ -132,9 +152,21 @@ const continueScenario = computed(() => {
   return null
 })
 
+const scenarioContinuationStep = computed(() => {
+  const step = props.game.scenario?.campaignStep
+  if (!step) return null
+  if (['ScenarioStep', 'ScenarioStepWithOptions'].includes(step.tag)) return step
+  return null
+})
+
 const inScenarioStep = computed(() => {
   return !!props.game.scenario?.campaignStep
 })
+
+// A question can be parked while gameState is still IsChooseDecks (e.g. Boon
+// of the Morrígan's weakness swap asked between deck loads). It must render
+// through the same question branches as an active game, or the screen is blank.
+const hasQuestion = computed(() => Object.keys(props.game.question).length > 0)
 </script>
 
 <template>
@@ -149,18 +181,27 @@ const inScenarioStep = computed(() => {
     <ContinueCampaign
       :game="game"
       :campaign="campaign"
+      :scenario="game.scenario ?? undefined"
+      :playerId="playerId"
       :canUpgradeDecks="continueCampaign.canUpgradeDecks"
-      :step="continueCampaign.nextStep"
+      :step="scenarioContinuationStep || continueCampaign.nextStep"
       :chooseSideStory="continueCampaign.chooseSideStory"
       :canChooseSideStory="continueCampaign.canChooseSideStory"
     />
   </div>
-  <div v-else-if="game.gameState.tag === 'IsActive'" id="game" class="game">
-    <template v-if="pickDestiny">
+  <div v-else-if="game.gameState.tag === 'IsActive' || hasQuestion" id="game" class="game">
+    <UltimatumsAndBoonsQuestion
+      v-if="ultimatumsAndBoonsQuestion"
+      :game="game"
+      :playerId="ultimatumsAndBoonsQuestion.playerId"
+      :viewOnly="ultimatumsAndBoonsQuestion.playerId !== playerId"
+      @choose="choose"
+    />
+    <template v-else-if="pickDestiny">
       <StoryQuestion :game="game" :key="questionHash" :playerId="playerId" @choose="choose" />
     </template>
     <ContinueCampaign
-      v-if="continueScenario"
+      v-else-if="continueScenario"
       :game="game"
       :scenario="game.scenario ?? undefined"
       :canUpgradeDecks="continueScenario.canUpgradeDecks"

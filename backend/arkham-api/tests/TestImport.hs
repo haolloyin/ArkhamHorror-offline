@@ -586,7 +586,13 @@ addInvestigator
 addInvestigator defF = do
   investigator' <- testInvestigator defF
   env <- get
-  runReaderT (overGame (entitiesL . Entities.investigatorsL %~ insertEntity investigator')) env
+  runReaderT
+    ( overGame
+        ( (entitiesL . Entities.investigatorsL %~ insertEntity investigator')
+            . (playerOrderL %~ (<> [toId investigator']))
+        )
+    )
+    env
   pure investigator'
 
 testConnectedLocations
@@ -704,12 +710,16 @@ skip = chooseOptionMatching "skip" \case
   _ -> False
 
 -- | Peel off display-only question wrappers (source highlight, header label)
--- that the frontend renders but that tests should see through.
+-- that the frontend renders but that tests should see through. Also normalizes
+-- the window-ask flavors of ChooseOne, which differ from a plain ChooseOne only
+-- in whether the queue regenerates the seat (see Entity.Answer), not in how a
+-- spec answers them.
 stripQuestionWrappers :: Question msg -> Question msg
 stripQuestionWrappers = \case
   QuestionLabel _ _ q -> stripQuestionWrappers q
   QuestionWithSource _ _ q -> stripQuestionWrappers q
   PayCostQuestion _ q -> stripQuestionWrappers q
+  WindowChooseOne cs -> ChooseOne cs
   q -> q
 
 chooseOnlyOption :: HasCallStack => String -> TestAppT ()
@@ -751,10 +761,7 @@ chooseOptionMatching _reason f = do
  where
   notFound msgs =
     liftIO $ expectationFailure $ "could not find a matching message in: " <> show msgs
-  go iid question = case question of
-    QuestionLabel _ _ q -> go iid q
-    QuestionWithSource _ _ q -> go iid q
-    PayCostQuestion _ q -> go iid q
+  go iid question = case stripQuestionWrappers question of
     ChooseOne msgs -> case find f msgs of
       Just msg -> push (uiToRun msg) <* runMessages
       Nothing -> notFound msgs
@@ -871,9 +878,16 @@ scenarioTest = scenarioTestWith Investigators.jennyBarnes
 -- | Like 'scenarioTest' but lets the caller choose which investigator the game
 -- is seeded with (rather than the default Jenny Barnes).
 scenarioTestWith :: CardDef -> ScenarioId -> (Investigator -> TestAppT ()) -> IO ()
-scenarioTestWith investigatorDef scenarioId body = do
+scenarioTestWith investigatorDef = scenarioTestWithDifficulty investigatorDef Easy
+
+-- | Like 'scenarioTestWith' but also lets the caller choose the difficulty
+-- (needed for effects that differ between the Easy/Standard and Hard/Expert
+-- sides of a scenario reference card).
+scenarioTestWithDifficulty
+  :: CardDef -> Difficulty -> ScenarioId -> (Investigator -> TestAppT ()) -> IO ()
+scenarioTestWithDifficulty investigatorDef difficulty scenarioId body = do
   investigator <- testInvestigator investigatorDef
-  let scenario' = lookupScenario scenarioId Easy
+  let scenario' = lookupScenario scenarioId difficulty
   g <- newGame scenario' investigator
   gameRef <- newIORef g
   queueRef <- newQueue []
@@ -893,6 +907,7 @@ newGame scenario' investigator = do
         { gameWindowDepth = 0
         , gameWindowStack = Nothing
         , gameWindowTick = 0
+        , gameSimultaneousAsks = mempty
         , gameWindowTickStack = []
         , gameEntryTicks = mempty
         , gameRunWindows = True

@@ -30,9 +30,9 @@ export interface Props {
 }
 
 const grunge = `url(${imgsrc('grunge.png')})`
-const black_fleur = `url(${imgsrc('fleur.png')})`
-const checkpoint_fleur = `url(${imgsrc('checkpoint_fleur.png')})`
-const resolution_fleur = `url(${imgsrc('resolution_fleur.png')})`
+const black_fleur = `url(${imgsrc('fleurs/fleur.png')})`
+const checkpoint_fleur = `url(${imgsrc('fleurs/checkpoint_fleur.png')})`
+const resolution_fleur = `url(${imgsrc('fleurs/resolution_fleur.png')})`
 const props = withDefaults(defineProps<Props>(), { isSkillTest: false })
 const emit = defineEmits(['choose'])
 const { t } = useI18n()
@@ -86,6 +86,9 @@ type SearchedCardGroup = {
   zone: string
   label: string
   cards: ArkhamCard[]
+  // Placeholder group for a deck the search can be extended into: no cards,
+  // just a button that submits the choice at this index.
+  extendIndex?: number
 }
 
 function searchedZoneLabel(zone: string, source: 'player' | 'encounter') {
@@ -99,10 +102,81 @@ function searchedZoneLabel(zone: string, source: 'player' | 'encounter') {
   return zoneToLabel(zone)
 }
 
+const cardOwner = (card: ArkhamCard): string | null => toCardContents(card).owner ?? null
+
+function ownerName(owner: string): string {
+  const inv = props.game.investigators[owner] ?? props.game.otherInvestigators[owner]
+  return inv?.name.title ?? owner
+}
+
+function ownerZoneLabel(owner: string, zone: string): string {
+  const name = ownerName(owner)
+  switch (zone) {
+    case 'FromDeck': return t('fromInvestigatorDeck', { name })
+    case 'FromHand': return t('fromInvestigatorHand', { name })
+    case 'FromDiscard': return t('fromInvestigatorDiscard', { name })
+    default: return searchedZoneLabel(zone, 'player')
+  }
+}
+
 const searchedCards = computed<SearchedCardGroup[]>(() => {
-  const playerCards = Object.entries(investigator.value?.foundCards ?? {})
+  const foundEntries = Object.entries(investigator.value?.foundCards ?? {})
     .filter(([, cards]) => cards.length > 0)
-    .map(([zone, cards]) => ({ key: `player-${zone}`, zone, label: searchedZoneLabel(zone, 'player'), cards }))
+
+  // When a search spans other investigators' zones (e.g. Leah Atwood Codex 2),
+  // each card carries its owner id. Split each zone by owner when any card
+  // belongs to someone other than the searching investigator; otherwise keep
+  // the plain "From Deck/Hand/Discard". The searcher's own groups keep plain
+  // labels; other investigators' groups are labeled with their name.
+  const activeId = investigator.value?.id
+  const foreignOwner = foundEntries.some(([, cards]) =>
+    cards.some((card) => cardOwner(card) !== null && cardOwner(card) !== activeId))
+
+  // Decks the search can be extended into (choices targeting LabeledTarget
+  // "extendSearchDeck") render as placeholder sections: no cards, just a
+  // button. They share the key and sort position of the real "From X's Deck"
+  // group, so extending fills the section in place instead of re-laying-out.
+  const extendPlaceholders = choices.value.flatMap((choice, index) => {
+    if (choice.tag !== MessageType.TARGET_LABEL) return []
+    const target = choice.target
+    if (target.tag !== 'LabeledTarget' || target.label !== 'extendSearchDeck') return []
+    if (target.innerTag !== 'InvestigatorTarget' || typeof target.contents !== 'string') return []
+    return [{ owner: target.contents, extendIndex: index }]
+  })
+
+  let playerCards: SearchedCardGroup[]
+  if (!foreignOwner && extendPlaceholders.length === 0) {
+    playerCards = foundEntries.map(([zone, cards]) => ({ key: `player-${zone}`, zone, label: searchedZoneLabel(zone, 'player'), cards }))
+  } else {
+    // Groups are ordered: yours first, then other investigators by name,
+    // zone-ordered Hand / Discard / Deck within each owner (a deck — real or
+    // placeholder — closes out its owner's cluster).
+    const zoneOrder = ['FromHand', 'FromDiscard', 'FromDeck']
+    const ownerRank = (o: string | null) => (o === activeId ? 0 : o === null ? 2 : 1)
+    const split: { owner: string | null; zone: string; cards: ArkhamCard[]; extendIndex?: number }[] = []
+    for (const [zone, cards] of foundEntries) {
+      const byOwner = new Map<string | null, ArkhamCard[]>()
+      for (const card of cards) {
+        const owner = cardOwner(card)
+        byOwner.set(owner, [...(byOwner.get(owner) ?? []), card])
+      }
+      for (const [owner, ownerCards] of byOwner) split.push({ owner, zone, cards: ownerCards })
+    }
+    for (const { owner, extendIndex } of extendPlaceholders) {
+      split.push({ owner, zone: 'FromDeck', cards: [], extendIndex })
+    }
+    split.sort((a, b) =>
+      ownerRank(a.owner) - ownerRank(b.owner)
+      || (a.owner && b.owner ? ownerName(a.owner).localeCompare(ownerName(b.owner)) : 0)
+      || zoneOrder.indexOf(a.zone) - zoneOrder.indexOf(b.zone))
+    playerCards = split.map(({ owner, zone, cards, extendIndex }) => ({
+      key: `player-${owner ?? 'unowned'}-${zone}`,
+      zone,
+      label: owner === null || owner === activeId ? searchedZoneLabel(zone, 'player') : ownerZoneLabel(owner, zone),
+      cards,
+      extendIndex,
+    }))
+  }
 
   const encounterCards = Object.entries({
     ...(props.game.scenario?.foundCards ?? {}),
@@ -233,6 +307,9 @@ function targetLabelHandledElsewhere(choice: TargetLabel) {
   const target = choice.target
   const contents = target.contents
 
+  // Rendered as placeholder deck groups inside the searched-cards modal.
+  if (target.tag === 'LabeledTarget' && target.label === 'extendSearchDeck') return true
+
   if (typeof contents === 'string') {
     switch (target.tag) {
       case 'AssetTarget': return contents in props.game.assets
@@ -276,13 +353,18 @@ const label = function(body: string) {
   return formatContent(handleEmbeddedI18n(body, t))
 }
 
+const payCostLabel = function(costValue: Parameters<typeof formatCost>[0]) {
+  const cost = formatCost(costValue, t)
+  return cost.startsWith('Spend ') ? cost : t('label.cost.pay', { cost })
+}
+
 const paymentAmountsLabel = computed(() => {
   if (question.value?.tag === QuestionType.CHOOSE_PAYMENT_AMOUNTS) {
     return label(question.value.label)
   }
 
   if (question.value?.tag === QuestionType.PAY_COST_QUESTION && question.value.question.tag === QuestionType.CHOOSE_PAYMENT_AMOUNTS) {
-    return label(t('label.cost.pay', { cost: formatCost(question.value.cost, t) }))
+    return label(payCostLabel(question.value.cost))
   }
 
   return null
@@ -368,8 +450,8 @@ const traumaKind = (text: string) => {
 
 const traumaIcon = (text: string) => {
   switch (traumaKind(text)) {
-    case 'health': return imgsrc('health-icon.png')
-    case 'horror': return imgsrc('horror-icon.png')
+    case 'health': return imgsrc('icons/health-icon.png')
+    case 'horror': return imgsrc('icons/horror-icon.png')
     default: return null
   }
 }
@@ -527,7 +609,8 @@ const flippableCard = (cardCode: string) => {
     skills: [],
     cost: null,
     otherSide: `${cardCode}b`,
-    meta: {}
+    meta: {},
+    errata: null
   }
 }
 
@@ -634,7 +717,7 @@ const filteredCards = computed<{ choice: CardLabel; index: number }[]>(() => {
         <img :src="questionImage" class="card" />
       </div>
 
-      <legend>{{ t('label.cost.pay', { cost: formatCost(question.cost, t) }) }}</legend>
+      <legend>{{ payCostLabel(question.cost) }}</legend>
       <DropDown @choose="choose" :options="question.question.options" />
     </div>
 
@@ -678,7 +761,12 @@ const filteredCards = computed<{ choice: CardLabel; index: number }[]>(() => {
             <div class="modal-contents searched-cards">
               <div v-for="group in searchedCards" :key="group.key" class="group">
                 <h2>{{ group.label }}</h2>
-                <div class="group-cards">
+                <div v-if="group.extendIndex !== undefined" class="group-cards">
+                  <button class="extend-search" @click="choose(group.extendIndex)">
+                    {{ t('searchThisDeck') }}
+                  </button>
+                </div>
+                <div v-else class="group-cards">
                   <div
                     v-for="card in group.cards"
                     :key="`${group.key}-${toCardContents(card).id}`"
@@ -1266,8 +1354,8 @@ h2 {
   overflow: hidden;
   align-items: stretch;
   background: #735e7b;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 18px;
+  border: 0;
+  border-radius: 0;
 }
 
 .amount-form {
@@ -1472,6 +1560,26 @@ h2 {
 
 .searched-card {
   display: flex;
+}
+
+/* Placeholder group for a deck the search can be extended into */
+.extend-search {
+  flex: 1;
+  min-height: 64px;
+  padding: 10px 14px;
+  border: 1px dashed rgba(214, 205, 174, 0.4);
+  border-radius: 8px;
+  background: rgba(214, 205, 174, 0.06);
+  color: var(--title);
+  font-weight: bold;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.extend-search:hover {
+  background: rgba(214, 205, 174, 0.14);
+  border-color: rgba(214, 205, 174, 0.7);
 }
 
 .done {

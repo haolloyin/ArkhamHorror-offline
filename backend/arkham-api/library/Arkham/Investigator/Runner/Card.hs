@@ -511,15 +511,20 @@ handleReplaceCard a@InvestigatorAttrs{..} cardId card = do
     & (decksL . each %~ map doReplace)
 
 handlePutCampaignCardIntoPlay a@InvestigatorAttrs{..} iid cardDef = do
-  let mcard = find ((== cardDef) . toCardDef) (unDeck investigatorDeck)
-  case mcard of
+  -- The card may have been drawn into hand (e.g. an opening-hand draw) or
+  -- discarded before setup puts it into play, so search all three zones.
+  let candidates =
+        map PlayerCard (unDeck investigatorDeck)
+          <> investigatorHand
+          <> map PlayerCard investigatorDiscard
+  case find ((== cardDef) . toCardDef) candidates of
     Nothing ->
       sendError $ "The game expected to find "
         <> toTitle cardDef
         <> " in the deck of "
         <> toTitle a
         <> ", but was unable to find it."
-    Just card -> push $ PutCardIntoPlay iid (PlayerCard card) Nothing NoPayment []
+    Just card -> push $ PutCardIntoPlay iid card Nothing NoPayment []
   pure a
 
 handleRemoveAllCopiesOfCardFromGame a@InvestigatorAttrs{..} iid cardCode = do
@@ -976,10 +981,18 @@ handleDrawToHandFrom a@InvestigatorAttrs{..} iid deck cards = do
   when (isNothing $ a ^. searchL) do
     push after
   assetIds <- catMaybes <$> for cards (selectOne . AssetWithCardId . toCardId)
+  -- Commit every card out of the deck now, before the per-card draw messages above
+  -- resolve. Each card's draw windows fire before the next card is drawn, so a reaction
+  -- to card 1 (Dream-Enhancing Serum) could otherwise draw card 2 out from under us
+  -- while it still sat in the deck, and the pending InvestigatorDrewPlayerCardFrom would
+  -- then draw it a second time, duplicating the card. handleDoDrawCardsV2 keeps the same
+  -- invariant for the standard draw path.
+  let drawnCardIds = map toCardId cards
   pure
     $ a
     & (cardsUnderneathL %~ filter (`notElem` cards))
     & (slotsL %~ flip (foldr removeFromSlots) assetIds)
+    & (deckL %~ filter ((`notElem` drawnCardIds) . toCardId))
     & (discardL %~ filter ((`notElem` cards) . PlayerCard))
     & (foundCardsL . each %~ filter (`notElem` cards))
     & (bondedCardsL %~ filter (`notElem` cards))
@@ -1068,9 +1081,25 @@ handleDrawFocusedToHand a@InvestigatorAttrs{..} iid' cardSource cardId = do
       fromJustNote "missing card"
         $ find ((== cardId) . toCardId) (findWithDefault [] cardSource $ a ^. foundCardsL)
     foundCards' = Map.map (filter ((/= cardId) . toCardId)) (a ^. foundCardsL)
-  push $ case zoneToDeck a.id cardSource of
-    Nothing -> drawToHand iid' card
-    Just deck -> drawToHandFrom iid' deck card
+    -- SearchAllInvestigators can surface cards from another investigator's zone or
+    -- a scenario deck (FromCollection). Those aren't in the drawer's own deck, so
+    -- the normal draw-from-deck removal would leave a duplicate. Route them through
+    -- the global obtain path (addToHand -> obtainCard), which clears the card from
+    -- any owner's hand/deck/discard and scenario decks while preserving pcOwner.
+    -- The own-zone case is left byte-for-byte identical (same draw-trigger windows).
+    inOwnZone = case cardSource of
+      Zone.FromDeck -> card `elem` map toCard (unDeck investigatorDeck)
+      Zone.FromTopOfDeck _ -> card `elem` map toCard (unDeck investigatorDeck)
+      Zone.FromBottomOfDeck _ -> card `elem` map toCard (unDeck investigatorDeck)
+      Zone.FromHand -> card `elem` investigatorHand
+      Zone.FromDiscard -> card `elem` map toCard investigatorDiscard
+      _ -> False
+  push
+    $ if inOwnZone
+      then case zoneToDeck a.id cardSource of
+        Nothing -> drawToHand iid' card
+        Just deck -> drawToHandFrom iid' deck card
+      else addToHand iid' card
   pure $ a & foundCardsL .~ foundCards' & (deckL %~ Deck . filter ((/= card) . toCard) . unDeck)
 
 handleAddFocusedToTopOfDeck a@InvestigatorAttrs{..} iid' cardId = do

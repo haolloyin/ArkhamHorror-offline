@@ -1,6 +1,6 @@
 <script lang="ts" setup>
-import { useAttrs, ref, computed } from 'vue'
-import { imgsrc } from '@/arkham/helpers'
+import { useAttrs, ref, computed, watch } from 'vue'
+import { cardImg, imgsrc } from '@/arkham/helpers'
 import { CardDef } from '@/arkham/types/CardDef'
 import { ArrowPathIcon } from '@heroicons/vue/20/solid'
 
@@ -14,87 +14,73 @@ const attrs = useAttrs()
 const props = defineProps<{ card: CardDef }>()
 
 const flipped = ref(false)
-const vertical = computed(() => {
-  if(!flipped.value) return false
 
-  return [
-    "c01121a",
-    "c03241",
-    "c03321a",
-    "c04117",
-    "c04118",
-    "c04122",
-    "c04125",
-    "c04126",
-    "c04128",
-    "c04130",
-    "c04133",
-    "c04134",
-    "c04137",
-    "c04209",
-    "c05055",
-    "c05286a",
-    "c05288a",
-    "c06169a",
-    "c07164",
-    "c07165",
-    "c07199",
-    "c09615",
-    "c10607a",
-    "c10661",
-    "c50026a",
-    "c53029",
-    "c53030",
-    "c53032",
-    "c53034",
-    "c53046",
-    "c82002",
-    "c82006",
-    "c90033a",
-    "c90066a"
-  ].includes(props.card.cardCode) 
+// A double-sided card whose OWN art is the 'b' side (e.g. an enemy that is the
+// back of an agenda: art "…016b", otherSide "…016"). Its front is the other
+// side, so default to showing that and put its own art on the back.
+const backPrimary = computed(() => {
+  const {otherSide, doubleSided, art} = props.card
+  return !!(doubleSided && otherSide && /b$/.test(art)
+    && otherSide.replace(/^c/, '') === art.replace(/b$/, ''))
 })
 
 const image = computed(() => {
-  const {cardType} = props.card 
+  const {cardType} = props.card
   if (cardType == 'LocationType' && props.card.doubleSided)
-    return imgsrc(`cards/${props.card.art}b.avif`)
+    return cardImg(`${props.card.art}b`)
 
-  return imgsrc(`cards/${props.card.art}.avif`)
+  if (backPrimary.value)
+    return cardImg(props.card.otherSide!.replace(/^c/, ''))
+
+  return cardImg(props.card.art)
 })
 const backImage = computed(() => {
-  const {cardType, otherSide, doubleSided} = props.card 
+  const {cardType, otherSide, doubleSided} = props.card
+  if (backPrimary.value)
+    return cardImg(props.card.art)
+
   if (otherSide)
-    return imgsrc(`cards/${otherSide.replace(/^c/, '')}.avif`)
+    return cardImg(otherSide.replace(/^c/, ''))
 
   if (['ActType', 'AgendaType', 'ScenarioType', 'InvestigatorType'].includes(cardType))
-    return imgsrc(`cards/${props.card.art.replace(/a$/, '')}b.avif`)
+    return cardImg(`${props.card.art.replace(/a$/, '')}b`)
 
   if ('LocationType' == cardType) {
     if (props.card.doubleSided)
-      return imgsrc(`cards/${props.card.art}.avif`)
-    return imgsrc('encounter_back.jpg')
+      return cardImg(props.card.art)
+    return imgsrc('backs/back_encounter.jpg')
   }
 
   if (['EnemyType', 'StoryType'].includes(cardType) && props.card.doubleSided)
-    return imgsrc(`cards/${props.card.art}b.avif`)
+    return cardImg(`${props.card.art}b`)
 
   if (doubleSided)
-    return imgsrc(`cards/${props.card.art.replace(/a$/, '')}b.avif`)
+    return cardImg(`${props.card.art.replace(/a$/, '')}b`)
 
   if (['EnemyType', 'StoryType', 'TreacheryType', 'EncounterAssetType', 'EncounterEventType'].includes(cardType)) {
     if (props.card.meta?.customBack)
       return imgsrc(`backs/${props.card.meta.customBack}`)
-    return imgsrc('encounter_back.jpg')
+    return imgsrc('backs/back_encounter.jpg')
   }
 
   // Player-type cards (e.g. earned Artifact assets) may also define a custom back.
   if (props.card.meta?.customBack)
     return imgsrc(`backs/${props.card.meta.customBack}`)
 
-  return imgsrc('player_back.jpg')
-  
+  return imgsrc('backs/back_player.jpg')
+
 })
+
+// Full-height backs (an act/agenda that flips to an enemy or location) are stored
+// portrait; act/agenda faces are landscape. Detect from the loaded back image
+// instead of maintaining a card-code whitelist. Only matters once flipped.
+const backVertical = ref(false)
+function updateBackOrientation(e: Event) {
+  const img = e.target as HTMLImageElement
+  backVertical.value = img.naturalHeight > img.naturalWidth
+}
+watch(backImage, () => { backVertical.value = false })
+const vertical = computed(() => flipped.value && backVertical.value)
 
 </script>
 
@@ -114,6 +100,7 @@ const backImage = computed(() => {
         loading="lazy"
         :class="['card', 'card-back', { flipped }, attrs.class]"
         :src="backImage"
+        @load="updateBackOrientation"
         v-bind="attrs"
       />
       <button @click.prevent="flipped = !flipped"><ArrowPathIcon aria-hidden="true" /></button>

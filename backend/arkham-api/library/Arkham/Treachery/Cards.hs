@@ -2,6 +2,7 @@
 module Arkham.Treachery.Cards (module Arkham.Treachery.Cards, module X) where
 
 import Arkham.Treachery.CardDefs.Base as X
+import Arkham.Homebrew.Defs qualified as Homebrew
 import Arkham.Treachery.CardDefs.Core2026 as X
 import Arkham.Treachery.CardDefs.EdgeOfTheEarth as X
 import Arkham.Treachery.CardDefs.NightOfTheZealot as X
@@ -27,7 +28,7 @@ allTreacheryCards :: Map CardCode CardDef
 allTreacheryCards = allPlayerTreacheryCards <> allEncounterTreacheryCards
 
 allPlayerTreacheryCards :: Map CardCode CardDef
-allPlayerTreacheryCards =
+allPlayerTreacheryCards = (Homebrew.playerTreacheriesMap <>) $
   mapFromList
     $ concatMap
       toCardCodePairs
@@ -163,7 +164,7 @@ allPlayerTreacheryCards =
       ]
 
 allEncounterTreacheryCards :: Map CardCode CardDef
-allEncounterTreacheryCards =
+allEncounterTreacheryCards = (Homebrew.treacheriesMap <>) $
   mapFromList
     $ concatMap
       toCardCodePairs

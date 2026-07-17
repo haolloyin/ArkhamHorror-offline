@@ -1,4 +1,5 @@
 import nightOfTheZealot from '@/arkham/data/nightOfTheZealot.json'
+import { homebrewScenarios } from '@/arkham/homebrewData'
 import theDunwichLegacy from '@/arkham/data/theDunwichLegacy.json'
 import thePathToCarcosa from '@/arkham/data/thePathToCarcosa.json'
 import theForgottenAge from '@/arkham/data/theForgottenAge.json'
@@ -26,4 +27,5 @@ export default
   , ...brethrenOfAsh
   , ...theDrownedCity
   , ...sideStories
-  ]
+    , ...homebrewScenarios
+]

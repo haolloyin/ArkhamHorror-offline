@@ -62,14 +62,9 @@ getStartingResources a = do
 getSkillValue :: (HasGame m, Tracing m) => SkillType -> InvestigatorId -> m Int
 getSkillValue st iid = do
   mods <- getModifiers iid
-  let
-    fld =
-      case st of
-        SkillWillpower -> InvestigatorBaseWillpower
-        SkillIntellect -> InvestigatorBaseIntellect
-        SkillCombat -> InvestigatorBaseCombat
-        SkillAgility -> InvestigatorBaseAgility
-  base <- field fld iid
+  -- honor BaseSkillOf/BaseSkill overrides (e.g. Shattered Self, Monstrous Transformation)
+  -- rather than reading the raw base field, so skill-combine effects (Lockpicks, Enchant Weapon) see them
+  base <- baseSkillValueFor st Nothing iid
   let canBeIncreased = SkillCannotBeIncreased st `notElem` mods
   x <-
     if canBeIncreased
@@ -414,6 +409,7 @@ investigator f cardDef Stats {..} =
                 , investigatorMovement = Nothing
                 , investigatorBondedCards = mempty
                 , investigatorMeta = Null
+                , investigatorFormMeta = Null
                 , investigatorUnhealedHorrorThisRound = 0
                 , investigatorSealedChaosTokens = []
                 , investigatorUsedAbilities = mempty
@@ -558,7 +554,13 @@ getAvailableSkillsFor skillType iid = do
 
 isEliminated :: (HasCallStack, HasGame m, Tracing m) => InvestigatorId -> m Bool
 isEliminated iid =
-  orM $ sequence [field InvestigatorResigned, field InvestigatorDefeated] iid
+  -- The eliminated flag must be checked alongside the other two: elimination
+  -- empties the hand/deck/discard and sets it, but the resign path only marks
+  -- resigned afterwards (see Investigator.Runner Do (InvestigatorResigned)). In
+  -- that gap the investigator would otherwise still match You/Uneliminated with
+  -- an empty hand, firing threat-area forced abilities (e.g. Captivating Gleam).
+  orM
+    $ sequence [field InvestigatorResigned, field InvestigatorDefeated, field InvestigatorIsEliminated] iid
 
 getHandCount :: (HasGame m, Tracing m) => InvestigatorId -> m Int
 getHandCount = fieldMap InvestigatorHand length

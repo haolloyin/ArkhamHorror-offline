@@ -8,6 +8,7 @@ import Arkham.Ability as X hiding (PaidCost)
 import Arkham.ChaosToken as X
 import Arkham.ClassSymbol as X
 import Arkham.Classes as X
+import Arkham.Cost.Status qualified as Cost
 import Arkham.ForMovement
 import Arkham.Helpers.Investigator as X
 import Arkham.Helpers.Message as X hiding (
@@ -22,6 +23,7 @@ import Arkham.Name as X
 import Arkham.Source as X
 import Arkham.Stats as X
 import Arkham.Target as X
+import Arkham.Homebrew.Defs (allTraits)
 import Arkham.Trait as X hiding (Cosmos, Cultist, ElderThing, Haunted)
 import Data.Aeson (Result (..))
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -62,9 +64,8 @@ import Arkham.Helpers.Action (
 import Arkham.Helpers.Card (
   cardIsFast',
   getModifiedCardCost,
-  passesLimits,
  )
-import Arkham.Helpers.Cost (getCanAffordCost)
+import Arkham.Helpers.Cost (getAdditionalActionCosts, getCanAffordCost)
 import Arkham.Helpers.Criteria (passesCriteria)
 import Arkham.Helpers.Customization
 import Arkham.Helpers.Discover
@@ -76,7 +77,7 @@ import Arkham.Helpers.Location (
  )
 import Arkham.Helpers.Log (hasCampaignOption)
 import Arkham.Helpers.Modifiers
-import Arkham.Helpers.Playable (getPlayableCards)
+import Arkham.Helpers.Playable (getIsPlayable, getPlayableCards)
 import Arkham.Helpers.SkillTest
 import Arkham.Helpers.Slot (
   canPutIntoSlot,
@@ -168,11 +169,20 @@ instance RunMessage Investigator where
       modifiers' <- getModifiers (toTarget i)
       let msg' = if Blank `elem` modifiers' then Blanked msg else msg
       case investigatorForm (toAttrs a) of
-        TransfiguredForm inner -> withInvestigatorCardCode inner \(SomeInvestigator @a) ->
-          Investigator
-            . investigatorFromAttrs @original
-            . toAttrs
-            <$> runMessage @a msg' (investigatorFromAttrs @a (toAttrs a))
+        TransfiguredForm inner -> withInvestigatorCardCode inner \(SomeInvestigator @a) -> do
+          let a0 = toAttrs a
+          a' <- toAttrs <$> runMessage @a msg' (investigatorFromAttrs @a (asFormAttrs a0))
+          -- the form reads and writes its own meta, ours is left alone for our
+          -- signature cards. Changing form means a different form, which starts
+          -- uninitialized.
+          pure
+            . Investigator
+            $ investigatorFromAttrs @original
+              a'
+                { investigatorMeta = investigatorMeta a0
+                , investigatorFormMeta =
+                    if investigatorForm a' == investigatorForm a0 then investigatorMeta a' else Null
+                }
         _ -> Investigator <$> runMessage msg' a
 
 instance RunMessage InvestigatorAttrs where
@@ -281,15 +291,20 @@ getWindowSkippable
         $ getCanAffordCost iid pc [#play] ws (ResourceCost $ max 0 $ cost - additionalResources)
       when (not isFast && asAction) do
         liftGuardM $ getCanAffordCost iid pc [#play] ws (ActionCost 1)
-      liftGuardM $ withAlteredGame withoutCanModifiers $ passesLimits iid card
+      liftGuardM $ withAlteredGame withoutCanModifiers $ getIsPlayable iid iid Cost.PaidCost ws card
 getWindowSkippable
   attrs
-  _ws
+  ws
   ( windowTiming &&& windowType ->
       (Timing.When, Window.PlayEvent iid eid)
     ) | iid == toId attrs = do
     card <- field EventCard eid
-    withAlteredGame withoutCanModifiers $ passesLimits iid card
+    -- A PlayEvent "when" trigger is only skippable if the event would still be
+    -- legal without any CanModify helpers from those triggers. This catches
+    -- fight/evade events that are only playable because a reaction such as
+    -- Miguel's Knapsack will make the investigator AsIfAt another location; in
+    -- that case skipping the trigger would leave the event with no legal target.
+    withAlteredGame withoutCanModifiers $ getIsPlayable iid iid Cost.PaidCost ws card
 getWindowSkippable _ _ w@(windowTiming &&& windowType -> (Timing.When, Window.ActivateAbility iid _ ab)) = do
   let
     excludeOne [] = []
@@ -415,6 +430,12 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
   RecordForInvestigator iid key | iid == toId a -> do
     send $ "Record \"" <> format investigatorName <> " " <> format key <> "\""
     pure $ a & (logL . recordedL %~ insertSet key) . (logL . orderedKeysL %~ (<> [key]))
+  IncrementRecordCountForInvestigator iid key n | iid == toId a -> do
+    pure
+      $ a
+      & logL
+      . recordedCountsL
+      %~ (\counts -> insertMap key (max 0 (findWithDefault 0 key counts + n)) counts)
   EndCheckWindow -> do
     depth <- getWindowDepth
     let
@@ -435,7 +456,10 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
         <$> filterM filterAbility investigatorUsedAbilities
     pure $ a & usedAbilitiesL .~ usedAbilities
   ForTarget (isTarget a -> True) (EndOfScenario {}) -> do
-    pure $ a & handL .~ mempty & defeatedL .~ False & resignedL .~ False
+    -- eliminated must clear with defeated/resigned, or interludes (and scenarios
+    -- with skipInvestigatorSetup, which never run ForInvestigators ResetGame)
+    -- would treat everyone eliminated last scenario as still eliminated.
+    pure $ a & handL .~ mempty & defeatedL .~ False & resignedL .~ False & eliminatedL .~ False
   ForInvestigators _ ResetGame ->
     pure
       $ (cbCardBuilder (investigator id (toCardDef a) (getAttrStats a)) nullCardId investigatorPlayerId)
@@ -551,20 +575,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
   ReturnToHand iid (CardIdTarget cardId) | iid == investigatorId -> handleReturnToHandV3 a iid cardId
   ReturnToHand iid (CardMatcherTarget matcher) | iid == investigatorId -> handleReturnToHandV4 a iid matcher
   CheckAdditionalActionCosts iid target action msgs | iid == investigatorId -> do
-    mods <- getModifiers a
-    targetMods <- getModifiers target
-    let
-      additionalCosts =
-        mapMaybe
-          \case
-            AdditionalActionCostOf (IsAction action') n | action == action' -> Just (ActionCost n)
-            _ -> Nothing
-          mods
-          <> mapMaybe
-            \case
-              AdditionalCostToInvestigate c | action == #investigate -> Just c
-              _ -> Nothing
-            targetMods
+    additionalCosts <- getAdditionalActionCosts iid target action
     if null additionalCosts
       then pushAll msgs
       else do
@@ -2229,10 +2240,10 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
             push
               $ Msg.chooseOneDropDown
                 player
-                [ ( tshow trait
+                [ ( displayTrait trait
                   , DebugIncreaseCustomization iid cardCode customization (ChosenTrait trait : choices)
                   )
-                | trait <- [minBound ..]
+                | trait <- allTraits
                 ]
           (CustomizationCardChoice matcher : _) -> do
             player <- getPlayer iid
@@ -2328,34 +2339,83 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
           )
       ) | iid' == toId a -> do
       mods <- getModifiers iid
+      let searchAll = SearchAllInvestigators `elem` mods
+      -- SearchAllInvestigators (Leah Atwood Codex 2): fold every OTHER
+      -- investigator's deck/hand/discard into the same plain Zone;
+      -- SearchIncludesDeckOf folds in just that investigator's deck. Merged cards
+      -- keep pcOwner so the frontend can group by owner. Scenario out-of-play
+      -- decks (e.g. The Abyss) are NOT included: this is a player-card effect and
+      -- player-card effects cannot interact with The Abyss.
+      -- You can draw your OWN signature but not another investigator's: drop any
+      -- signature card whose owner isn't the searcher from every merged source.
+      -- (The searcher's own zones are folded in unfiltered below.)
+      -- A deck is only merged if its owner's deck can be searched (The
+      -- Harbinger), and a discard only if its owner's cards can leave it
+      -- (Graveyard Ghouls).
+      let dropOthersSignatures = filter \c -> not (isSignature c) || toCardOwner c == Just iid'
+      -- SearchIncludesDeckOf takes precedence over SearchAllInvestigators for
+      -- deck merging: an extension search may start while the original search's
+      -- SearchAllInvestigators window effect is still live, and must only merge
+      -- the single chosen deck (the searcher's own deck needs no merge -- it is
+      -- folded in natively below, so a self-target only suppresses searchAll).
+      let extendedDeckMods = [i | SearchIncludesDeckOf i <- mods]
+      deckOwners <-
+        if
+          | notNull extendedDeckMods -> pure $ nub $ filter (/= iid') extendedDeckMods
+          | searchAll -> filter (/= iid') <$> getInvestigators
+          | otherwise -> pure []
+      otherDeck <-
+        fmap dropOthersSignatures $ concatForM deckOwners \o -> do
+          omods <- getModifiers o
+          if CannotManipulateDeck `elem` omods
+            then pure []
+            else fieldMap InvestigatorDeck (map toCard . unDeck) o
+      (otherHand, otherDiscard) <-
+        if searchAll
+          then do
+            others <- filter (/= iid') <$> getInvestigators
+            hand <- dropOthersSignatures <$> concatForM others (field InvestigatorHand)
+            discard <- fmap dropOthersSignatures $ concatForM others \o -> do
+              omods <- getModifiers o
+              if CardsCannotLeaveYourDiscardPile `elem` omods
+                then pure []
+                else fieldMap InvestigatorDiscard (map toCard) o
+            pure (hand, discard)
+          else pure ([], [])
+      ownDiscard <-
+        if searchAll
+          then do
+            tmods <- getModifiers iid'
+            pure $ if CardsCannotLeaveYourDiscardPile `elem` tmods then [] else investigatorDiscard
+          else pure investigatorDiscard
       let
         additionalDepth =
           sum [x | searchType == Searching, SearchDepth x <- mods]
             + sum [x | searchType == Looking, LookAtDepth x <- mods]
         foundCards :: Map Zone [Card] =
           foldl'
-            ( \hmap (cardSource, _) -> case cardSource of
-                Zone.FromDeck ->
-                  insertWith (<>) Zone.FromDeck (map PlayerCard $ unDeck investigatorDeck) hmap
-                Zone.FromHand -> insertWith (<>) Zone.FromHand investigatorHand hmap
-                Zone.FromTopOfDeck n ->
-                  insertWith
-                    (<>)
-                    Zone.FromDeck
-                    (map PlayerCard . take (n + additionalDepth) $ unDeck investigatorDeck)
-                    hmap
-                Zone.FromBottomOfDeck n ->
-                  insertWith
-                    (<>)
-                    Zone.FromDeck
-                    (map PlayerCard . take (n + additionalDepth) . reverse $ unDeck investigatorDeck)
-                    hmap
-                Zone.FromDiscard ->
-                  insertWith (<>) Zone.FromDiscard (map PlayerCard investigatorDiscard) hmap
-                other -> error $ mconcat ["Zone ", show other, " not yet handled"]
-            )
-            mempty
-            cardSources
+              ( \hmap (cardSource, _) -> case cardSource of
+                  Zone.FromDeck ->
+                    insertWith (<>) Zone.FromDeck (map PlayerCard (unDeck investigatorDeck) <> otherDeck) hmap
+                  Zone.FromHand -> insertWith (<>) Zone.FromHand (investigatorHand <> otherHand) hmap
+                  Zone.FromTopOfDeck n ->
+                    insertWith
+                      (<>)
+                      Zone.FromDeck
+                      (map PlayerCard (take (n + additionalDepth) $ unDeck investigatorDeck) <> otherDeck)
+                      hmap
+                  Zone.FromBottomOfDeck n ->
+                    insertWith
+                      (<>)
+                      Zone.FromDeck
+                      (map PlayerCard (take (n + additionalDepth) . reverse $ unDeck investigatorDeck) <> otherDeck)
+                      hmap
+                  Zone.FromDiscard ->
+                    insertWith (<>) Zone.FromDiscard (map PlayerCard ownDiscard <> otherDiscard) hmap
+                  other -> error $ mconcat ["Zone ", show other, " not yet handled"]
+              )
+              mempty
+              cardSources
 
       when (searchType == Searching) $ do
         pushBatch batchId

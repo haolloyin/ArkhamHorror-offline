@@ -12,8 +12,23 @@ module Helpers.Achievements (
   asReturnToTheDunwichLegacy,
   asReturnToTheDunwichLegacyWith,
   asReturnToTheDunwichLegacyScenario,
+  asReturnToThePathToCarcosa,
+  asReturnToThePathToCarcosaWith,
+  asReturnToThePathToCarcosaScenario,
+  asReturnToTheForgottenAge,
+  asReturnToTheForgottenAgeWith,
+  asReturnToTheForgottenAgeScenario,
+  asReturnToTheCircleUndone,
+  asReturnToTheCircleUndoneWith,
+  asReturnToTheCircleUndoneScenario,
   didEarn,
   didEarnDunwich,
+  didEarnCarcosa,
+  didEarnForgottenAge,
+  didEarnCircle,
+  didProgressDunwich,
+  didProgressCarcosa,
+  didProgressCircle,
 ) where
 
 import Arkham.Achievement.Types
@@ -21,12 +36,12 @@ import Arkham.Campaign (lookupCampaign)
 import Arkham.Campaign.Types (campaignStep)
 import Arkham.CampaignStep (CampaignStep (ScenarioStep))
 import Arkham.Difficulty
-import Arkham.Id (CampaignId)
 import Arkham.Message
 import TestImport
 
--- | Attach the given campaign at the given difficulty, keeping the harness
--- scenario.
+{- | Attach the given campaign at the given difficulty, keeping the harness
+scenario.
+-}
 asAchievementCampaign :: CampaignId -> Difficulty -> TestAppT ()
 asAchievementCampaign campaignId difficulty = do
   overTest \g ->
@@ -72,6 +87,33 @@ asReturnToTheDunwichLegacy = asReturnToTheDunwichLegacyWith Easy
 asReturnToTheDunwichLegacyScenario :: CardCode -> TestAppT ()
 asReturnToTheDunwichLegacyScenario = asAchievementCampaignScenario "51"
 
+asReturnToThePathToCarcosaWith :: Difficulty -> TestAppT ()
+asReturnToThePathToCarcosaWith = asAchievementCampaign "52"
+
+asReturnToThePathToCarcosa :: TestAppT ()
+asReturnToThePathToCarcosa = asReturnToThePathToCarcosaWith Easy
+
+asReturnToThePathToCarcosaScenario :: CardCode -> TestAppT ()
+asReturnToThePathToCarcosaScenario = asAchievementCampaignScenario "52"
+
+asReturnToTheForgottenAgeWith :: Difficulty -> TestAppT ()
+asReturnToTheForgottenAgeWith = asAchievementCampaign "53"
+
+asReturnToTheForgottenAge :: TestAppT ()
+asReturnToTheForgottenAge = asReturnToTheForgottenAgeWith Easy
+
+asReturnToTheForgottenAgeScenario :: CardCode -> TestAppT ()
+asReturnToTheForgottenAgeScenario = asAchievementCampaignScenario "53"
+
+asReturnToTheCircleUndoneWith :: Difficulty -> TestAppT ()
+asReturnToTheCircleUndoneWith = asAchievementCampaign "54"
+
+asReturnToTheCircleUndone :: TestAppT ()
+asReturnToTheCircleUndone = asReturnToTheCircleUndoneWith Easy
+
+asReturnToTheCircleUndoneScenario :: CardCode -> TestAppT ()
+asReturnToTheCircleUndoneScenario = asAchievementCampaignScenario "54"
+
 didEarn :: NightOfTheZealotAchievement -> TestAppT (IORef Bool)
 didEarn achievement =
   createMessageMatcher $ EarnAchievement $ NightOfTheZealotAchievement achievement
@@ -79,3 +121,30 @@ didEarn achievement =
 didEarnDunwich :: TheDunwichLegacyAchievement -> TestAppT (IORef Bool)
 didEarnDunwich achievement =
   createMessageMatcher $ EarnAchievement $ TheDunwichLegacyAchievement achievement
+
+didEarnCarcosa :: ThePathToCarcosaAchievement -> TestAppT (IORef Bool)
+didEarnCarcosa achievement =
+  createMessageMatcher $ EarnAchievement $ ThePathToCarcosaAchievement achievement
+
+didEarnForgottenAge :: TheForgottenAgeAchievement -> TestAppT (IORef Bool)
+didEarnForgottenAge achievement =
+  createMessageMatcher $ EarnAchievement $ TheForgottenAgeAchievement achievement
+
+didEarnCircle :: TheCircleUndoneAchievement -> TestAppT (IORef Bool)
+didEarnCircle achievement =
+  createMessageMatcher $ EarnAchievement $ TheCircleUndoneAchievement achievement
+
+-- Checklist progress reports (cross-playthrough achievements); the items must
+-- match exactly, in 'achievementChecklist'-mapping order.
+
+didProgressDunwich :: TheDunwichLegacyAchievement -> [Text] -> TestAppT (IORef Bool)
+didProgressDunwich achievement items =
+  createMessageMatcher $ AchievementProgress (TheDunwichLegacyAchievement achievement) items
+
+didProgressCarcosa :: ThePathToCarcosaAchievement -> [Text] -> TestAppT (IORef Bool)
+didProgressCarcosa achievement items =
+  createMessageMatcher $ AchievementProgress (ThePathToCarcosaAchievement achievement) items
+
+didProgressCircle :: TheCircleUndoneAchievement -> [Text] -> TestAppT (IORef Bool)
+didProgressCircle achievement items =
+  createMessageMatcher $ AchievementProgress (TheCircleUndoneAchievement achievement) items

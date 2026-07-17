@@ -48,6 +48,8 @@ import KeyToken from '@/arkham/components/Key.vue';
 import PlayerTabs from '@/arkham/components/PlayerTabs.vue';
 import Connections from '@/arkham/components/Connections.vue';
 import PoolItem from '@/arkham/components/PoolItem.vue';
+import { chaosTokenImage } from '@/arkham/types/ChaosToken';
+import { homebrewTotalsTokens } from '@/arkham/homebrewData';
 import EncounterDeck from '@/arkham/components/EncounterDeck.vue';
 import VictoryDisplay from '@/arkham/components/VictoryDisplay.vue';
 import SkillTest from '@/arkham/components/SkillTest.vue';
@@ -59,7 +61,7 @@ import Asset from '@/arkham/components/Asset.vue';
 import Location from '@/arkham/components/Location.vue';
 import TreacheryView from '@/arkham/components/Treachery.vue';
 import { useGameChoices } from '@/arkham/composables/useGameChoices';
-import { setLocationOffset, resetLocationOffsets } from '@/arkham/api';
+import { setLocationOffset, resetLocationOffsets, updateGameRaw } from '@/arkham/api';
 import { useDebug, scenarioHasDebugOptions } from '@/arkham/debug'
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
@@ -1068,6 +1070,30 @@ const scenarioBadges = computed<ScenarioBadge[]>(() => {
   return badges
 })
 
+const heededDanielsWarning = computed(() =>
+  props.game.campaign?.id === '03' || props.game.campaign?.id === '52'
+    ? props.game.campaign.log.recorded.some((r) => r.tag === 'ThePathToCarcosaKey' && r.contents === 'YouHeadedDanielsWarning')
+    : false
+)
+const hasturSpeaker = computed(() => {
+  const investigators = Object.values(props.game.investigators).filter((i) => !i.eliminated && !i.defeated)
+  return investigators.find((i) => i.playerId === props.playerId) ?? investigators[0] ?? null
+})
+const spokenHasturTooltip = computed(() => {
+  const name = hasturSpeaker.value?.name.title ?? 'an investigator'
+  return `Record that ${name} spoke HASTUR aloud and take 1 horror.`
+})
+
+async function recordSpokenHastur() {
+  const investigatorId = hasturSpeaker.value?.id
+  if (!investigatorId) return
+
+  await updateGameRaw(props.game.id, {
+    tag: 'PlaceTokens',
+    contents: [{ tag: 'CampaignSource' }, { tag: 'InvestigatorTarget', contents: investigatorId }, 'Horror', 1],
+  })
+}
+
 const showScenarioNotifierBar = computed(() => scenarioBadges.value.length > 0 || props.realityAcidLightDevoured === true)
 
 watch(
@@ -1883,6 +1909,22 @@ const blessTokens = computed(() => props.scenario.chaosBag.chaosTokens.filter((t
 const curseTokens = computed(() => props.scenario.chaosBag.chaosTokens.filter((t) => t.face === 'CurseToken').length)
 const frostTokens = computed(() => props.scenario.chaosBag.chaosTokens.filter((t) => t.face === 'FrostToken').length)
 
+// Custom campaign tokens (e.g. the Circus Ex Mortis moon) that opt into the
+// totals bar via their campaign's homebrew tokens.json. Counted across the
+// chaos bag and every investigator's sealed tokens (where moon tokens live).
+const homebrewTotals = computed(() => {
+  const sealed = Object.values(props.game.investigators).flatMap((i) => i.sealedChaosTokens ?? [])
+  const all = [...props.scenario.chaosBag.chaosTokens, ...sealed]
+  return homebrewTotalsTokens
+    .map((cfg) => ({
+      face: cfg.face,
+      tooltip: cfg.tooltip,
+      image: chaosTokenImage(cfg.face),
+      count: all.filter((t) => t.face === cfg.face).length,
+    }))
+    .filter((t) => t.count > 0)
+})
+
 async function removeChaosToken(face: any){
   debug.send(props.game.id, {tag: 'ChaosBagMessage', contents: {tag: 'RemoveChaosToken_', contents: face}})
 }
@@ -2325,6 +2367,18 @@ async function addChaosToken(face: any){
                 <PoolItem v-if="damage && damage > 0" type="damage" :amount="damage" />
               </div>
             </div>
+            <div v-if="heededDanielsWarning" class="spoken-hastur-recorder">
+              <button
+                type="button"
+                class="spoken-hastur-button"
+                :disabled="!hasturSpeaker"
+                v-tooltip="spokenHasturTooltip"
+                :aria-label="spokenHasturTooltip"
+                @click.stop.prevent="recordSpokenHastur"
+              >
+                <img :src="imgsrc('chaos-tokens/ct_cultist.png')" alt="" />
+              </button>
+            </div>
           </div>
           <div class="keys" v-if="keys.length > 0">
             <KeyToken v-for="k in keys" :key="keyToId(k)" :keyToken="k" :game="game" :playerId="playerId" @choose="choose" />
@@ -2567,7 +2621,7 @@ async function addChaosToken(face: any){
 
           <template v-if="barriers">
             <div v-for="[area, amount] in Object.entries(barriers)" :key="area" class="barrier" :class="{ vertical: isVertical(area) }" :style="{ 'grid-area': `barrier-${area}` }">
-              <img v-for="n in amount" :key="n" :src="imgsrc('resource.png')" />
+              <img v-for="n in amount" :key="n" :src="imgsrc('tokens/resource.png')" />
               <button v-if="debug.active && (amount as number > 0)" @click="debug.send(game.id, {tag: 'ScenarioCountDecrementBy', contents: [{ 'tag': 'Barriers', 'contents': area.split('--') }, 1]})">x</button>
             </div>
           </template>
@@ -2585,7 +2639,6 @@ async function addChaosToken(face: any){
             </template>
           </template>
         </transition-group>
-        </div>
         <div v-if="playerLocationZones.length > 0" class="player-location-zones">
           <section
             v-for="zone in playerLocationZones"
@@ -2606,6 +2659,7 @@ async function addChaosToken(face: any){
               />
             </div>
           </section>
+        </div>
         </div>
         </div>
       </div>
@@ -2655,9 +2709,10 @@ async function addChaosToken(face: any){
         <div id="totals">
           <PoolItem type="doom" :amount="game.totalDoom" tooltip="Total Doom" />
           <PoolItem type="clue" :amount="game.totalClues" tooltip="Total Spendable Clues" />
-          <PoolItem v-if="blessTokens > 0" type="ct_bless" :amount="blessTokens" />
-          <PoolItem v-if="curseTokens > 0" type="ct_curse" :amount="curseTokens" />
-          <PoolItem v-if="frostTokens > 0" type="ct_frost" :amount="frostTokens" />
+          <PoolItem v-if="blessTokens > 0" type="chaos-tokens/ct_bless" :amount="blessTokens" />
+          <PoolItem v-if="curseTokens > 0" type="chaos-tokens/ct_curse" :amount="curseTokens" />
+          <PoolItem v-if="frostTokens > 0" type="chaos-tokens/ct_frost" :amount="frostTokens" />
+          <PoolItem v-for="t in homebrewTotals" :key="t.face" type="custom-token" :image="t.image" :amount="t.count" :tooltip="t.tooltip" />
         </div>
       </div>
     </div>
@@ -2886,6 +2941,10 @@ async function addChaosToken(face: any){
 }
 
 .player-location-zones {
+  grid-area: 2 / 1;
+  justify-self: center;
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
@@ -2928,6 +2987,7 @@ async function addChaosToken(face: any){
 .location-cards-stage {
   position: relative;
   display: grid;
+  row-gap: 16px;
   flex-shrink: 0;
   width: max-content;
   height: max-content;
@@ -2937,6 +2997,7 @@ async function addChaosToken(face: any){
 .location-cards {
   display: grid;
   grid-area: 1 / 1;
+  justify-self: center;
   position: relative;
   z-index: 1;
   transition: transform 0.2s ease;
@@ -4023,6 +4084,42 @@ async function addChaosToken(face: any){
     grid-column-gap: 0;
   }
 }
+
+.spoken-hastur-recorder {
+  position: absolute;
+  top: 4px;
+  right: -42px;
+  z-index: calc(var(--z-index-9999) + 1);
+}
+
+.spoken-hastur-button {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(241, 196, 15, 0.45);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+
+  img {
+    width: 22px;
+    height: 22px;
+    filter: sepia(1) saturate(5) hue-rotate(350deg) brightness(1.15);
+  }
+
+  &:hover {
+    background: rgba(241, 196, 15, 0.16);
+    border-color: rgba(241, 196, 15, 0.75);
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
 
 .concealed-card {
   width: calc(var(--card-width) * 0.55);

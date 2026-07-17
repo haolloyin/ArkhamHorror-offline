@@ -63,32 +63,160 @@ data TheDunwichLegacyAchievement
 
 $(deriveJSON defaultOptions ''TheDunwichLegacyAchievement)
 
+-- | Return to The Path to Carcosa (campaign "52"). Constructor names must stay
+-- globally unique, so shared printed names ("Line in the Sand", "<X>
+-- Expertise") are disambiguated here even though the printed name is not.
+data ThePathToCarcosaAchievement
+  = FairWarning
+  | FirstSteps
+  | CrashingTheParty
+  | ForPryingEyes
+  | TheCuckoosNest
+  | TakeALookAtThis
+  | ThePathOfDeath
+  | GuessingGame
+  | HasturMadeMeDoIt
+  | SayMyName
+  | GetBackHere
+  | ThePathIsFalse
+  | ThePathIsReal
+  | ThePathIsMine
+  | CarcosaLineInTheSand
+  | CarcosaExpertise
+  deriving stock (Eq, Show, Ord, Enum, Bounded, Data)
+
+$(deriveJSON defaultOptions ''ThePathToCarcosaAchievement)
+
+-- | Return to The Forgotten Age (campaign "53"). The official list gates
+-- these to the Return-to encounter sets only.
+data TheForgottenAgeAchievement
+  = WhyDidItHaveToBeSnakes
+  | WatchThemUnravel
+  | HopeForHumanity
+  | Scenario5What
+  | BeyondPerfection
+  | IRememberEverything
+  | Patricide
+  | HesGotAPoint
+  | ValusiaSoundsGreat
+  | IveBuiltUpAnImmunity
+  | WeHaveAnUnderstanding
+  | WhoNeedsAnyOfThisJunk
+  | DontTreadOnMe
+  | BaneOfYig
+  | IfICouldTurnBackTime
+  | YothExpertise
+  deriving stock (Eq, Show, Ord, Enum, Bounded, Data)
+
+$(deriveJSON defaultOptions ''TheForgottenAgeAchievement)
+
+-- | Return to The Circle Undone (campaign "54"). Constructor names must stay
+-- globally unique, so shared printed names ("<X> Expertise") are disambiguated
+-- here even though the printed name is not.
+data TheCircleUndoneAchievement
+  = WhoYouGonnaCall
+  | SaviorOfHumanity
+  | TenOutOfTenWouldReadAgain
+  | CarlShmarl
+  | TheThreefoldRule
+  | NewWorldOrder
+  | ImmortalitySoundsNice
+  | MoreLikeExcursion
+  | MemberThese
+  | CaseClosed
+  | MusicOfTheOuterGods
+  | WeaverOfShadowAndMist
+  | FinePrint
+  | SpeakTheWordsAloud
+  | CircleExpertise
+  deriving stock (Eq, Show, Ord, Enum, Bounded, Data)
+
+$(deriveJSON defaultOptions ''TheCircleUndoneAchievement)
+
 data Achievement
   = NightOfTheZealotAchievement NightOfTheZealotAchievement
   | TheDunwichLegacyAchievement TheDunwichLegacyAchievement
+  | ThePathToCarcosaAchievement ThePathToCarcosaAchievement
+  | TheForgottenAgeAchievement TheForgottenAgeAchievement
+  | TheCircleUndoneAchievement TheCircleUndoneAchievement
   deriving stock (Eq, Show, Ord, Data)
 
 allAchievements :: [Achievement]
 allAchievements =
   map NightOfTheZealotAchievement [minBound ..]
     <> map TheDunwichLegacyAchievement [minBound ..]
+    <> map ThePathToCarcosaAchievement [minBound ..]
+    <> map TheForgottenAgeAchievement [minBound ..]
+    <> map TheCircleUndoneAchievement [minBound ..]
 
 -- | Flat constructor name; the wire and database representation.
 achievementName :: Achievement -> Text
 achievementName = \case
   NightOfTheZealotAchievement a -> tshow a
   TheDunwichLegacyAchievement a -> tshow a
+  ThePathToCarcosaAchievement a -> tshow a
+  TheForgottenAgeAchievement a -> tshow a
+  TheCircleUndoneAchievement a -> tshow a
 
 parseAchievement :: Text -> Maybe Achievement
 parseAchievement t = lookup t achievementsByName
  where
   achievementsByName = map (achievementName &&& id) allAchievements
 
+{- | Checklist achievements tracked item-by-item across playthroughs. The
+items are stable wire keys: detection code reports them via
+'AchievementProgress', the API layer accumulates them in the row's
+@progress@ column, and the earn happens when every item is checked. The
+frontend mirrors these keys for the checklist breakdown and i18n names.
+-}
+achievementChecklist :: Achievement -> Maybe [Text]
+achievementChecklist = \case
+  TheDunwichLegacyAchievement TheGangsAllHere ->
+    Just
+      [ "DrHenryArmitage"
+      , "ZebulonWhateley"
+      , "DrFrancisMorgan"
+      , "EarlSawyer"
+      , "ProfessorWarrenRice"
+      ]
+  ThePathToCarcosaAchievement FirstSteps ->
+    Just
+      [ "ConstanceDumaine"
+      , "SebastienMoreau"
+      , "JordanPerry"
+      , "AshleighClarke"
+      , "IshimaruHaruko"
+      ]
+  TheCircleUndoneAchievement MemberThese ->
+    Just
+      [ "MesmerizingFlute"
+      , "RitualComponents"
+      , "ScrapOfTornShadow"
+      , "StrangeIncantation"
+      , "GilmansJournal"
+      , "KeziahsFormulae"
+      , "WornCrucifix"
+      , "WispOfSpectralMist"
+      , "CornHuskDoll"
+      , "BloodyTreeCarvings"
+      ]
+  TheCircleUndoneAchievement CaseClosed ->
+    Just
+      [ "ValentinoRivas"
+      , "GavriellaMizrah"
+      , "PennyWhite"
+      , "JeromeDavids"
+      ]
+  _ -> Nothing
+
 -- | Campaign ids this achievement can be earned in.
 achievementCampaigns :: Achievement -> [Text]
 achievementCampaigns = \case
   NightOfTheZealotAchievement _ -> ["50"]
   TheDunwichLegacyAchievement _ -> ["51"]
+  ThePathToCarcosaAchievement _ -> ["52"]
+  TheForgottenAgeAchievement _ -> ["53"]
+  TheCircleUndoneAchievement _ -> ["54"]
 
 -- Flat JSON, mirroring UltimatumOrBoon: the union never leaks its shape.
 instance ToJSON Achievement where

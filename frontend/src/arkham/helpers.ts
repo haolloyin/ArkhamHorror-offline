@@ -1,4 +1,5 @@
 import { useSiteSettingsStore } from '@/stores/site_settings'
+import { replaceHomebrewIcons } from '@/arkham/homebrewAssets'
 import { ref, type Ref } from 'vue';
 
 interface ImageHelper {
@@ -116,13 +117,31 @@ export function imgsrc(src: string) {
   return fullPath
 }
 
+// Homebrew card art (prefixed codes) lives under its campaign folder.
+// `art` is a c-stripped card code, optionally with suffixes (e.g. "circus-ex-mortis:001b", "dark-matter:063aa").
+export function cardImgPath(art: string): string {
+  const homebrewMatch = art.match(/^:(.+):(\d+[a-z]*)$/)
+
+  if (homebrewMatch) {
+    const [, campaign, cardCode] = homebrewMatch
+    return `homebrew/${campaign}/cards/${cardCode}.avif`
+  }
+
+  return `cards/${art}.avif`
+}
+
+export function cardImg(art: string): string {
+  return imgsrc(cardImgPath(art))
+}
+
 export function pluralize(w: string, n: number) {
   const language = localStorage.getItem('language') || 'en'
   switch (language) {
     case 'ko': {
       return `${w} ${n}`
     }
-    case 'zh': {
+    case 'zh':
+    case 'zh-cn': {
       return `${n}${w}${n == 1 ? '' : ''}`
     }
     default: return `${n} ${w}${n == 1 ? '' : 's'}`
@@ -136,7 +155,7 @@ export function formatContent(body: string) {
 }
 
 export function replaceIcons(body: string) {
-  return body.
+  return replaceHomebrewIcons(body).
     replace(/{action}/g, '<span class="action-icon"></span>').
     replace(/{fast}/g, '<span class="fast-icon"></span>').
     replace(/{reaction}/g, '<span class="reaction-icon"></span>').

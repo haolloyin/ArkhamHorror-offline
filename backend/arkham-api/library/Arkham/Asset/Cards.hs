@@ -1,6 +1,7 @@
 module Arkham.Asset.Cards (module Arkham.Asset.Cards, module X) where
 
 import Arkham.Asset.Cards.AndrePatel as X
+import Arkham.Homebrew.Defs qualified as Homebrew
 import Arkham.Asset.Cards.CarolynFern2 as X
 import Arkham.Asset.Cards.Core2026 as X
 import Arkham.Asset.Cards.EdgeOfTheEarth as X
@@ -1075,11 +1076,16 @@ allPlayerAssetCards =
       , zoeysCrossAdvanced
       , drHenryArmitage_SpreadingFlames
       , collector
+      , --- Mi-Go Incursion
+        universalSolvent
+      , petOozeling
+      , miGoWeapon
+      , ltWilsonStewart
       ]
 
 -- with encounter backs
 allEncounterAssetCards :: Map CardCode CardDef
-allEncounterAssetCards =
+allEncounterAssetCards = (Homebrew.encounterAssetsMap <>) $
   mapFromList
     $ map
       (toCardCode &&& id)
@@ -1166,10 +1172,6 @@ allEncounterAssetCards =
         universityChemist
       , meteoriteSample
       , theMilitarysPlan
-      , universalSolvent
-      , petOozeling
-      , miGoWeapon
-      , ltWilsonStewart
       , mysteriousPhoto
       , mysteriousPhotoBack
       , --- Relics of the Past

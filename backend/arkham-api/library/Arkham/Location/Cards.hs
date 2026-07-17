@@ -1,6 +1,7 @@
 module Arkham.Location.Cards (module Arkham.Location.Cards, module X) where
 
 import Arkham.Location.CardDefs.Base as X
+import Arkham.Homebrew.Defs qualified as Homebrew
 import Arkham.Location.CardDefs.Core2026 as X
 import Arkham.Location.CardDefs.EdgeOfTheEarth as X
 import Arkham.Location.CardDefs.NightOfTheZealot as X
@@ -26,7 +27,7 @@ import Arkham.Prelude
 import Arkham.Trait hiding (Circle)
 
 allLocationCards :: Map CardCode CardDef
-allLocationCards =
+allLocationCards = (Homebrew.locationsMap <>) $
   mapFromList
     $ map
       (toCardCode &&& id)

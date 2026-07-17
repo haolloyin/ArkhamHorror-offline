@@ -328,28 +328,55 @@ handled = pure . Handled
 unhandled :: Applicative m => Text -> m Reply
 unhandled = pure . Unhandled
 
+{- | The messages that start this seat's deck-setup sub-flow.
+
+Inside a multi-seat barrier the sub-flow is self-contained and ends in
+'SeatResolved', which drops this seat's slot, re-parks the seats still waiting
+(each from its own durable slot) and, once every seat has resolved, runs the
+barrier's continuation. The barrier owns re-parking, so this must NOT re-push an
+'AskMap': that would park the remaining seats /ahead/ of the rest of THIS seat's
+sub-flow and strand its tail behind them.
+
+Outside a barrier the old re-push is kept: 'ChooseUpgradeDeck' (migrated in phase
+2) and The Dream Eaters' hand-rolled sequential deck prompts still use it.
+-}
+deckChosen :: Game -> PlayerId -> ArkhamDBDecklist -> [Message]
+deckChosen game playerId dl = case barrierSeat playerId game of
+  Just (bid, _) -> [LoadDecklist playerId dl, SeatResolved bid playerId]
+  Nothing -> LoadDecklist playerId dl : reAskOthers game playerId
+
+{- | Re-park the seats still owed a question after @playerId@ answered.
+
+Empty for a seat inside a multi-seat barrier: the barrier republishes the seats
+still waiting from their own durable slots when this seat emits 'SeatResolved'.
+Re-pushing here would instead park them /ahead/ of the rest of THIS seat's
+sub-flow, stranding its tail behind them.
+-}
+reAskOthers :: Game -> PlayerId -> [Message]
+reAskOthers game playerId
+  | isJust (barrierSeat playerId game) = []
+  | otherwise =
+      let question' = Map.delete playerId (gameQuestion game)
+       in [AskMap question' | not (Map.null question')]
+
 handleAnswer :: Game -> PlayerId -> Answer -> DB Reply
 handleAnswer game playerId = \case
   DeckAnswer deckId _ -> do
     deck <- get404 deckId
     let investigatorId = investigator_code $ arkhamDeckList deck
     update (coerce playerId) [ArkhamPlayerInvestigatorId =. coerce investigatorId]
-    let question' = Map.delete playerId (gameQuestion game)
-    handled $ LoadDecklist playerId (arkhamDeckList deck)
-      : [AskMap question' | not (Map.null question')]
+    handled $ deckChosen game playerId (arkhamDeckList deck)
   DeckListAnswer dl _ -> do
     let investigatorId = investigator_code dl
     update (coerce playerId) [ArkhamPlayerInvestigatorId =. coerce investigatorId]
-    let question' = Map.delete playerId (gameQuestion game)
-    handled $ LoadDecklist playerId dl
-      : [AskMap question' | not (Map.null question')]
+    handled $ deckChosen game playerId dl
   other -> liftIO $ handleAnswerPure game playerId other
 
 -- | Like 'handleAnswer' but with no DB access. Returns 'Unhandled' for
 -- 'DeckAnswer' / 'DeckListAnswer', which require updating an 'ArkhamPlayer'
 -- row. Used by the headless replay CLI.
 handleAnswerPure :: Game -> PlayerId -> Answer -> IO Reply
-handleAnswerPure Game {..} playerId = \case
+handleAnswerPure game@Game {..} playerId = \case
   DeckAnswer {} -> unhandled "DeckAnswer requires database access"
   DeckListAnswer {} -> unhandled "DeckListAnswer requires database access"
   -- AiAnswer is resolved upstream in updateGame (it runs the AI decision
@@ -375,11 +402,7 @@ handleAnswerPure Game {..} playerId = \case
         QuestionWithSource _ _ q' -> unwrap q'
         q' -> q'
     case unwrap <$> Map.lookup playerId gameQuestion of
-      Just (PickCampaignSpecific {}) -> do
-        let question' = Map.delete playerId gameQuestion
-        handled
-          $ CampaignSpecific k v
-          : [AskMap question' | not (Map.null question')]
+      Just (PickCampaignSpecific {}) -> handled $ CampaignSpecific k v : reAskOthers game playerId
       _ -> unhandled "Wrong question type"
   ScenarioSpecificAnswer k v -> do
     let
@@ -389,26 +412,32 @@ handleAnswerPure Game {..} playerId = \case
         QuestionWithSource _ _ q' -> unwrap q'
         q' -> q'
     case unwrap <$> Map.lookup playerId gameQuestion of
-      Just (PickScenarioSpecific {}) -> do
-        let question' = Map.delete playerId gameQuestion
-        handled
-          $ ScenarioSpecific k v
-          : [AskMap question' | not (Map.null question')]
+      Just (PickScenarioSpecific {}) -> handled $ ScenarioSpecific k v : reAskOthers game playerId
       _ -> unhandled "Wrong question type"
   CampaignStepAnswer k -> do
-    case gameMode of
-      This c -> case c.step of
-        CS.ContinueCampaignStep {} -> handled [NextCampaignStep (Just k)]
-        _ -> handled []
-      These c s -> case s.step of
-        Just (CS.ContinueCampaignStep {}) -> handled [NextScenarioCampaignStep (Just k)]
-        Just (CS.ScenarioStepWithOptions {}) -> handled [ScenarioCampaignStep k.normalize]
-        _ -> case c.step of
+    let
+      unwrap = \case
+        QuestionLabel _ _ q' -> unwrap q'
+        PayCostQuestion _ q' -> unwrap q'
+        QuestionWithSource _ _ q' -> unwrap q'
+        q' -> q'
+    case unwrap <$> Map.lookup playerId gameQuestion of
+      Just ContinueCampaign -> case gameMode of
+        This c -> case c.step of
           CS.ContinueCampaignStep {} -> handled [NextCampaignStep (Just k)]
+          CS.StandaloneScenarioStep _ (CS.ContinueCampaignStep {}) -> handled [NextCampaignStep (Just k)]
           _ -> handled []
-      That s -> case s.step of
-        Just (CS.ContinueCampaignStep {}) -> handled [NextScenarioCampaignStep (Just k)]
-        _ -> handled []
+        These c s -> case s.step of
+          Just (CS.ContinueCampaignStep {}) -> handled [NextScenarioCampaignStep (Just k)]
+          Just (CS.ScenarioStepWithOptions {}) -> handled [ScenarioCampaignStep k.normalize]
+          _ -> case c.step of
+            CS.ContinueCampaignStep {} -> handled [NextCampaignStep (Just k)]
+            CS.StandaloneScenarioStep _ (CS.ContinueCampaignStep {}) -> handled [NextCampaignStep (Just k)]
+            _ -> handled []
+        That s -> case s.step of
+          Just (CS.ContinueCampaignStep {}) -> handled [NextScenarioCampaignStep (Just k)]
+          _ -> handled []
+      _ -> unhandled "Wrong question type"
   PickDestinyAnswer choices -> do
     handled [SetDestiny $ Map.fromList $ map (\(DestinyDrawing scope card) -> (scope, card)) choices]
   ExchangeAmountsAnswer source fromInvestigator toInvestigator token n -> do
@@ -426,11 +455,10 @@ handleAnswerPure Game {..} playerId = \case
                   (\lbl -> (NamedUUID lbl uuid, n)) <$> Map.lookup uuid nameMap
             case traverse lookupChoice (Map.toList $ arAmounts response) of
               Nothing -> unhandled "Wrong choice id"
-              Just amounts -> do
-                let question' = Map.delete playerId gameQuestion
+              Just amounts ->
                 handled
                   $ ResolveAmounts (playerInvestigator gameEntities playerId) amounts target
-                  : [AskMap question' | not (Map.null question')]
+                  : reAskOthers game playerId
         case Map.lookup playerId gameQuestion of
           Just (ChooseAmounts _ _ choices target) -> doResolve choices target
           Just (QuestionLabel _ _ (ChooseAmounts _ _ choices target)) -> doResolve choices target
@@ -461,15 +489,12 @@ handleAnswerPure Game {..} playerId = \case
           handled $ concatMap handleCost $ Map.toList (parAmounts response)
         _ -> unhandled "Wrong question type"
   Raw message -> do
-    let isPlayerWindowChoose = \case
-          PlayerWindowChooseOne _ -> True
-          _ -> False
     let inFastWindow =
           maybe
             False
             (any (any (\w -> Window.windowType w == Window.FastPlayerWindow)))
             gameWindowStack
-    if not (Map.null gameQuestion) && not (any isPlayerWindowChoose $ toList gameQuestion)
+    if not (Map.null gameQuestion) && not (any isRegeneratedWindowChoose $ toList gameQuestion)
       then case message of
         PassSkillTest -> handled [message]
         FailSkillTest -> handled [message]
@@ -492,10 +517,40 @@ handleAnswerPure Game {..} playerId = \case
               result <- try @SomeException $ evaluate $ go id q response
               case result of
                 Left _ -> unhandled "Wrong question type"
-                Right msgs -> handled msgs
+                Right msgs -> do
+                  -- Re-ask ONLY leftover deck-selection seats. ChooseDeck has no
+                  -- regeneration path: if it is dropped when another seat answers,
+                  -- the campaign starts a man down. Every other multi-seat ask is
+                  -- either rebuilt by the queue (PlayerWindow re-pushes itself,
+                  -- WindowAsk queues a trailing Do (CheckWindows), the skill-test
+                  -- loop re-asks the commit window) or was satisfied by this answer
+                  -- (story Read continues for the table). Re-parking those hands a
+                  -- stale, decline-less question to the other player -- forcing a
+                  -- Joey ability (#5159), a commit to a finished test (#5164), or a
+                  -- second copy of every rules-book entry -- so they are dropped,
+                  -- which was the pre-#5151 behavior for all seats.
+                  --
+                  -- A seat inside a multi-seat barrier is exempt: the barrier
+                  -- republishes the seats still waiting from their own durable slots
+                  -- when this seat emits SeatResolved. Re-pushing here would park them
+                  -- ahead of the rest of THIS seat's sub-flow and strand its tail.
+                  -- (Unreachable while ChooseDeck -- a barrier's only question today --
+                  -- is answered via DeckAnswer; needed once phase 2/3 put
+                  -- ChooseUpgradeDeck / Read, which answer through here, in a barrier.)
+                  let question'
+                        | isJust (barrierSeat playerId game) = mempty
+                        | otherwise = Map.filter isDeckQuestion $ Map.delete playerId gameQuestion
+                  handled $ msgs <> [AskMap question' | not (Map.null question')]
           )
           $ Map.lookup playerId gameQuestion
  where
+  -- Seats the queue rebuilds on its own: PlayerWindow re-pushes itself, and a
+  -- WindowChooseOne is followed by the Do (CheckWindows ws) that WindowAsk
+  -- queues behind it. Re-parking either hands back a stale question (#5160).
+  isRegeneratedWindowChoose = \case
+    PlayerWindowChooseOne _ -> True
+    WindowChooseOne _ -> True
+    _ -> False
   go
     :: (Question Message -> Question Message)
     -> Question Message
@@ -536,6 +591,9 @@ handleAnswerPure Game {..} playerId = \case
       Just msg -> [uiToRun msg]
     PlayerWindowChooseOne qs -> case qs !!? qrChoice response of
       Nothing -> [Ask playerId $ f $ PlayerWindowChooseOne qs]
+      Just msg -> [uiToRun msg]
+    WindowChooseOne qs -> case qs !!? qrChoice response of
+      Nothing -> [Ask playerId $ f $ WindowChooseOne qs]
       Just msg -> [uiToRun msg]
     ChooseOneFromEach qs -> case concat qs !!? qrChoice response of
       Nothing -> [Ask playerId $ f $ ChooseOneFromEach qs]

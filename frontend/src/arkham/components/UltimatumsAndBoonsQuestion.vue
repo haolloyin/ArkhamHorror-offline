@@ -2,45 +2,60 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { Game } from '@/arkham/types/Game'
-import { cardImage, toCardContents } from '@/arkham/types/Card'
-import { imgsrc } from '@/arkham/helpers'
+import { cardImage as cardCodeImage } from '@/arkham/cardImages'
 
-const props = defineProps<{ game: Game; playerId: string }>()
+// playerId is the seat whose question this is (the one choosing). viewOnly is
+// set when the current viewer isn't that seat, so other players see the same
+// panel but can't answer.
+const props = defineProps<{ game: Game; playerId: string; viewOnly?: boolean }>()
 const emit = defineEmits<{ choose: [value: number] }>()
 const { t } = useI18n()
 
-// The Morrígan question is a QuestionLabel-wrapped ChooseOne of CardIdTarget
-// labels, one per focused weakness; choice index i returns focused card i.
+const choosingInvestigator = computed(() =>
+  Object.values(props.game.investigators).find((i) => i.playerId === props.playerId)
+)
+
+// The Morrígan question is a QuestionLabel-wrapped ChooseOne of CardLabel
+// choices, one per drawn weakness; choice index i returns weakness i. The cards
+// are carried on the choices themselves (not the single global focusedCards
+// list), so each player's question renders independently in multiplayer.
 const choices = computed(() => {
   const q = props.game.question[props.playerId]
   const inner = q?.tag === 'QuestionLabel' ? q.question : q
   if (inner?.tag !== 'ChooseOne') return []
   return inner.choices.flatMap((choice: any, index: number) => {
-    if (choice.tag !== 'TargetLabel' || choice.target?.tag !== 'CardIdTarget') return []
-    const cardId = choice.target.contents
-    const card = props.game.focusedCards.flat().find((c) => toCardContents(c).id === cardId)
-    return card ? [{ index, card }] : []
+    if (choice.tag !== 'CardLabel') return []
+    return [{ index, cardCode: choice.cardCode as string }]
   })
 })
+
+function pick(index: number) {
+  if (props.viewOnly) return
+  emit('choose', index)
+}
 </script>
 
 <template>
-  <div class="morrigan-panel">
+  <div class="morrigan-panel" :class="{ 'view-only': viewOnly }">
     <h2 class="morrigan-title">
       <span class="morrigan-icon" aria-hidden="true">✦</span>
       {{ t('ultimatumsAndBoons.entries.BoonOfTheMorrigan.name') }}
     </h2>
-    <p class="morrigan-instructions">{{ t('ultimatumsAndBoons.morrigan.instructions') }}</p>
+    <p v-if="viewOnly" class="morrigan-instructions">
+      {{ t('ultimatumsAndBoons.morrigan.waiting', { investigator: choosingInvestigator?.name?.title ?? '' }) }}
+    </p>
+    <p v-else class="morrigan-instructions">{{ t('ultimatumsAndBoons.morrigan.instructions') }}</p>
     <div class="weakness-cards">
       <button
-        v-for="{ index, card } in choices"
-        :key="toCardContents(card).id"
+        v-for="{ index, cardCode } in choices"
+        :key="cardCode"
         type="button"
         class="weakness-card"
-        @click="emit('choose', index)"
+        :disabled="viewOnly"
+        @click="pick(index)"
       >
-        <img :src="imgsrc(cardImage(card))" :alt="toCardContents(card).cardCode" />
-        <span class="return-label">{{ t('ultimatumsAndBoons.morrigan.returnAction') }}</span>
+        <img :src="cardCodeImage(cardCode)" :alt="cardCode" />
+        <span v-if="!viewOnly" class="return-label">{{ t('ultimatumsAndBoons.morrigan.returnAction') }}</span>
       </button>
     </div>
   </div>
@@ -124,5 +139,18 @@ const choices = computed(() => {
 
     .return-label { opacity: 1; }
   }
+}
+
+.view-only .weakness-card {
+  cursor: default;
+
+  &:hover, &:focus-visible {
+    transform: none;
+    outline: none;
+  }
+}
+
+.view-only .weakness-cards {
+  opacity: 0.7;
 }
 </style>

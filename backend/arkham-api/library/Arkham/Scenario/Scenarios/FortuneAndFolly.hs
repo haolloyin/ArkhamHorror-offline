@@ -25,7 +25,7 @@ import Arkham.Helpers.Modifiers (ModifierType (..), modifySelect)
 import Arkham.Helpers.Query (allInvestigators, getLead, getPlayerCount)
 import Arkham.I18n
 import Arkham.Id
-import Arkham.Investigator.Types (Field (InvestigatorDamage, InvestigatorHorror))
+import Arkham.Investigator.Types (Field (InvestigatorClues, InvestigatorDamage, InvestigatorHorror))
 import Arkham.Keyword qualified as Keyword
 import Arkham.Layout
 import Arkham.Location.Cards qualified as Locations
@@ -159,8 +159,8 @@ instance HasModifiersFor FortuneAndFolly where
       , (Enemies.fortunesDaggerB, "fortunesDaggerBNext", Clockwise)
       ]
       \(enemyCode, patrolDestination, patrolDirection) ->
-        selectEach (LocationWithEnemy $ enemyIs enemyCode) \loc -> do
-          reversed <- selectAny $ enemyIs enemyCode <> EnemyWithModifier (ScenarioModifier "reverseDirection")
+        selectEach (LocationWithEnemy $ enemyIsExact enemyCode) \loc -> do
+          reversed <- selectAny $ enemyIsExact enemyCode <> EnemyWithModifier (ScenarioModifier "reverseDirection")
           sym <- field LocationPrintedSymbol loc
           let newSym = Map.findWithDefault sym sym $ case patrolDirection of
                 Clockwise -> if reversed then counterClockwiseMap else clockwiseMap
@@ -445,7 +445,11 @@ instance RunMessage FortuneAndFolly where
       story $ i18nWithTitle "thePlan3"
       theStakeout <- selectJust $ storyIs Stories.theStakeout
       n <- perPlayer 1
-      x <- fieldMap StoryClues (`div` n) theStakeout
+      -- Investigators who reach a resolution without being eliminated never moved
+      -- their gathered clues onto The Stakeout, so count those too.
+      storyClues <- field StoryClues theStakeout
+      investigatorClues <- selectSum InvestigatorClues UneliminatedInvestigator
+      let x = (storyClues + investigatorClues) `div` n
       doStep x msg
       doStep (-1) msg
       push

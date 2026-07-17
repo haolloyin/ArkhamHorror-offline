@@ -1,6 +1,7 @@
 module Arkham.Act.Cards (module Arkham.Act.Cards, module X) where
 
 import Arkham.Act.CardDefs.Base as X
+import Arkham.Homebrew.Defs qualified as Homebrew
 import Arkham.Act.CardDefs.Core2026 as X
 import Arkham.Act.CardDefs.EdgeOfTheEarth as X
 import Arkham.Act.CardDefs.NightOfTheZealot as X
@@ -29,7 +30,7 @@ import Arkham.Card.CardDef
 import Arkham.Prelude hiding (fold)
 
 allActCards :: Map CardCode CardDef
-allActCards =
+allActCards = (Homebrew.actsMap <>) $
   mapFromList
     $ map
       (toCardCode &&& id)

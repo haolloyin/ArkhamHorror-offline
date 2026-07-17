@@ -1,6 +1,7 @@
 module Arkham.Enemy.Cards (module Arkham.Enemy.Cards, module X) where
 
 import Arkham.Enemy.CardDefs.Base as X
+import Arkham.Homebrew.Defs qualified as Homebrew
 import Arkham.Enemy.CardDefs.Core2026 as X
 import Arkham.Enemy.CardDefs.EdgeOfTheEarth as X
 import Arkham.Enemy.CardDefs.NightOfTheZealot as X
@@ -73,7 +74,7 @@ allPlayerEnemyCards =
       ]
 
 allEncounterEnemyCards :: Map CardCode CardDef
-allEncounterEnemyCards =
+allEncounterEnemyCards = (Homebrew.enemiesMap <>) $
   mapFromList
     $ concatMap
       toCardCodePairs

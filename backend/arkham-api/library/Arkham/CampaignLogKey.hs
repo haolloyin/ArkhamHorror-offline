@@ -43,6 +43,13 @@ data CampaignLogKey
   | TheFeastOfHemlockValeKey TheFeastOfHemlockValeKey
   | BrethrenOfAshKey BrethrenOfAshKey
   | TheDrownedCityKey TheDrownedCityKey
+  | -- | The single shared wrapper through which any homebrew campaign plugs its
+    -- own key enum into the log — the homebrew analogue of the per-campaign
+    -- @…Key …Key@ constructors above, but injected rather than hardcoded. Each
+    -- campaign owns @data …Key@ plus an 'IsCampaignLogKey' instance that maps to
+    -- and from this wrapper (see e.g. @Arkham.Homebrew.DarkMatter.Key@), so
+    -- adding a campaign needs no change here.
+    HomebrewCampaignLogKey Text
   | TheLabyrinthsOfLunacyKey TheLabyrinthsOfLunacyKey
   | -- | Curse of the Rougarou
     TheRougarouContinuesToHauntTheBayou
@@ -353,6 +360,7 @@ instance ToGameLoggerFormat CampaignLogKey where
     TheFeastOfHemlockValeKey k -> pack . go $ show k
     BrethrenOfAshKey k -> pack . go $ show k
     TheDrownedCityKey k -> pack . go $ show k
+    HomebrewCampaignLogKey t -> pack . go $ unpack t
     s -> pack . go $ show s
    where
     go :: String -> String

@@ -3,6 +3,8 @@
 module Arkham.Scenario (module Arkham.Scenario) where
 
 import Arkham.Ability
+import Arkham.Homebrew.Registry qualified as Registry
+import Arkham.Homebrew.Types (HomebrewScenario (..))
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Card
 import Arkham.ChaosToken
@@ -550,6 +552,9 @@ instance HasChaosTokenValue Scenario where
             pure
               $ ChaosTokenValue chaosTokenFace
               $ if count (== #frost) revealed == 2 then AutoFailModifier else NegativeModifier 1
+          -- Circus Ex Mortis guide p1: the moon token's printed value is 0; its
+          -- seal-and-reveal-another effect is handled at ResolveChaosToken.
+          CustomToken _ -> pure $ ChaosTokenValue chaosTokenFace NoModifier
           _ -> getChaosTokenValue iid chaosTokenFace s
 
 lookupScenario :: ScenarioId -> Difficulty -> Scenario
@@ -582,8 +587,11 @@ allScenarioCards =
 duplicatedScenarios :: [CardCode]
 duplicatedScenarios = ["04205a", "04205b", "08501c", "10677a", "10679a", "10679b"]
 
+homebrewScenarios :: Map CardCode SomeScenario
+homebrewScenarios = mapFromList [(c, SomeScenario f) | (c, HomebrewScenario f) <- Registry.scenarios]
+
 allScenarios :: Map CardCode SomeScenario
-allScenarios =
+allScenarios = (homebrewScenarios <>) $
   mapFromList
     [ ("01104", SomeScenario theGathering)
     , ("01120", SomeScenario theMidnightMasks)
@@ -744,10 +752,11 @@ allScenarios =
     , ("90004", SomeScenario readOrDie)
     , ("90041", SomeScenario redTideRising)
     , ("90065", SomeScenario relicsOfThePast)
+    -- Homebrew
     ]
 
 scenarioEncounterSets :: Map CardCode EncounterSet
-scenarioEncounterSets =
+scenarioEncounterSets = (mapFromList Registry.scenarioSets <>) $
   mapFromList
     [ ("01104", EncounterSet.TheGathering)
     , ("01120", EncounterSet.TheMidnightMasks)
@@ -908,4 +917,5 @@ scenarioEncounterSets =
     , ("90004", EncounterSet.ReadOrDie)
     , ("90041", EncounterSet.RedTideRising)
     , ("90065", EncounterSet.RelicsOfThePast)
+    -- Homebrew
     ]

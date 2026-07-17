@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.38.1.
+-- This file has been generated from package.yaml by hpack version 0.39.6.
 --
 -- see: https://github.com/sol/hpack
 
@@ -2046,14 +2046,17 @@ library
       Arkham.Campaign.Campaigns.ReturnToThePathToCarcosa
       Arkham.Campaign.Campaigns.StandaloneCampaign
       Arkham.Campaign.Campaigns.TheCircleUndone
+      Arkham.Campaign.Campaigns.TheCircleUndone.Achievements
       Arkham.Campaign.Campaigns.TheDreamEaters
       Arkham.Campaign.Campaigns.TheDrownedCity
       Arkham.Campaign.Campaigns.TheDunwichLegacy
       Arkham.Campaign.Campaigns.TheDunwichLegacy.Achievements
       Arkham.Campaign.Campaigns.TheFeastOfHemlockVale
       Arkham.Campaign.Campaigns.TheForgottenAge
+      Arkham.Campaign.Campaigns.TheForgottenAge.Achievements
       Arkham.Campaign.Campaigns.TheInnsmouthConspiracy
       Arkham.Campaign.Campaigns.ThePathToCarcosa
+      Arkham.Campaign.Campaigns.ThePathToCarcosa.Achievements
       Arkham.Campaign.Campaigns.TheScarletKeys
       Arkham.Campaign.Import.Lifted
       Arkham.Campaign.Option
@@ -2939,6 +2942,7 @@ library
       Arkham.Enemy.Cards.Zealot
       Arkham.Enemy.Cards.ZealotOfParadise
       Arkham.Enemy.Creation
+      Arkham.Enemy.DefeatedProxy
       Arkham.Enemy.Enemies
       Arkham.Enemy.Helpers
       Arkham.Enemy.Import.Lifted
@@ -3616,6 +3620,144 @@ library
       Arkham.Helpers.Xp
       Arkham.History
       Arkham.History.Types
+      Arkham.Homebrew.CircusExMortis.Acts.ForestOfIllusion
+      Arkham.Homebrew.CircusExMortis.Acts.OutAndAway
+      Arkham.Homebrew.CircusExMortis.Acts.RatsInACage
+      Arkham.Homebrew.CircusExMortis.Acts.SmokeAndMirrors
+      Arkham.Homebrew.CircusExMortis.Agendas.BloodMoon
+      Arkham.Homebrew.CircusExMortis.Agendas.HouseOfHorrors
+      Arkham.Homebrew.CircusExMortis.Agendas.MesmericMagic
+      Arkham.Homebrew.CircusExMortis.Agendas.SavageNature
+      Arkham.Homebrew.CircusExMortis.Agendas.TheTrueFace
+      Arkham.Homebrew.CircusExMortis.Assets.IllusoryLocus
+      Arkham.Homebrew.CircusExMortis.Campaign
+      Arkham.Homebrew.CircusExMortis.CampaignSteps
+      Arkham.Homebrew.CircusExMortis.CardDefs.Acts
+      Arkham.Homebrew.CircusExMortis.CardDefs.Agendas
+      Arkham.Homebrew.CircusExMortis.CardDefs.Assets
+      Arkham.Homebrew.CircusExMortis.CardDefs.Enemies
+      Arkham.Homebrew.CircusExMortis.CardDefs.Locations
+      Arkham.Homebrew.CircusExMortis.CardDefs.Skills
+      Arkham.Homebrew.CircusExMortis.CardDefs.Stories
+      Arkham.Homebrew.CircusExMortis.CardDefs.Treacheries
+      Arkham.Homebrew.CircusExMortis.ChaosBag
+      Arkham.Homebrew.CircusExMortis.Content
+      Arkham.Homebrew.CircusExMortis.Defs
+      Arkham.Homebrew.CircusExMortis.Enemies.CircusPredator
+      Arkham.Homebrew.CircusExMortis.Enemies.DisguisedMonstrosity
+      Arkham.Homebrew.CircusExMortis.Enemies.GrotesqueLion
+      Arkham.Homebrew.CircusExMortis.Enemies.Mooncalf
+      Arkham.Homebrew.CircusExMortis.Enemies.NascentDarkYoung
+      Arkham.Homebrew.CircusExMortis.Enemies.NewMoonAcrobat
+      Arkham.Homebrew.CircusExMortis.Enemies.NewMoonBeastTamer
+      Arkham.Homebrew.CircusExMortis.Enemies.NewMoonCarny
+      Arkham.Homebrew.CircusExMortis.Enemies.NewMoonClown
+      Arkham.Homebrew.CircusExMortis.Enemies.NewMoonDrudge
+      Arkham.Homebrew.CircusExMortis.Enemies.NewMoonIllusionist
+      Arkham.Homebrew.CircusExMortis.Enemies.NewMoonMagician
+      Arkham.Homebrew.CircusExMortis.Enemies.NewMoonStrongman
+      Arkham.Homebrew.CircusExMortis.Enemies.SupplicantOfTheGoat
+      Arkham.Homebrew.CircusExMortis.Enemies.TwistedSatyr
+      Arkham.Homebrew.CircusExMortis.Enemies.UrsineBrute
+      Arkham.Homebrew.CircusExMortis.Helpers
+      Arkham.Homebrew.CircusExMortis.Key
+      Arkham.Homebrew.CircusExMortis.Locations.AnimalCages
+      Arkham.Homebrew.CircusExMortis.Locations.Carousel
+      Arkham.Homebrew.CircusExMortis.Locations.CircusEncampment
+      Arkham.Homebrew.CircusExMortis.Locations.CircusGatesPathToFreedom
+      Arkham.Homebrew.CircusExMortis.Locations.ForestPassage
+      Arkham.Homebrew.CircusExMortis.Locations.GamesGallery
+      Arkham.Homebrew.CircusExMortis.Locations.MoonlitForestCircularGrove
+      Arkham.Homebrew.CircusExMortis.Locations.MoonlitForestDeadGrove
+      Arkham.Homebrew.CircusExMortis.Locations.MoonlitForestFogBank
+      Arkham.Homebrew.CircusExMortis.Locations.MoonlitForestGlassyLake
+      Arkham.Homebrew.CircusExMortis.Locations.MoonlitForestLabyrinthOfTrees
+      Arkham.Homebrew.CircusExMortis.Locations.MoonlitForestMistyMarsh
+      Arkham.Homebrew.CircusExMortis.Locations.MoonlitForestQuietValley
+      Arkham.Homebrew.CircusExMortis.Locations.MoonlitForestShadowedPath
+      Arkham.Homebrew.CircusExMortis.Locations.MoonlitForestShallowRiver
+      Arkham.Homebrew.CircusExMortis.Locations.MoonlitForestSmolderingCampfire
+      Arkham.Homebrew.CircusExMortis.Locations.PerformerTrailers
+      Arkham.Homebrew.CircusExMortis.Locations.RemoteCabin
+      Arkham.Homebrew.CircusExMortis.Locations.TheBigTopFirstRing
+      Arkham.Homebrew.CircusExMortis.Locations.TheBigTopSecondRing
+      Arkham.Homebrew.CircusExMortis.Locations.TheBigTopThirdRing
+      Arkham.Homebrew.CircusExMortis.Locations.WoodlandOverlook
+      Arkham.Homebrew.CircusExMortis.Scenarios.AllPointsWest
+      Arkham.Homebrew.CircusExMortis.Scenarios.Bacchanalia
+      Arkham.Homebrew.CircusExMortis.Scenarios.HarmsWay
+      Arkham.Homebrew.CircusExMortis.Scenarios.OneNightOnly
+      Arkham.Homebrew.CircusExMortis.Scenarios.PiperAtTheGatesOfDawn
+      Arkham.Homebrew.CircusExMortis.Scenarios.RedSunrise
+      Arkham.Homebrew.CircusExMortis.Scenarios.ThePrimrosePath
+      Arkham.Homebrew.CircusExMortis.Scenarios.ThousandToOne
+      Arkham.Homebrew.CircusExMortis.Sets
+      Arkham.Homebrew.CircusExMortis.Tokens
+      Arkham.Homebrew.CircusExMortis.Traits
+      Arkham.Homebrew.CircusExMortis.Treacheries.EndlessSpawn
+      Arkham.Homebrew.CircusExMortis.Treacheries.FeralImpulses
+      Arkham.Homebrew.CircusExMortis.Treacheries.LunarInfluence
+      Arkham.Homebrew.CircusExMortis.Treacheries.MaddeningSpectacle
+      Arkham.Homebrew.CircusExMortis.Treacheries.MilkOfShubNiggurath
+      Arkham.Homebrew.CircusExMortis.Treacheries.MoonlightIllusion
+      Arkham.Homebrew.CircusExMortis.Treacheries.OminousMoonlight
+      Arkham.Homebrew.CircusExMortis.Treacheries.QuickerThanTheEye
+      Arkham.Homebrew.CircusExMortis.Treacheries.RecklessStunt
+      Arkham.Homebrew.ContentEntries
+      Arkham.Homebrew.DarkMatter.Actions
+      Arkham.Homebrew.DarkMatter.Assets.K2PS187100Functionality
+      Arkham.Homebrew.DarkMatter.Assets.K2PS18725Functionality
+      Arkham.Homebrew.DarkMatter.Assets.K2PS18750Functionality
+      Arkham.Homebrew.DarkMatter.Assets.K2PS18775Functionality
+      Arkham.Homebrew.DarkMatter.Assets.Maja
+      Arkham.Homebrew.DarkMatter.Campaign
+      Arkham.Homebrew.DarkMatter.CampaignSteps
+      Arkham.Homebrew.DarkMatter.CardDefs.Acts
+      Arkham.Homebrew.DarkMatter.CardDefs.Agendas
+      Arkham.Homebrew.DarkMatter.CardDefs.Assets
+      Arkham.Homebrew.DarkMatter.CardDefs.Enemies
+      Arkham.Homebrew.DarkMatter.CardDefs.Locations
+      Arkham.Homebrew.DarkMatter.CardDefs.Stories
+      Arkham.Homebrew.DarkMatter.CardDefs.Treacheries
+      Arkham.Homebrew.DarkMatter.ChaosBag
+      Arkham.Homebrew.DarkMatter.Content
+      Arkham.Homebrew.DarkMatter.Defs
+      Arkham.Homebrew.DarkMatter.Enemies.StalkingByakhee
+      Arkham.Homebrew.DarkMatter.Enemies.SystemBug
+      Arkham.Homebrew.DarkMatter.Enemies.TheBOOGEYMAN
+      Arkham.Homebrew.DarkMatter.Enemies.TheFeasterFromAfar
+      Arkham.Homebrew.DarkMatter.Enemies.ViciousByakhee
+      Arkham.Homebrew.DarkMatter.Helpers
+      Arkham.Homebrew.DarkMatter.Import
+      Arkham.Homebrew.DarkMatter.Key
+      Arkham.Homebrew.DarkMatter.ScenarioDeckKeys
+      Arkham.Homebrew.DarkMatter.Scenarios.ElectricNightmare
+      Arkham.Homebrew.DarkMatter.Scenarios.FragmentOfCarcosa
+      Arkham.Homebrew.DarkMatter.Scenarios.InTheShadowOfEarth
+      Arkham.Homebrew.DarkMatter.Scenarios.LostQuantum
+      Arkham.Homebrew.DarkMatter.Scenarios.Starfall
+      Arkham.Homebrew.DarkMatter.Scenarios.StrangeMoons
+      Arkham.Homebrew.DarkMatter.Scenarios.TheMachineInYellow
+      Arkham.Homebrew.DarkMatter.Scenarios.TheTatterdemalion
+      Arkham.Homebrew.DarkMatter.Sets
+      Arkham.Homebrew.DarkMatter.Traits
+      Arkham.Homebrew.DarkMatter.Treacheries.Anachronism
+      Arkham.Homebrew.DarkMatter.Treacheries.ColdVacuum
+      Arkham.Homebrew.DarkMatter.Treacheries.FutureEvils
+      Arkham.Homebrew.DarkMatter.Treacheries.GrimFuture
+      Arkham.Homebrew.DarkMatter.Treacheries.HauntingPast
+      Arkham.Homebrew.DarkMatter.Treacheries.Micrometeoroid
+      Arkham.Homebrew.DarkMatter.Treacheries.RadiantCrown
+      Arkham.Homebrew.DarkMatter.Treacheries.SolarFlare
+      Arkham.Homebrew.Defs
+      Arkham.Homebrew.DefsBase
+      Arkham.Homebrew.DefsEntries
+      Arkham.Homebrew.Registry
+      Arkham.Homebrew.TH
+      Arkham.Homebrew.TokenDefs
+      Arkham.Homebrew.TokenEntries
+      Arkham.Homebrew.Tokens
+      Arkham.Homebrew.Types
       Arkham.I18n
       Arkham.Id
       Arkham.Investigate
@@ -5406,6 +5548,7 @@ library
       Arkham.Script
       Arkham.Search
       Arkham.SideStory
+      Arkham.SimultaneousAsk
       Arkham.Skill
       Arkham.Skill.CardDefs.Base
       Arkham.Skill.CardDefs.Core2026
@@ -5601,6 +5744,7 @@ library
       Arkham.Spawn
       Arkham.Stats
       Arkham.Story
+      Arkham.Story.CardDefs.Base
       Arkham.Story.Cards
       Arkham.Story.Cards.ABitterRivalry
       Arkham.Story.Cards.AboveAndBelow
@@ -6982,11 +7126,15 @@ test-suite spec
   main-is: Spec.hs
   other-modules:
       Arkham.Achievements.ReturnToNightOfTheZealotSpec
+      Arkham.Achievements.ReturnToTheCircleUndoneSpec
       Arkham.Achievements.ReturnToTheDunwichLegacySpec
+      Arkham.Achievements.ReturnToTheForgottenAgeSpec
+      Arkham.Achievements.ReturnToThePathToCarcosaSpec
       Arkham.Act.Cards.AFamiliarPatternSpec
       Arkham.Act.Cards.BlackwatersBaneEpicMultiplayerSpec
       Arkham.Act.Cards.ExposeTheAnomalyEpicMultiplayerSpec
       Arkham.Act.Cards.FalseStepV2Spec
+      Arkham.ActionSpec
       Arkham.Agenda.Cards.RestrictedAccessSpec
       Arkham.Agenda.Cards.ShadowsDeepenSpec
       Arkham.Agenda.Cards.TheTrueCulpritV10Spec
@@ -7084,7 +7232,10 @@ test-suite spec
       Arkham.Campaign.TheDunwichLegacy.ScenariosSpec
       Arkham.Campaign.ThePathToCarcosa.ScenariosSpec
       Arkham.Campaign.UsedAbilitiesSpec
+      Arkham.CampaignLogKeySpec
+      Arkham.ChaosTokenFaceSpec
       Arkham.DecklistSpec
+      Arkham.EncounterSetSpec
       Arkham.Enemy.Cards.DagonsBroodSpec
       Arkham.Enemy.Cards.GuardianOfTheCrystallizerSpec
       Arkham.Enemy.Cards.JeanDevereuxSeekingClosureSpec
@@ -7106,6 +7257,7 @@ test-suite spec
       Arkham.Event.Events.BarricadeSpec
       Arkham.Event.Events.BlindingLight2Spec
       Arkham.Event.Events.BlindingLightSpec
+      Arkham.Event.Events.BountySpec
       Arkham.Event.Events.BuryThemDeepSpec
       Arkham.Event.Events.CloseCall2Spec
       Arkham.Event.Events.CrypticResearch4Spec
@@ -7135,6 +7287,7 @@ test-suite spec
       Arkham.Event.Events.PredatorOrPreySpec
       Arkham.Event.Events.RefineSpec
       Arkham.Event.Events.RightUnderTheirNosesSpec
+      Arkham.Event.Events.ScrapeBy1Spec
       Arkham.Event.Events.SearchForTheTruthSpec
       Arkham.Event.Events.SeekingAnswersSpec
       Arkham.Event.Events.SneakAttackSpec
@@ -7145,9 +7298,12 @@ test-suite spec
       Arkham.Event.Events.WardOfProtectionSpec
       Arkham.Event.Events.WillToSurvive3Spec
       Arkham.Event.Events.WorkingAHunchSpec
+      Arkham.Game.ChooseDecksSpec
       Arkham.Game.DiffSpec
       Arkham.GameSpec
+      Arkham.Helpers.EnemySpec
       Arkham.Helpers.InvestigatorSpec
+      Arkham.HomebrewRegistrySpec
       Arkham.Investigator.Cards.AgnesBakerSpec
       Arkham.Investigator.Cards.AshcanPeteSpec
       Arkham.Investigator.Cards.CarsonSinclairSpec
@@ -7175,8 +7331,13 @@ test-suite spec
       Arkham.Matcher.CoveredByAnyInPlayEnemySpec
       Arkham.Matcher.NearestLocationToMostSpec
       Arkham.Matcher.OutOfPlayEnemySpec
+      Arkham.Modifier.CannotAttackDuringEnemyPhaseSpec
+      Arkham.Modifier.SearchAllInvestigatorsSpec
+      Arkham.Scenario.DancingMadSpec
+      Arkham.Scenario.Scenarios.TheThingInTheDepthsSpec
       Arkham.Scenario.SpecHelpers
       Arkham.Scenario.TheMidwinterGalaSpec
+      Arkham.ScenarioDeckKeySpec
       Arkham.Skill.Cards.DeductionSpec
       Arkham.Skill.Cards.FearlessSpec
       Arkham.Skill.Cards.GutsSpec
@@ -7191,13 +7352,16 @@ test-suite spec
       Arkham.Skill.Cards.WatchThisSpec
       Arkham.Story.Cards.UnfinishedBusinessSpec
       Arkham.Story.CardsSpec
+      Arkham.TraitSpec
       Arkham.Treachery.Cards.AbandonedAndAloneSpec
       Arkham.Treachery.Cards.AmnesiaSpec
       Arkham.Treachery.Cards.BloodlustSpec
       Arkham.Treachery.Cards.ClawsOfSteamSpec
       Arkham.Treachery.Cards.CoverUpSpec
       Arkham.Treachery.Cards.DetachedFromRealitySpec
+      Arkham.Treachery.Cards.DreadfulMechanismSpec
       Arkham.Treachery.Cards.DreamlandsEclipseSpec
+      Arkham.Treachery.Cards.EndOfNegotiationsSpec
       Arkham.Treachery.Cards.FinalRhapsodySpec
       Arkham.Treachery.Cards.HauntedSpec
       Arkham.Treachery.Cards.HemophobiaSpec
@@ -7206,6 +7370,7 @@ test-suite spec
       Arkham.Treachery.Cards.LegInjurySpec
       Arkham.Treachery.Cards.MysteriousChantingSpec
       Arkham.Treachery.Cards.ParanoiaSpec
+      Arkham.Treachery.Cards.PrismaticPhenomenonSpec
       Arkham.Treachery.Cards.PsychosisSpec
       Arkham.Treachery.Cards.PsychotropicSporesSpec
       Arkham.Treachery.Cards.RexsCurseSpec
@@ -7225,6 +7390,7 @@ test-suite spec
       Arkham.UltimatumsAndBoons.BoonOfTheChildSpec
       Arkham.UltimatumsAndBoons.BoonOfTheExplorerSpec
       Arkham.UltimatumsAndBoons.BoonOfTheMorriganSpec
+      Arkham.UltimatumsAndBoons.BoonOfTheMorriganTwoPlayerSpec
       Arkham.UltimatumsAndBoons.BoonOfThothSpec
       Arkham.UltimatumsAndBoons.UltimatumOfAgonySpec
       Arkham.UltimatumsAndBoons.UltimatumOfBrokenPromisesSpec
@@ -7241,6 +7407,7 @@ test-suite spec
       Arkham.UltimatumsAndBoons.UltimatumOfTheScreamSpec
       Arkham.UltimatumsAndBoons.UltimatumOfTheSpiralSpec
       Arkham.UltimatumsAndBoons.UltimatumOfUltimatumsSpec
+      Entity.AnswerSpec
       Helpers.Achievements
       Helpers.Message
       Helpers.UltimatumsAndBoons

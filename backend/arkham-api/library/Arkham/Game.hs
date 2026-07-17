@@ -53,7 +53,7 @@ import Arkham.Debug
 import Arkham.Difficulty
 import Arkham.Distance
 import Arkham.Effect.Types
-import Arkham.Enemy (lookupEnemy)
+import Arkham.Enemy (lookupDefeatedEnemy)
 import Arkham.Enemy.Types (Enemy, EnemyAttrs (..), Field (..), enemyClues, enemyDamage, enemyDoom)
 import Arkham.EnemyLocation.EnemyProxy (toEnemyLocationEnemyProxy)
 import Arkham.EnemyLocation.Proxy (toEnemyLocationProxy)
@@ -117,6 +117,7 @@ import Arkham.Helpers.Playable
 import Arkham.Helpers.Query
 import Arkham.Helpers.Ref
 import Arkham.Helpers.Scenario
+import Arkham.Homebrew.Defs (allActions)
 import Arkham.Helpers.Slot
 import Arkham.Helpers.Source
 import Arkham.Helpers.Target
@@ -319,6 +320,7 @@ newGame scenarioOrCampaignId seed playerCount difficulty includeTarotReadings =
         , gamePlayerOrder = []
         , gameRemovedFromPlay = mempty
         , gameQuestion = mempty
+        , gameSimultaneousAsks = mempty
         , gameSkillTestResults = Nothing
         , gameEnemyMoving = Nothing
         , gameEnemyEvading = Nothing
@@ -1363,7 +1365,7 @@ getInvestigatorsMatching MatcherFunc {..} matcher = do
       flip runMatchesM as \a -> do
         let iid = toId a
         taken <- nub . concat <$> field InvestigatorActionsTaken iid
-        let allowed = filter (`notElem` taken) [minBound ..]
+        let allowed = filter (`notElem` taken) allActions
         actions <- Helpers.withGrantedAction iid (toAttrs a) do
           filter (\x -> any (abilityIs x) allowed) <$> getActions iid (Window.defaultWindows iid)
         (resourceOk, drawOk) <- Helpers.withModifiersOf iid (toAttrs a) [ActionCostOf IsAnyAction (-1)] do
@@ -3625,9 +3627,7 @@ getEnemiesMatching :: (HasCallStack, HasGame m, Tracing m) => EnemyMatcher -> m 
 getEnemiesMatching matcher' = do
   case matcher' of
     DefeatedEnemy matcher -> do
-      let
-        wrapEnemy (defeatedEnemyAttrs -> a) =
-          overAttrs (const a) $ lookupEnemy (toCardCode a) (toId a) (toCardId a)
+      let wrapEnemy = lookupDefeatedEnemy . defeatedEnemyAttrs
       allDefeatedEnemies <- map wrapEnemy . toList <$> scenarioField ScenarioDefeatedEnemies
       -- Defeated enemies may be fully removed from play by the time this query
       -- runs (e.g. the IfEnemyDefeated window resolves post-discard), so field
@@ -5104,6 +5104,7 @@ instance Projection Investigator where
           Just skillTest -> findWithDefault [] (toId i) (skillTestCommittedCards skillTest)
       InvestigatorDefeated -> pure investigatorDefeated
       InvestigatorResigned -> pure investigatorResigned
+      InvestigatorIsEliminated -> pure investigatorEliminated
       InvestigatorXp -> pure investigatorXp
       InvestigatorSupplies -> pure investigatorSupplies
 
@@ -6311,6 +6312,15 @@ interleaveSimultaneously seqs
               preMsgs ++ [windowMsg] ++ afterMsg
 
 -- finds the first message in the form `Priority msg` and returns that, otherwise returns the first message
+-- | Is this parked question part of deck selection (possibly wrapped)?
+isDeckQuestion :: Question Message -> Bool
+isDeckQuestion = \case
+  ChooseDeck -> True
+  ChooseUpgradeDeck -> True
+  QuestionLabel _ _ q -> isDeckQuestion q
+  QuestionWithSource _ _ q -> isDeckQuestion q
+  _ -> False
+
 popMessageWithPriority :: HasQueue Message m => m (Maybe Message)
 popMessageWithPriority = withQueue \case
   [] -> ([], Nothing)
@@ -6367,6 +6377,24 @@ runMessages gameId mLogger = do
   when valid do
     mmsg <- popMessageWithPriority
     case mmsg of
+      Nothing
+        | isChooseDecks (gameGameState g)
+        , -- An open barrier holds its own continuation in state, so it cannot have
+          -- been lost and must not be pre-empted: it releases from SeatResolved.
+          -- Only the pre-barrier paths (ChooseUpgradeDeck, The Dream Eaters'
+          -- sequential prompts) can strand a queued DoneChoosingDecks.
+          null (gameSimultaneousAsks g)
+        , not (any isDeckQuestion (gameQuestion g)) ->
+            -- Self-heal a bricked deck-selection: DoneChoosingDecks (which flips
+            -- IsChooseDecks -> IsActive) lives ONLY in the persisted step queue,
+            -- parked behind the ChooseDeck ask. If that queue is ever lost, every
+            -- deck and deferred InitDeck question still resolves, but the queue
+            -- then drains with the game stuck in IsChooseDecks forever (the
+            -- frontend shows the deck screen with nothing to do). Draining while
+            -- choosing decks with no deck question left parked can only mean the
+            -- continuation is gone, so re-push it. A healthy flow never gets
+            -- here: its drain happens after DoneChoosingDecks has already run.
+            push DoneChoosingDecks >> runMessages gameId mLogger
       Nothing -> case gamePhase g of
         CampaignPhase {} -> pure ()
         ResolutionPhase {} -> pure ()
@@ -6499,6 +6527,7 @@ runMessages gameId mLogger = do
                       _ -> pure True
                     anyValidChoice = \case
                       ChooseOne choices -> anyM validChoice choices
+                      WindowChooseOne choices -> anyM validChoice choices
                       ChooseOneAtATime choices -> anyM validChoice choices
                       _ -> pure True
                   canAsk <- runReaderT (anyValidChoice q) g
