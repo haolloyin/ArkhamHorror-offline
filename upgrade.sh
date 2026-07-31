@@ -17,6 +17,10 @@
 # migrate.sh / docker-compose.yml), so `docker compose up` self-migrates too;
 # this script just invokes it so the upgrade is deterministic.
 #
+# This script keeps itself up to date: a docker install re-fetches upgrade.sh
+# and re-execs if it changed, and a git checkout re-execs if the pull rewrote
+# it. Set ARKHAM_SKIP_SELF_UPDATE=1 to disable.
+#
 set -euo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/halogenandtoast/ArkhamHorror/main"
@@ -25,6 +29,17 @@ INSTALL_DIR="${ARKHAM_INSTALL_DIR:-arkham-horror}"
 info() { printf '\033[0;32m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[0;33mWARN: %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[0;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
+
+# ── Locate ourselves (before any cd, so a relative $0 still resolves) ────────
+#
+# Empty when piped from curl (`curl … | bash`), which is also the case where we
+# already are the newest version and self-update is a no-op.
+SELF="${BASH_SOURCE[0]:-}"
+if [ -n "$SELF" ] && [ -f "$SELF" ]; then
+  SELF="$(cd "$(dirname "$SELF")" && pwd)/$(basename "$SELF")"
+else
+  SELF=""
+fi
 
 # ── Detect install type ─────────────────────────────────────────────────────
 
@@ -42,12 +57,104 @@ else
 fi
 info "Detected install type: $MODE  (in $(pwd))"
 
+# ── Self-update ─────────────────────────────────────────────────────────────
+#
+# install.sh drops a copy of this script into the install dir, so a docker
+# install can be running an arbitrarily old upgrade.sh. Re-fetch it, and if it
+# differs, swap it in and re-exec so the rest of the upgrade runs on new logic.
+#
+# Skipped when piped from curl (already newest) and in git checkouts (the file
+# is git-managed there — `git pull` owns it, see the post-pull re-exec below).
+# Set ARKHAM_SKIP_SELF_UPDATE=1 to opt out; ARKHAM_UPGRADE_REEXEC guards against
+# an update loop if the fetched copy never compares equal.
+
+reexec_self() {
+  export ARKHAM_UPGRADE_REEXEC=1
+  exec bash "$SELF" "$@"
+}
+
+self_update() {
+  [ -n "$SELF" ]                  || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  if [ "${ARKHAM_SKIP_SELF_UPDATE:-0}" = "1" ] || [ "${ARKHAM_UPGRADE_REEXEC:-0}" = "1" ]; then
+    return 0
+  fi
+
+  info "Checking for a newer upgrade.sh..."
+
+  # Staged alongside $SELF so the swap is an atomic same-filesystem rename: the
+  # running bash keeps reading the old inode, which is what makes this safe to
+  # do to a script that is currently executing.
+  local staged
+  staged="$(mktemp "$SELF.XXXXXX" 2>/dev/null)" || return 0
+
+  if ! curl -fsSL "$REPO_RAW/upgrade.sh" -o "$staged" || [ ! -s "$staged" ]; then
+    rm -f "$staged"
+    warn "Couldn't fetch the latest upgrade.sh — continuing with this copy."
+    return 0
+  fi
+
+  # Guard against a truncated/HTML response replacing a working script.
+  if ! head -n1 "$staged" | grep -q '^#!.*sh'; then
+    rm -f "$staged"
+    warn "Fetched upgrade.sh doesn't look like a shell script — continuing with this copy."
+    return 0
+  fi
+
+  if cmp -s "$staged" "$SELF"; then
+    rm -f "$staged"
+    return 0
+  fi
+
+  chmod +x "$staged"
+  mv -f "$staged" "$SELF" || { rm -f "$staged"; warn "Couldn't replace $SELF — continuing with this copy."; return 0; }
+  info "Updated upgrade.sh — restarting with the new version..."
+  reexec_self "$@"
+}
+
+if [ "$MODE" = "docker" ]; then
+  self_update "$@"
+fi
+
+# ── Postgres password secret ────────────────────────────────────────────────
+#
+# docker-compose.yml mounts config/postgres_password.txt as a secret, which in
+# non-swarm compose is a plain bind mount. When the source path is missing,
+# dockerd materialises it — as an empty DIRECTORY — and Postgres then starts
+# with no usable password. install.sh generates the file, but a git checkout
+# never has it (gitignored) and neither does a hand-made install dir, so
+# upgrade.sh has to guarantee it before touching compose.
+
+ensure_password_file() {
+  local f=config/postgres_password.txt
+  mkdir -p config
+  if [ -d "$f" ]; then
+    rmdir "$f" 2>/dev/null || die "$f is a non-empty directory (Docker created it) — remove it and re-run."
+    warn "$f existed as a directory (Docker created it for the missing secret) — removed."
+  fi
+  [ -s "$f" ] && return 0
+  info "Generating Postgres password ($f)..."
+  # hex, not base64: +/= break DATABASE_URL
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32 > "$f"
+  else
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$f"
+    echo "" >> "$f"
+  fi
+  warn "If the db volume was already initialised with a different password, reset it: docker compose down -v"
+}
+
+if command -v docker >/dev/null 2>&1; then ensure_password_file; fi
+
 # ── Migrations: delegate to the compose one-shot `migrate` service ──────────
 
 apply_migrations() {
   if command -v docker >/dev/null 2>&1 && docker compose config --services 2>/dev/null | grep -qx migrate; then
     info "Applying migrations (compose migrate service)..."
-    docker compose run --rm migrate
+    # -T + </dev/null: this script is usually run via `curl … | bash`, where stdin
+    # is the pipe — `compose run` would otherwise fail with "the input device is
+    # not a TTY" (and could swallow the rest of the piped script).
+    docker compose run --rm -T migrate </dev/null
   else
     warn "No docker compose 'migrate' service here — apply migrations manually (sqitch/psql)."
   fi
@@ -73,7 +180,7 @@ resync_images() {
 
   info "Re-syncing local images (target: $target)..."
   if [ "$MODE" = "docker" ]; then
-    docker compose --profile fetch-images run --rm fetch-images "$target"
+    docker compose --profile fetch-images run --rm -T fetch-images "$target" </dev/null
   elif [ -x scripts/fetch-assets.sh ] && command -v aws >/dev/null 2>&1; then
     ./scripts/fetch-assets.sh "$target"
   else
@@ -85,7 +192,18 @@ resync_images() {
 
 if [ "$MODE" = "git" ]; then
   info "Pulling latest source (git pull --ff-only)..."
+  self_before=""
+  [ -n "$SELF" ] && self_before="$(cksum < "$SELF")"
   git pull --ff-only || die "git pull failed (uncommitted changes or diverged branch). Resolve, then re-run."
+
+  # The pull may have rewritten this very script. bash reads a script from disk
+  # incrementally, so continuing here can execute garbage — re-exec instead.
+  if [ -n "$SELF" ] && [ -f "$SELF" ] && [ "${ARKHAM_UPGRADE_REEXEC:-0}" != "1" ] \
+     && [ "$(cksum < "$SELF")" != "$self_before" ]; then
+    info "upgrade.sh changed in that pull — restarting with the new version..."
+    reexec_self "$@"
+  fi
+
   apply_migrations
   resync_images
   echo ""

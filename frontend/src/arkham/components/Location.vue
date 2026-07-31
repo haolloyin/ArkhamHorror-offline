@@ -325,6 +325,21 @@ const blocked = computed(() => {
 
 const modifiers = computed(() => props.location.modifiers)
 
+// Locations can be rotated by the scenario (the Central Chamber turns to face the
+// location beneath it). Same UIModifier the enemy and asset views read.
+const uiRotation = computed<number>(() => {
+  const mods = props.location.modifiers ?? []
+
+  for (let i = mods.length - 1; i >= 0; i--) {
+    const t: any = mods[i]?.type
+    if (t?.tag === 'UIModifier' && t?.contents?.tag === 'Rotated') {
+      return t.contents.contents
+    }
+  }
+
+  return 0
+})
+
 const darkTraitRemoved = computed(() =>
   modifiers.value?.some((m) => m.type.tag === 'RemoveTrait' && m.type.contents === 'Dark') ?? false
 )
@@ -506,6 +521,11 @@ const floodLevel = computed(() => {
       return null
   }
 })
+const { displayedImage: displayedFloodLevel, flipping: floodLevelFlipping } = useCardFlip(
+  floodLevel,
+  (nextFloodLevel, previousFloodLevel) =>
+    nextFloodLevel != null && previousFloodLevel != null && nextFloodLevel !== previousFloodLevel,
+)
 
 const debug = useDebug()
 
@@ -637,6 +657,8 @@ const hasAnyLocationVehicleAssets = computed(() =>
           <div
             class="card-frame-inner"
             :class="{ highlighted, blocked, exhausted: isExhausted, 'card--flipping': flipping && !locationStory }"
+            :style="{ '--ui-rotation': `${uiRotation}deg` }"
+            :data-rotation="uiRotation || undefined"
           >
             <Story
               v-if="locationStory"
@@ -674,9 +696,17 @@ const hasAnyLocationVehicleAssets = computed(() =>
             />
           </div>
 
-          <div class="clues pool location-pool" v-if="!flipping && ((clues ?? 0) > 0 || floodLevel)">
+          <div
+            class="clues pool location-pool"
+            v-if="!flipping && ((clues ?? 0) > 0 || displayedFloodLevel)"
+          >
             <PoolItem v-if="clues && clues > 0" type="clue" :amount="clues" />
-            <img v-if="floodLevel" :src="floodLevel" class="flood-level" />
+            <img
+              v-if="displayedFloodLevel"
+              :src="displayedFloodLevel"
+              class="flood-level"
+              :class="{ 'card--flipping': floodLevelFlipping }"
+            />
           </div>
 
           <div class="pool location-pool" v-if="!flipping && hasPool">
@@ -1231,10 +1261,11 @@ const hasAnyLocationVehicleAssets = computed(() =>
   min-width: fit-content;
 
   .card-frame-inner {
+    --ui-rotation: 0deg;
     overflow: hidden;
     position: relative;
     transition: transform 0.2s;
-    transform: scale(1);
+    transform: rotate(var(--ui-rotation));
     line-height: 0;
     box-sizing: border-box;
     box-shadow: var(--card-shadow);
@@ -1245,11 +1276,11 @@ const hasAnyLocationVehicleAssets = computed(() =>
       border-width: 1px;
     }
     &.highlighted {
-      transform: scale(1.1);
+      transform: rotate(var(--ui-rotation)) scale(1.1);
     }
 
     &.exhausted {
-      transform: rotate(90deg) translateX(-10px);
+      transform: rotate(calc(90deg + var(--ui-rotation))) translateX(-10px);
     }
     &.blocked {
       filter: grayscale(0.5) brightness(0.85);

@@ -64,6 +64,7 @@ import Arkham.Helpers.Modifiers qualified as Msg
 import Arkham.Helpers.Query
 import Arkham.Helpers.Ref (sourceToTarget)
 import Arkham.Helpers.Scenario (getEncounterDeckKey, getInResolution)
+import Arkham.Helpers.Shuffle qualified as Shuffle
 import Arkham.Helpers.SkillTest qualified as Msg
 import Arkham.Helpers.UI qualified as Msg
 import Arkham.Helpers.Xp
@@ -347,8 +348,9 @@ addCampaignCardToDeckChoiceWith choices shouldShuffleIn card f = do
   card' <- fetchCard card
   push $ Msg.addCampaignCardToDeckChoiceWith lead choices shouldShuffleIn card' f
 
--- | Like 'addCampaignCardToDeckChoice', with a continuation for the players
--- DECLINING the card (e.g. the "I Don't Trust Her" achievement).
+{- | Like 'addCampaignCardToDeckChoice', with a continuation for the players
+DECLINING the card (e.g. the "I Don't Trust Her" achievement).
+-}
 addCampaignCardToDeckChoiceWhenDeclined
   :: (FetchCard card, ReverseQueue m)
   => [InvestigatorId]
@@ -1350,6 +1352,17 @@ nextSetupModifier
   -> m ()
 nextSetupModifier scenarioId source target modifier = Msg.pushM $ Msg.nextSetupModifier scenarioId source target modifier
 
+forNextScenarioModifier
+  :: (ReverseQueue m, Sourceable source, Targetable target)
+  => ScenarioId
+  -> EffectWindow
+  -> source
+  -> target
+  -> ModifierType
+  -> m ()
+forNextScenarioModifier scenarioId effectWindow source target modifier =
+  Msg.pushM $ Msg.forNextScenarioModifier scenarioId effectWindow source target modifier
+
 revelationModifier
   :: (ReverseQueue m, Sourceable source, Targetable target)
   => source
@@ -1831,8 +1844,9 @@ focusCards cards body = do
 focusCard :: (ReverseQueue m, IsCard a) => a -> StateT Unfocus m () -> m ()
 focusCard card = focusCards [card]
 
--- | Visually highlight the given cards (target color) in the current modal.
--- Cleared automatically when the search/focus ends.
+{- | Visually highlight the given cards (target color) in the current modal.
+Cleared automatically when the search/focus ends.
+-}
 highlightCards :: (ReverseQueue m, IsCard a) => [a] -> m ()
 highlightCards cards = push $ HighlightCards $ map toCard cards
 
@@ -1968,6 +1982,22 @@ shuffleCardsIntoTopOfDeck deck n cards =
     0 -> pure ()
     1 -> guardPlayerDeckIsNotEmpty deck $ push $ Msg.shuffleCardsIntoTopOfDeck deck n cards
     _ -> push $ Msg.shuffleCardsIntoTopOfDeck deck n cards
+
+shuffleCardsIntoBottomOfDeck
+  :: ( ReverseQueue m
+     , IsDeck deck
+     , MonoFoldable cards
+     , Element cards ~ card
+     , IsCard card
+     , Shuffle.CanShuffleIn cards
+     )
+  => deck
+  -> Int
+  -> cards
+  -> m ()
+shuffleCardsIntoBottomOfDeck deck n cards = Shuffle.whenCanShuffleIn deck cards do
+  for_ cards $ push . ObtainCard . toCardId
+  push $ Msg.shuffleCardsIntoBottomOfDeck deck n cards
 
 reduceCostOf :: (Sourceable source, IsCard card, ReverseQueue m) => source -> card -> Int -> m ()
 reduceCostOf source card n = Msg.pushM $ Msg.reduceCostOf source card n
@@ -2195,27 +2225,36 @@ oncePerAbility attrs n f = do
 
 insertAfterMatching
   :: (HasCallStack, MonadTrans t, HasQueue Message m) => [Message] -> (Message -> Bool) -> t m ()
-insertAfterMatching msgs p = lift $ withQueue_ \queue ->
+insertAfterMatching msgs p = do
+  inserted <- insertAfterMatchingMaybe msgs p
+  unless inserted $ error $ "no matching message:\n" <> prettyCallStack callStack
+
+{- | Like 'insertAfterMatching' but reports whether an anchor was found instead of
+erroring, so callers can fall back to another anchor.
+-}
+insertAfterMatchingMaybe
+  :: (MonadTrans t, HasQueue Message m) => [Message] -> (Message -> Bool) -> t m Bool
+insertAfterMatchingMaybe msgs p = lift $ withQueue \queue ->
   let (before, rest) = break p queue
    in case rest of
-        (x : xs) -> before <> (x : msgs <> xs)
-        _ -> go [] queue
+        (x : xs) -> (before <> (x : msgs <> xs), True)
+        _ -> maybe (queue, False) (,True) (go [] queue)
  where
-  go _acc [] = error $ "no matching message:\n" <> prettyCallStack callStack
+  go _acc [] = Nothing
   go acc (x : xs) = case x of
     MoveWithSkillTest inner ->
       case inner of
         Run innerMsgs
           | not (null afterInner)
           , (y : ys) <- afterInner ->
-              reverse acc <> (MoveWithSkillTest (Run (beforeInner <> (y : msgs <> ys))) : xs)
+              Just $ reverse acc <> (MoveWithSkillTest (Run (beforeInner <> (y : msgs <> ys))) : xs)
          where
           (beforeInner, afterInner) = break p innerMsgs
         _ -> go (x : acc) xs
     Run innerMsgs
       | not (null afterInner)
       , (y : ys) <- afterInner ->
-          reverse acc <> (Run (beforeInner <> (y : msgs <> ys)) : xs)
+          Just $ reverse acc <> (Run (beforeInner <> (y : msgs <> ys)) : xs)
      where
       (beforeInner, afterInner) = break p innerMsgs
     _ -> go (x : acc) xs
@@ -2348,11 +2387,18 @@ afterSkillTest
      , HasQueue Message (t m)
      , HasGame (t m)
      , ToId investigator InvestigatorId
-     , HasCallStack
      )
   => investigator -> Text -> QueueT Message (t m) a -> t m ()
 afterSkillTest investigator lbl body = do
   msgs <- capture body
+  let
+    option = [AfterSkillTestOption (asId investigator) lbl msgs]
+    -- the anchor may not exist, for instance a skill test begun with `attrs.ability n`
+    -- as its source never queues a `ResolvedAbility`, so fall back to the end of the
+    -- skill test itself
+    insertAfterOr p = do
+      inserted <- insertAfterMatchingMaybe option p
+      unless inserted $ lift $ insertAfterMatchingOrNow option (== EndSkillTestWindow)
   Msg.getSkillTestSource >>= \case
     Just (AbilitySource s n) -> do
       let
@@ -2361,7 +2407,7 @@ afterSkillTest investigator lbl body = do
           MoveWithSkillTest msg -> isEndOfAbility msg
           ResolvedAbility ab -> ab.source == s && ab.index == n
           _ -> False
-      insertAfterMatching [AfterSkillTestOption (asId investigator) lbl msgs] isEndOfAbility
+      insertAfterOr isEndOfAbility
     Just (EventSource e) -> do
       let
         isEndOfEvent = \case
@@ -2370,8 +2416,8 @@ afterSkillTest investigator lbl body = do
           Run msgs' -> any isEndOfEvent msgs'
           FinishedEvent e' -> e == e'
           _ -> False
-      insertAfterMatching [AfterSkillTestOption (asId investigator) lbl msgs] isEndOfEvent
-    _ -> insertAfterMatching [AfterSkillTestOption (asId investigator) lbl msgs] (== EndSkillTestWindow)
+      insertAfterOr isEndOfEvent
+    _ -> insertAfterOr (== EndSkillTestWindow)
 
 afterSkillTestQuiet
   :: (MonadTrans t, HasQueue Message m, HasQueue Message (t m), HasCallStack)
@@ -2476,8 +2522,9 @@ failSkillTest = push Msg.FailSkillTest
 passSkillTest :: ReverseQueue m => m ()
 passSkillTest = push Msg.PassSkillTest
 
--- | "You succeed by n, instead" — unlike 'passSkillTest' this is not an
--- automatic success, so the skill value does not carry into the result.
+{- | "You succeed by n, instead" — unlike 'passSkillTest' this is not an
+automatic success, so the skill value does not carry into the result.
+-}
 passSkillTestBy :: ReverseQueue m => Int -> m ()
 passSkillTestBy = push . Msg.PassSkillTestBy
 
@@ -2627,6 +2674,11 @@ discoverAt isInvestigate iid s n lid = do
 
 doStep :: ReverseQueue m => Int -> Message -> m ()
 doStep n msg = push $ Msg.DoStep n msg
+
+doNextStep :: ReverseQueue m => Message -> m ()
+doNextStep = \case
+  DoStep n inner -> doStep (n - 1) inner
+  _ -> pure ()
 
 doStep1 :: ReverseQueue m => Int -> QueueT Message m () -> m ()
 doStep1 n body =
@@ -2813,23 +2865,26 @@ automaticallyEvadeEnemy investigator enemy = push $ Msg.EnemyEvaded (asId invest
 exhaustEnemy :: (ReverseQueue m, Sourceable source, Targetable target) => source -> target -> m ()
 exhaustEnemy s t = push . Exhaust $ Exhaust.mkExhaustion s t
 
--- | What a successful evasion resolves to. The DoNot{Disengage,Exhaust}Evaded
--- modifiers can drop either half; if both are dropped there is no result (see
--- 'evasionResult').
+{- | What a successful evasion resolves to. The DoNot{Disengage,Exhaust}Evaded
+modifiers can drop either half; if both are dropped there is no result (see
+'evasionResult').
+-}
 data EvasionResult = DisengageOnly | ExhaustOnly | DisengageAndExhaust
   deriving stock (Eq, Show)
 
--- | Fold the DoNot{Disengage,Exhaust}Evaded gates into an 'EvasionResult';
--- 'Nothing' when both halves are suppressed.
+{- | Fold the DoNot{Disengage,Exhaust}Evaded gates into an 'EvasionResult';
+'Nothing' when both halves are suppressed.
+-}
 evasionResult :: Bool -> Bool -> Maybe EvasionResult
 evasionResult True True = Just DisengageAndExhaust
 evasionResult True False = Just DisengageOnly
 evasionResult False True = Just ExhaustOnly
 evasionResult False False = Nothing
 
--- | The mechanical result of a successful evasion: the enemy disengages from
--- everyone and/or exhausts. Single source of truth shared by the enemy runner
--- and cards that re-resolve an evasion (e.g. "I'm done runnin'!").
+{- | The mechanical result of a successful evasion: the enemy disengages from
+everyone and/or exhausts. Single source of truth shared by the enemy runner
+and cards that re-resolve an evasion (e.g. "I'm done runnin'!").
+-}
 successfulEvasion :: (ReverseQueue m, ToId enemy EnemyId) => EvasionResult -> enemy -> m ()
 successfulEvasion result (asId -> eid) = do
   when (result /= ExhaustOnly) $ disengageFromAll eid

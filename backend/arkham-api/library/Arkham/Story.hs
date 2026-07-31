@@ -10,6 +10,16 @@ import Arkham.Prelude hiding (fold)
 
 import Arkham.Card
 import Arkham.Id
+import Arkham.Story.Cards.AncientRelic qualified as AncientRelic
+import Arkham.Story.Cards.AncientVaultN qualified as AncientVaultN
+import Arkham.Story.Cards.AncientVaultO qualified as AncientVaultO
+import Arkham.Story.Cards.AncientVaultP qualified as AncientVaultP
+import Arkham.Story.Cards.HiddenVault qualified as HiddenVault
+import Arkham.Story.Cards.ObsidianRelic qualified as ObsidianRelic
+import Arkham.Story.Cards.SeafloorFrieze qualified as SeafloorFrieze
+import Arkham.Story.Cards.SquamousParasite qualified as SquamousParasite
+import Arkham.Story.Cards.TheUnderseaVault qualified as UnderseaVault
+import Arkham.Story.Cards.UnderseaParasite qualified as UnderseaParasite
 import Arkham.Story.Stories
 import Arkham.Story.Types
 import Arkham.Target
@@ -36,7 +46,18 @@ allStories :: Map CardCode SomeStoryCard
 allStories =
   mapFrom
     someStoryCardCode
-    [ -- The Path to Carcosa
+    [ -- The Drowned City
+      SomeStoryCard SeafloorFrieze.seafloorFrieze
+    , SomeStoryCard UnderseaVault.theUnderseaVault
+    , SomeStoryCard UnderseaParasite.underseaParasite
+    , SomeStoryCard ObsidianRelic.obsidianRelic
+    , SomeStoryCard HiddenVault.hiddenVault
+    , SomeStoryCard AncientRelic.ancientRelic
+    , SomeStoryCard SquamousParasite.squamousParasite
+    , SomeStoryCard AncientVaultO.ancientVaultO
+    , SomeStoryCard AncientVaultN.ancientVaultN
+    , SomeStoryCard AncientVaultP.ancientVaultP
+    , -- The Path to Carcosa
       -- The Last King
       SomeStoryCard sickeningReality_65
     , SomeStoryCard sickeningReality_66

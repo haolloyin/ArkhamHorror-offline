@@ -4,12 +4,13 @@ import Arkham.Asset.Cards qualified as Assets
 import Arkham.Campaign.Import.Lifted
 import Arkham.Campaigns.TheDrownedCity.CampaignSteps
 import Arkham.Campaigns.TheDrownedCity.Import
-import Arkham.Card.CardDef (CardDef)
+import Arkham.Card (genPlayerCard)
 import Arkham.Helpers.FlavorText
 import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
 import Arkham.Trait (Trait (Agency, Criminal, Detective))
+import Arkham.Window qualified as Window
 import Data.Text qualified as T
 
 newtype TheDrownedCity = TheDrownedCity CampaignAttrs
@@ -28,21 +29,13 @@ instance IsCampaign TheDrownedCity where
     -- that interlude's handler via setNextCampaignStep.
     other -> defaultNextStep other
 
--- Each Task: campaign-log key, the story-asset card, and its i18n label.
-tasks :: [(TheDrownedCityKey, CardDef, Text)]
-tasks =
-  [ (WalkInFaith, Assets.walkInFaith, "walkInFaith")
-  , (ToeTheLine, Assets.toeTheLine, "toeTheLine")
-  , (NoPlaceLikeHome, Assets.noPlaceLikeHome, "noPlaceLikeHome")
-  , (GoodMoney, Assets.goodMoney, "goodMoney")
-  , (DoNoHarm, Assets.doNoHarm, "doNoHarm")
-  , (ProveYourWorth, Assets.proveYourWorth, "proveYourWorth")
-  , (DreamsOfDestruction, Assets.dreamsOfDestruction, "dreamsOfDestruction")
-  , (PlumbTheDepths, Assets.plumbTheDepths, "plumbTheDepths")
-  ]
-
 instance RunMessage TheDrownedCity where
   runMessage msg c = runQueueT $ campaignI18n $ case msg of
+    StartCampaign -> do
+      -- The R'lyeh map starts with every scenario on it; each is crossed out as
+      -- that scenario is completed.
+      recordSetInsert RlyehMap $ map toJSON [minBound @RlyehMapEntry ..]
+      lift $ defaultCampaignRunner msg c
     CampaignStep PrologueStep -> do
       -- Intro: the epigraph and the April 15 journal entry that open the campaign.
       scope "intro" $ flavor $ setTitle "title" >> p "body"
@@ -98,7 +91,7 @@ instance RunMessage TheDrownedCity where
               li "andyVanNortwick"
               li "westernChaosTokens"
               li "proceedToTheWesternWall"
-          addCampaignCardToDeckChoice_ Assets.andyVanNortwick
+          addCampaignCardToDeckChoice_ =<< genPlayerCard Assets.andyVanNortwick
           setNextCampaignStep TheWesternWall
         labeled' "east" do
           record TheExpeditionHeadedEast
@@ -109,7 +102,7 @@ instance RunMessage TheDrownedCity where
               li "theExpeditionHeadedEast"
               li "rubyStandish"
               li "proceedToObsidianCanyons"
-          addCampaignCardToDeckChoice_ Assets.rubyStandish
+          addCampaignCardToDeckChoice_ =<< genPlayerCard Assets.rubyStandish
           -- TODO: swap a chaos token (remove 1 / add 1) for the remainder of the
           -- campaign, per the Eastern Expedition setup.
           setNextCampaignStep ObsidianCanyons
@@ -130,6 +123,10 @@ instance RunMessage TheDrownedCity where
     CampaignSpecific "translateGlyph" v -> do
       let (glyph, _word) = toResult v :: (Text, Text)
       for_ (glyphLetter glyph) \letter -> recordSetInsert DiscoveredGlyphs [String letter]
+      -- Cards that react to glyphs being translated (Careful Navigation) watch this
+      -- window. It has to fire after the record above so the reaction's criteria
+      -- see the glyph that just arrived.
+      checkAfter $ Window.CampaignEvent "translateGlyph" Nothing v
       pure c
     _ -> lift $ defaultCampaignRunner msg c
 

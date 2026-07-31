@@ -11,7 +11,17 @@
     },
     { "title": "New Keywords", "body": "@:theDrownedCity.newKeywords.body" }
   ],
-  "noAir": "You did not find air. Take 5 direct damage.",
+  "label": {
+    "noAir": "You did not find air. Take 5 direct damage.",
+    "naomiOBannion": {
+      "preventReadying": "Take 1 damage to prevent Naomi O’Bannion from readying",
+      "doNotTakeDamage": "Do not take 1 damage"
+    },
+    "dreamingMigration": {
+      "moveNearestEnemy": "Move the nearest enemy to your location and it attacks you",
+      "drawTopmostEnemy": "Draw the topmost enemy in the encounter discard pile"
+    }
+  },
   "intro": {
     "title": "The Risen Deep",
     "body": "<p class='indent'>“…the nightmare corpse-city of R’lyeh, that was built in measureless aeons behind history by the vast, loathsome shapes that seeped down from the dark stars. There lay great Cthulhu and his hordes, hidden in green slimy vaults and sending out at last, after cycles incalculable, the thoughts that spread fear to the dreams of the sensitive and called imperiously to the faithful to come on a pilgrimage of liberation and restoration.”</p><p class='basic right'>– H. P. Lovecraft, “The Call of Cthulhu”</p>"
@@ -61,6 +71,18 @@
       "z": "City"
     }
   },
+  "rlyehMap": {
+    "rlyehWesternWall": "The Western Wall",
+    "rlyehDrownedQuarter": "The Drowned Quarter",
+    "rlyehApiary": "The Apiary",
+    "rlyehGrandVault": "The Grand Vault",
+    "rlyehCourtOfTheAncients": "Court of the Ancients",
+    "rlyehObsidianCanyons": "Obsidian Canyons",
+    "rlyehSepulchreOfTheSleeper": "Sepulchre of the Sleeper"
+  },
+  "artifactsEarned": {
+    "title": "Artifacts Earned"
+  },
   "key": {
     "rubyWonTheBet": "Ruby won the bet.",
     "rubyLostTheBet": "Ruby lost the bet.",
@@ -77,12 +99,17 @@
     "theExpeditionHeadedEast": "The expedition headed east.",
     "theExpeditionHelpedThePilgrim": "The expedition helped the pilgrim.",
     "theExpeditionLeftThePilgrim": "The expedition left the pilgrim.",
+    "theCreatureWasDefeated": "The creature was defeated.",
     "barrierNode": "Barrier Node",
     "obsidianClaw": "Obsidian Claw",
     "shardOfYchlecht": "Shard of Y’ch’lecht",
     "tidalTablet": "Tidal Tablet",
     "grislyMask": "Grisly “Mask”",
     "horrorInClay": "Horror in Clay",
+    "rlyehMap": "R’lyeh Map",
+    "thePilgrimsWereSaved": "The pilgrims were saved.",
+    "thePilgrimsWereDevoured": "The pilgrims were devoured.",
+    "theInvestigatorsExterminatedTheAlienParasites": "The investigators exterminated the alien parasites.",
     "thePowerWasDiverted": "The power was diverted.",
     "theInnerSanctumWasUnsealed": "The inner sanctum was unsealed.",
     "yourAlliesHaveAPlan": "Your allies have a plan.",

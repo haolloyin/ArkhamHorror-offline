@@ -963,6 +963,11 @@ runGameMessage msg g = case msg of
       $ g
       & (focusedCardsL %~ map (filter (`notElem` cards)))
       & (foundCardsL . each %~ filter (`notElem` cards))
+  ShuffleCardsIntoBottomOfDeck _ _ cards ->
+    pure
+      $ g
+      & (focusedCardsL %~ map (filter (`notElem` cards)))
+      & (foundCardsL . each %~ filter (`notElem` cards))
   FocusChaosTokens tokens -> pure $ g & focusedChaosTokensL <>~ tokens
   SealChaosToken token -> pure $ g & focusedChaosTokensL %~ filter (/= token)
   Msg.RevealChaosToken SkillTestSource {} _ token -> pure $ g & focusedChaosTokensL %~ filter (/= token)
@@ -1189,6 +1194,9 @@ runGameMessage msg g = case msg of
                 , locationLabel = locationLabel oldAttrs
                 , locationDirections = locationDirections oldAttrs
                 , locationConnectsTo = locationConnectsTo oldAttrs
+                , -- Swap is the same physical card flipped over, so its flood
+                  -- level carries across (Barrier Core, The Drowned Quarter).
+                  locationFloodLevel = locationFloodLevel oldAttrs
                 }
     -- todo: should we just run this in place?
     enemies <- select $ enemyAt lid
@@ -2895,6 +2903,10 @@ runGameMessage msg g = case msg of
     placement <- case mtarget of
       Just (EnemyTarget eid) -> field EnemyPlacement eid
       Just (AssetTarget aid) -> field AssetPlacement aid
+      -- Treacheries do not have a UI slot that can be visually replaced by a
+      -- story. Focus their story side instead while retaining the treachery as
+      -- StoryOtherSide so its resolution can still target the original card.
+      Just (TreacheryTarget _) -> pure Unplaced
       Just (LocationTarget lid) -> pure (AtLocation lid)
       Just (CardIdTarget _) -> pure Unplaced
       Just _ -> error $ "no known placement for non-enemy target: " <> show mtarget
@@ -3292,6 +3304,15 @@ runGameMessage msg g = case msg of
             )
             (cdLimits $ toCardDef card)
       PlayerEnemyType -> do
+        -- Revelation player enemies never pass through DrewPlayerEnemy, so send the
+        -- "drew enemy" display here or the weakness lands in the threat area silently.
+        investigator <- getInvestigator iid
+        withI18n $ cardNameVar card $ investigatorNameVar investigator do
+          if Keyword.Peril `elem` cdKeywords (toCardDef card)
+            then do
+              pid <- getPlayer iid
+              sendEnemyOnly pid (ikey' "drew") (toJSON $ toCard card)
+            else sendEnemy (ikey' "drew") (toJSON $ toCard card)
         enemyId <- getRandom
         let enemy = createEnemy card enemyId
         -- Asset is assumed to have a revelation ability if drawn from encounter deck

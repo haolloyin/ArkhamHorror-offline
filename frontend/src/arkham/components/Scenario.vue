@@ -295,6 +295,20 @@ const locationOffsets = computed<Record<string, { x: number, y: number }>>(() =>
   return offsets
 })
 
+const locationGridOffsets = computed<Record<string, { column: number, row: number }>>(() => {
+  const offsets: Record<string, { column: number, row: number }> = {}
+  for (const loc of Object.values(props.game.locations)) {
+    for (const m of loc.modifiers ?? []) {
+      if (m.type.tag !== 'UIModifier') continue
+      const c = m.type.contents as any
+      if (c && typeof c === 'object' && c.tag === 'GridOffset') {
+        offsets[loc.id] = { column: c.columnOffset, row: c.rowOffset }
+      }
+    }
+  }
+  return offsets
+})
+
 const hasAnyOffset = computed(() =>
   Object.keys(locationOffsets.value).length > 0
     || Object.keys(pendingOffsets.value).length > 0
@@ -313,12 +327,22 @@ async function updateLayoutPadding() {
   if (!grid) return
 
   const current = layoutPadding.value
-  const allOffsets: Record<string, { x: number, y: number }> = {
-    ...locationOffsets.value,
-    ...pendingOffsets.value,
+  const allOffsets: Record<string, { x: number, y: number }> = {}
+  const offsetLocationIds = new Set([
+    ...Object.keys(locationOffsets.value),
+    ...Object.keys(pendingOffsets.value),
+    ...Object.keys(locationGridOffsets.value),
+  ])
+  for (const id of offsetLocationIds) {
+    const userOffset = pendingOffsets.value[id] ?? locationOffsets.value[id] ?? { x: 0, y: 0 }
+    const gridOffset = locationGridOffsets.value[id] ?? { column: 0, row: 0 }
+    allOffsets[id] = {
+      x: userOffset.x + gridOffset.column * (cellDimensions.value.w + 20),
+      y: userOffset.y + gridOffset.row * (cellDimensions.value.h + 20),
+    }
   }
 
-  if (Object.keys(allOffsets).length === 0) {
+  if (offsetLocationIds.size === 0) {
     if (current.left || current.right || current.top || current.bottom) {
       layoutPadding.value = { left: 0, right: 0, top: 0, bottom: 0 }
     }
@@ -369,7 +393,12 @@ function effectiveOffset(locationId: string): { x: number, y: number } {
 // `.location-cell` so Vue's TransitionGroup FLIP can animate the wrapper
 // without clobbering this transform during rotation reshuffles.
 function locationOffsetStyle(location: { id: string }) {
-  const canonical = effectiveOffset(location.id)
+  const userOffset = effectiveOffset(location.id)
+  const gridOffset = locationGridOffsets.value[location.id] ?? { column: 0, row: 0 }
+  const canonical = {
+    x: userOffset.x + gridOffset.column * (cellDimensions.value.w + 20),
+    y: userOffset.y + gridOffset.row * (cellDimensions.value.h + 20),
+  }
   // Apply the user's current rotation so the offset moves with the rotated
   // layout instead of staying in absolute screen space.
   const off = rotateOffset(canonical, rotationSteps.value)
@@ -1378,7 +1407,7 @@ const cosmicEmissaryLayoutSignature = computed(() => {
 })
 watch([cosmicEmissaryLayoutSignature, rotationSteps, locationsZoom], () => nextTick(requestCosmicEmissaryCompact), { flush: 'post' })
 watch(
-  [locationOffsets, pendingOffsets, rotationSteps, locationsZoom, locations, cellDimensions],
+  [locationOffsets, pendingOffsets, locationGridOffsets, rotationSteps, locationsZoom, locations, cellDimensions],
   updateLayoutPadding,
   { flush: 'post', deep: true },
 )
@@ -2556,9 +2585,13 @@ async function addChaosToken(face: any){
         <div class="location-cards-stage">
         <Connections :game="game" :playerId="playerId" :enableCosmicEmissaryAnimation="enableCosmicEmissaryAnimation" />
         <transition-group name="map" tag="div" ref="locationMap" class="location-cards" :css="props.scenario.id !== 'c10651'" :style="locationStyles" @before-leave="beforeLeave">
+          <!-- Keyed by id, not label: a location that changes grid label (the
+               Great Lift sliding between levels) must stay the same element so
+               TransitionGroup FLIP-animates it into its new cell. Keying by
+               label made that read as a leave + enter, so it teleported. -->
           <div
             v-for="location in locations"
-            :key="location.label"
+            :key="location.id"
             class="location-cell"
             :class="{ 'location-cell--can-interact': locationCanInteract(location) }"
             :data-location-id="location.id"

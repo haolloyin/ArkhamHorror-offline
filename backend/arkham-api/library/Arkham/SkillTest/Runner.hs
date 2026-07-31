@@ -14,8 +14,8 @@ import Arkham.ChaosToken.Types
 import Arkham.Classes hiding (matches)
 import Arkham.Classes.HasGame
 import Arkham.Deck qualified as Deck
-import Arkham.Helpers.ChaosToken (getModifiedChaosTokenFaces)
 import Arkham.Game.Utils (maybeLocation)
+import Arkham.Helpers.ChaosToken (getModifiedChaosTokenFaces)
 import Arkham.Helpers.Cost (getCanAffordCost)
 import Arkham.Helpers.Enemy (ignoredKeywordWindowsForEnemy)
 import Arkham.Helpers.Message
@@ -56,7 +56,8 @@ skillTestTargetToMaybeCard = \case
   ProxyTarget t _ -> skillTestTargetToMaybeCard t
   t -> targetToMaybeCard t
 
-skillTestSourceToMaybeCard :: (HasCallStack, HasGame m, Tracing m, Sourceable source) => source -> m (Maybe Card)
+skillTestSourceToMaybeCard
+  :: (HasCallStack, HasGame m, Tracing m, Sourceable source) => source -> m (Maybe Card)
 skillTestSourceToMaybeCard (toSource -> source) = case source of
   LocationSource lid -> locationTargetToMaybeCard lid
   AbilitySource src _ -> skillTestSourceToMaybeCard src
@@ -108,7 +109,10 @@ instance RunMessage SkillTest where
       pure s
     IncreaseSkillTestDifficulty n -> do
       -- see: faqs/drawing-thin
-      pure $ s & difficultyL %~ \(SkillTestDifficulty d) -> SkillTestDifficulty (SumCalculation [d, Fixed n])
+      -- This alters the test's *inherent* difficulty, so it must also apply to
+      -- the original difficulty a RepeatSkillTest (Live and Learn) restores.
+      let increase (SkillTestDifficulty d) = SkillTestDifficulty (SumCalculation [d, Fixed n])
+      pure $ s & difficultyL %~ increase & originalDifficultyL %~ fmap increase
     ChaosTokenCanceled _ _ token -> do
       let cancelIf t = if t.id == token.id then token {chaosTokenCancelled = True} else t
       pure
@@ -137,7 +141,12 @@ instance RunMessage SkillTest where
       -- the test-scoped ignore modifier is visible.
       ignoreWindows <- case (skillTestAction, skillTestTarget.enemy) of
         (Just Action.Fight, Just eid) ->
-          ignoredKeywordWindowsForEnemy skillTestSource skillTestInvestigator eid Keyword.Retaliate IgnoreRetaliate
+          ignoredKeywordWindowsForEnemy
+            skillTestSource
+            skillTestInvestigator
+            eid
+            Keyword.Retaliate
+            IgnoreRetaliate
         (Just Action.Evade, Just eid) ->
           ignoredKeywordWindowsForEnemy skillTestSource skillTestInvestigator eid Keyword.Alert IgnoreAlert
         _ -> pure []
@@ -407,7 +416,10 @@ instance RunMessage SkillTest where
     PassSkillTest -> do
       push $ Do PassSkillTest
       when (skillTestStep < SkillTestFastWindow2) $ push CheckAllAdditionalCommitCosts
-      pure s
+      pure
+        $ if skillTestStep < RevealChaosTokenStep
+          then s & stepL .~ DetermineInvestigatorsModifiedSkillValueStep
+          else s
     Do PassSkillTest -> do
       modifiedSkillValue' <- totalModifiedSkillValue s
       player <- getPlayer skillTestInvestigator
@@ -423,7 +435,7 @@ instance RunMessage SkillTest where
             & (difficultyL .~ SkillTestDifficulty (Fixed 0))
       results <- calculateSkillTestResultsData s'
       push $ SkillTestResults results
-      pure s'
+      pure $ s' & stepL .~ DetermineSuccessOrFailureOfSkillTestStep
     PassSkillTestBy n -> do
       player <- getPlayer skillTestInvestigator
       removeAllMessagesMatching \case
@@ -442,7 +454,10 @@ instance RunMessage SkillTest where
     FailSkillTest -> do
       push $ Do FailSkillTest
       when (skillTestStep < SkillTestFastWindow2) $ push CheckAllAdditionalCommitCosts
-      pure s
+      pure
+        $ if skillTestStep < RevealChaosTokenStep
+          then s & stepL .~ DetermineInvestigatorsModifiedSkillValueStep
+          else s
     Do FailSkillTest -> do
       resultsData <- autoFailSkillTestResultsData s
       difficulty <- getModifiedSkillTestDifficulty s
@@ -523,7 +538,10 @@ instance RunMessage SkillTest where
         else do
           player <- getPlayer skillTestResolveFailureInvestigator
           pushAll $ handleChoice skillTestResolveFailureInvestigator player
-      pure $ s & resultL .~ FailedBy Automatic difficulty
+      pure
+        $ s
+        & (resultL .~ FailedBy Automatic difficulty)
+        & (stepL .~ DetermineSuccessOrFailureOfSkillTestStep)
     StartSkillTest _ -> do
       windowMsg <- checkWindows [mkWhen Window.FastPlayerWindow]
       pushAll [CheckAllAdditionalCommitCosts, windowMsg, TriggerSkillTest skillTestInvestigator]
@@ -879,11 +897,19 @@ instance RunMessage SkillTest where
           let passed target =
                 Priority
                   $ PassedSkillTest skillTestInvestigator skillTestAction skillTestSource target skillTestType n
+          -- ST.7: every result registers itself as an option (chaos token
+          -- effects, committed card riders, and the initiator's own consequence
+          -- via 'OriginalOptionKind'), then we collect. One result resolves
+          -- straight away; several let the investigator pick the order.
+          --
+          -- The collect must come last so initiators still get to register --
+          -- see the Fight/Evade handlers in "Arkham.Enemy.Runner". Mirrors the
+          -- failure branch below.
           pushAll
             $ cycleN
               successTimes
               ( [passed target | target <- skillTestSubscribers <> tokenSubscribers]
-                  <> [passed (SkillTestInitiatorTarget skillTestTarget)]
+                  <> [passed (SkillTestInitiatorTarget skillTestTarget), CollectSkillTestOptions]
               )
         FailedBy _ n -> do
           investigatorsToResolveFailure <-
