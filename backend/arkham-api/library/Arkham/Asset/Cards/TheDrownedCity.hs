@@ -683,6 +683,8 @@ walkInFaith =
   permanent
     $ (storyAsset_ "11754a" ("Walk in Faith" <:> "Blind Devotion") Tasks)
       { cdCardTraits = setFromList [Task, Incomplete]
+      , cdCardSubType = Just Weakness
+      , cdUses = uses Token.Sign 0
       }
 
 toeTheLine :: CardDef
@@ -690,6 +692,7 @@ toeTheLine =
   permanent
     $ (storyAsset_ "11755a" ("Toe the Line" <:> "Disavowed and Disgraced") Tasks)
       { cdCardTraits = setFromList [Task, Incomplete]
+      , cdCardSubType = Just Weakness
       }
 
 noPlaceLikeHome :: CardDef
@@ -697,6 +700,7 @@ noPlaceLikeHome =
   permanent
     $ (storyAsset_ "11753a" ("No Place Like Home" <:> "Lost and Uncertain") Tasks)
       { cdCardTraits = setFromList [Task, Incomplete]
+      , cdCardSubType = Just Weakness
       , cdUses = uses Discovery 8
       }
 
@@ -705,6 +709,7 @@ goodMoney =
   permanent
     $ (storyAsset_ "11756a" ("Good Money" <:> "The \"Quid\" Part") Tasks)
       { cdCardTraits = setFromList [Task, Incomplete]
+      , cdCardSubType = Just Weakness
       }
 
 doNoHarm :: CardDef
@@ -712,6 +717,7 @@ doNoHarm =
   permanent
     $ (storyAsset_ "11758a" ("Do No Harm" <:> "Can You Save Them?") Tasks)
       { cdCardTraits = setFromList [Task, Incomplete]
+      , cdCardSubType = Just Weakness
       , cdUses = uses Obligation 5
       }
 
@@ -720,6 +726,8 @@ proveYourWorth =
   permanent
     $ (storyAsset_ "11757a" ("Prove Your Worth" <:> "Are You a Burden?") Tasks)
       { cdCardTraits = setFromList [Task, Incomplete]
+      , cdCardSubType = Just Weakness
+      , cdUses = uses Token.Chance 4
       }
 
 dreamsOfDestruction :: CardDef
@@ -727,6 +735,7 @@ dreamsOfDestruction =
   permanent
     $ (storyAsset_ "11759a" ("Dreams of Destruction" <:> "Visions of a Grim Future") Tasks)
       { cdCardTraits = setFromList [Task, Incomplete]
+      , cdCardSubType = Just Weakness
       }
 
 plumbTheDepths :: CardDef
@@ -734,12 +743,14 @@ plumbTheDepths =
   permanent
     $ (storyAsset_ "11760a" ("Plumb the Depths" <:> "Compulsive Research") Tasks)
       { cdCardTraits = setFromList [Task, Incomplete]
+      , cdCardSubType = Just Weakness
+      , cdUses = uses Token.Obsession 5
       }
 
 -- The Drowned City — Expedition story assets
 expeditionGear :: CardDef
 expeditionGear =
-  (storyAsset "11761" ("Expedition Gear" <:> "Tough but Reliable") 2 TdcExpedition)
+  (storyAsset "11761" ("Expedition Gear" <:> "Tough but Reliable") 2 TheDrownedCityExpedition)
     { cdCardTraits = setFromList [Item, Trait.Supply]
     , cdSkills = [#combat, #agility, #wild]
     , cdUses = uses Supply 3
@@ -747,7 +758,7 @@ expeditionGear =
 
 laudanum :: CardDef
 laudanum =
-  (storyAsset "11762" ("Laudanum" <:> "Desperate Measures") 2 TdcExpedition)
+  (storyAsset "11762" ("Laudanum" <:> "Desperate Measures") 2 TheDrownedCityExpedition)
     { cdCardTraits = setFromList [Item, Trait.Supply]
     , cdSkills = [#willpower, #willpower]
     , cdUses = uses Supply 3
@@ -755,7 +766,7 @@ laudanum =
 
 alienTablet :: CardDef
 alienTablet =
-  (storyAsset "11763" ("Alien Tablet" <:> "Prehistoric Writings") 3 TdcExpedition)
+  (storyAsset "11763" ("Alien Tablet" <:> "Prehistoric Writings") 3 TheDrownedCityExpedition)
     { cdCardTraits = setFromList [Item, Relic, Rlyeh]
     , cdSkills = [#intellect, #intellect]
     , cdSlots = [#hand]
@@ -765,7 +776,7 @@ alienTablet =
 
 divingSuitTheDrownedCity :: CardDef
 divingSuitTheDrownedCity =
-  (storyAsset "11764" "Diving Suit" 3 TdcExpedition)
+  (storyAsset "11764" "Diving Suit" 3 TheDrownedCityExpedition)
     { cdCardTraits = setFromList [Item, Armor]
     , cdSkills = [#combat]
     , cdSlots = [#body]
@@ -773,7 +784,7 @@ divingSuitTheDrownedCity =
 
 rubyStandish :: CardDef
 rubyStandish =
-  (storyAsset "11765" ("Ruby Standish" <:> "Master Thief") 4 TdcExpedition)
+  (storyAsset "11765" ("Ruby Standish" <:> "Master Thief") 4 TheDrownedCityExpedition)
     { cdCardTraits = setFromList [Ally, Criminal]
     , cdSkills = [#agility, #agility]
     , cdSlots = [#ally]
@@ -782,7 +793,7 @@ rubyStandish =
 
 andyVanNortwick :: CardDef
 andyVanNortwick =
-  (storyAsset "11766" ("Andy Van Nortwick" <:> "Ambitious Journalist") 4 TdcExpedition)
+  (storyAsset "11766" ("Andy Van Nortwick" <:> "Ambitious Journalist") 4 TheDrownedCityExpedition)
     { cdCardTraits = setFromList [Ally, Reporter]
     , cdSkills = [#intellect, #intellect]
     , cdSlots = [#ally]
@@ -823,6 +834,7 @@ proveYourWorthCompleted =
   permanent
     $ (storyAsset_ "11757b" ("Prove Your Worth" <:> "Standing on Your Own") Tasks)
       { cdCardTraits = setFromList [Task, Completed]
+      , cdUses = uses Token.Chance 3
       }
 
 doNoHarmCompleted :: CardDef
@@ -940,6 +952,7 @@ johnRaymondLegrasse :: CardDef
 johnRaymondLegrasse =
   (storyAsset "11687" ("John Raymond Legrasse" <:> "Hunting for Answers") 4 TheDoomOfArkhamPartI)
     { cdCardTraits = setFromList [Ally, Detective]
+    , cdSkills = [#combat, #intellect, #wild]
     , cdSlots = [#ally]
     , cdUnique = True
     }

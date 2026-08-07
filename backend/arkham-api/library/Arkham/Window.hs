@@ -9,7 +9,7 @@ import Arkham.Action (Action)
 import Arkham.Agenda.AdvancementReason (AgendaAdvancementReason)
 import Arkham.Asset.Uses
 import Arkham.Attack.Types
-import Arkham.Card (Card, CardId)
+import Arkham.Card (Card, CardId, EncounterCard)
 import Arkham.ChaosToken.Types (ChaosToken, ChaosTokenFace)
 import Arkham.Damage
 import Arkham.DamageEffect (DamageEffect)
@@ -102,6 +102,7 @@ the heavy modifier preload pipeline.
 isSetupSkippableWindow :: Window -> Bool
 isSetupSkippableWindow w = case windowType w of
   PutLocationIntoPlay {} -> True
+  PutLocationIntoPlayByGroup {} -> True
   LocationEntersPlay {} -> True
   PlacedToken _ _ Clue _ -> True
   _ -> False
@@ -213,6 +214,8 @@ data WindowType
     window, so the whole discard stays a single batch.
     -}
     WouldDiscardTopOfEncounterDeck InvestigatorId Source Int
+  | -- | Fired once after a batch of cards has been discarded from the top of the encounter deck.
+    DiscardedTopOfEncounterDeckBatch InvestigatorId Source [EncounterCard]
   | DiscoverClues InvestigatorId LocationId Source Int
   | WouldDiscoverClues InvestigatorId LocationId DiscoverId Source Int
   | SpentClues InvestigatorId Int
@@ -339,10 +342,20 @@ data WindowType
   | PlayEvent InvestigatorId EventId
   | PlayAsset InvestigatorId AssetId
   | PutLocationIntoPlay InvestigatorId LocationId
+  | {- | A location put into play or revealed with no specific investigator behind
+    it, i.e. by an act, agenda or other scenario card. "Because acts and agendas
+    are advanced by the players, as a group, each investigator is considered to
+    have put the location(s) into play", so these carry no investigator and the
+    'Arkham.Matcher.PutLocationIntoPlay' / 'Arkham.Matcher.RevealLocation'
+    matchers resolve their @Who@ against whoever is being asked.
+    -}
+    PutLocationIntoPlayByGroup LocationId
   | LocationEntersPlay LocationId
   | RevealLocation InvestigatorId LocationId
+  | RevealLocationByGroup LocationId
   | RevealLocationForcedAbilities InvestigatorId LocationId (Maybe LocationId)
   | UnrevealedRevealLocation InvestigatorId LocationId
+  | UnrevealedRevealLocationByGroup LocationId
   | FlipLocation InvestigatorId LocationId
   | RevealChaosToken InvestigatorId ChaosToken
   | RevealChaosTokensDuringSkillTest InvestigatorId SkillTest [ChaosToken]

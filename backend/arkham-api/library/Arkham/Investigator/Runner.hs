@@ -162,14 +162,19 @@ instance RunMessage Investigator where
           -- the form reads and writes its own meta, ours is left alone for our
           -- signature cards. Changing form means a different form, which starts
           -- uninitialized.
-          pure
-            . Investigator
-            $ investigatorFromAttrs @original
+          --
+          -- Rebuild with overAttrs rather than investigatorFromAttrs: our own concrete
+          -- type may carry `With` metadata (Body of a Yithian and Shattered Self hold a
+          -- snapshot of the investigator we used to be) and investigatorFromAttrs would
+          -- re-seed that snapshot from the transfigured attrs, destroying it.
+          let
+            a'' =
               a'
                 { investigatorMeta = investigatorMeta a0
                 , investigatorFormMeta =
                     if investigatorForm a' == investigatorForm a0 then investigatorMeta a' else Null
                 }
+          pure . Investigator $ overAttrs (const a'') a
         _ -> Investigator <$> runMessage msg' a
 
 instance RunMessage InvestigatorAttrs where
@@ -230,6 +235,18 @@ onlyCampaignAbilities UsedAbility {..} = case abilityLimitType (abilityLimit use
 getAllAbilitiesSkippable :: (Tracing m, HasGame m) => InvestigatorAttrs -> [Window] -> m Bool
 getAllAbilitiesSkippable attrs windows = allM (getWindowSkippable attrs windows) windows
 
+{- | The PlayCard/PlayEvent reaction window only carries the play itself. The
+windows the play was *initiated* in (e.g. the successful investigation a fast
+event reacted to) live further down the window stack. Criteria that read them
+-- notably @ReduceBySuccessAmount@ -- would otherwise see nothing and report
+the (already legal) play as unplayable, which suppresses the skip button and
+makes an optional reaction look mandatory.
+-}
+getInitiationWindows :: HasGame m => [Window] -> m [Window]
+getInitiationWindows ws = do
+  stack <- concat <$> getWindowStack
+  pure $ if null stack then ws else nub (ws <> stack)
+
 getWindowSkippable :: (Tracing m, HasGame m) => InvestigatorAttrs -> [Window] -> Window -> m Bool
 getWindowSkippable
   _attrs
@@ -268,6 +285,7 @@ getWindowSkippable
       (resourcesFromAssets +)
         . sum
         <$> traverse (field InvestigatorResources . fst) canHelpPay
+    initiationWindows <- getInitiationWindows ws
 
     runValidT do
       when needsFast $ guard isFast
@@ -280,7 +298,7 @@ getWindowSkippable
         liftGuardM $ getCanAffordCost iid pc [#play] ws (ActionCost 1)
       liftGuardM
         $ withAlteredGame withoutCanModifiers
-        $ getIsPlayableAfterInitiation iid iid Cost.PaidCost ws card
+        $ getIsPlayableAfterInitiation iid iid Cost.PaidCost initiationWindows card
 getWindowSkippable
   attrs
   ws
@@ -293,7 +311,9 @@ getWindowSkippable
     -- fight/evade events that are only playable because a reaction such as
     -- Miguel's Knapsack will make the investigator AsIfAt another location; in
     -- that case skipping the trigger would leave the event with no legal target.
-    withAlteredGame withoutCanModifiers $ getIsPlayableAfterInitiation iid iid Cost.PaidCost ws card
+    initiationWindows <- getInitiationWindows ws
+    withAlteredGame withoutCanModifiers
+      $ getIsPlayableAfterInitiation iid iid Cost.PaidCost initiationWindows card
 getWindowSkippable _ _ w@(windowTiming &&& windowType -> (Timing.When, Window.ActivateAbility iid _ ab)) = do
   let
     excludeOne [] = []
@@ -2699,5 +2719,11 @@ takeUpkeepResources a = do
                   [TakeResources (toId a) amount (ResourceSource $ toId a) False]
               ]
           pure a
-        else
-          pure $ a & tokensL %~ addTokens Resource amount
+        else do
+          -- Route through TakeResources rather than adding the tokens directly,
+          -- so the GainsResources windows fire for the upkeep resource too. The
+          -- MayChooseNotToTakeUpkeepResources branch above already does, so
+          -- without this a reaction to "when you gain 1 or more resources"
+          -- (Good Money) triggers in upkeep only for a Dark Horse investigator.
+          push $ TakeResources (toId a) amount (ResourceSource $ toId a) False
+          pure a

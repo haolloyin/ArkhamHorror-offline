@@ -31,6 +31,7 @@ import * as Arkham from '@/arkham/types/Enemy'
 import { Source } from '@/arkham/types/Source'
 import { isManifestedSpiritEnemy } from '@/arkham/spiritVisuals';
 import { type Card as ArkhamCard, toCardContents } from '@/arkham/types/Card';
+import { isUnvaluedCalculation } from '@/arkham/types/Calculation'
 
 const props = withDefaults(defineProps<{
   game: Game
@@ -38,7 +39,8 @@ const props = withDefaults(defineProps<{
   playerId: string
   atLocation?: boolean
   attached?: boolean
-}>(), { atLocation: false, attached: false })
+  sourceHighlighted?: boolean
+}>(), { atLocation: false, attached: false, sourceHighlighted: false })
 
 const emits = defineEmits<{
   choose: [value: number]
@@ -78,6 +80,7 @@ const id = computed(() => props.enemy.id)
 
 const choicesSource = useStickyChoicesSource(() => props.game, () => props.playerId)
 const isHighlighted = computed(() => {
+  if (props.sourceHighlighted) return true
   const source = choicesSource.value
   return source !== null && 'contents' in source && source.contents === props.enemy.id
 })
@@ -258,6 +261,13 @@ const cannotBeDamagedModifier = computed(() => {
 
 const isCannotBeDamaged = computed(() => cannotBeDamagedModifier.value !== null)
 
+/* An enemy that cannot be damaged, or that has no health at all (Cthulhu (Ancient
+ * Evil) prints a dash), has no damage pool worth showing. Still show it if damage
+ * has somehow landed, so nothing is ever silently hidden. */
+const showDamage = computed(() =>
+  enemyDamage.value > 0 || (!isCannotBeDamaged.value && !isUnvaluedCalculation(props.enemy.health))
+)
+
 const cannotBeDamagedCardCode = computed<string | null>(() => {
   const m = cannotBeDamagedModifier.value
   if (!m) return null
@@ -421,7 +431,7 @@ function onDrop(event: DragEvent) {
             <div class="keys" v-if="keys.length > 0">
               <KeyToken v-for="k in keys" :key="keyToId(k)" :keyToken="k" :game="game" :playerId="playerId" @choose="choose" />
             </div>
-            <PoolItem v-if="!omnipotent && !attached" type="health" :amount="enemyDamage" />
+            <PoolItem v-if="!omnipotent && !attached && showDamage" type="health" :amount="enemyDamage" />
             <TokenPool :tokens="enemyTokens" />
             <PoolItem v-if="enemy.cardsUnderneath.length > 0" type="card" :amount="enemy.cardsUnderneath.length" />
             <Token
@@ -457,6 +467,19 @@ function onDrop(event: DragEvent) {
         </div>
 
       </template>
+      <!-- Keys come first: they are pulled up over whatever precedes them (see
+           the negative margin below), so they must overlap the enemy card
+           itself rather than hiding an attached treachery/asset/event. -->
+      <ScarletKey
+        v-for="(skId, idx) in enemy.scarletKeys"
+        :scarletKey="game.scarletKeys[skId]"
+        :game="game"
+        :playerId="playerId"
+        :key="skId"
+        @choose="choose"
+        :attached="true"
+        :style="{ 'z-index': enemy.scarletKeys.length - idx }"
+      />
       <img v-for="card in referenceCards" :src="cardImage(card)" :key="card" class="attached card" />
       <Treachery
         v-for="treacheryId in enemy.treacheries"
@@ -494,16 +517,6 @@ function onDrop(event: DragEvent) {
         :playerId="playerId"
         :attached="true"
         @choose="$emit('choose', $event)"
-      />
-      <ScarletKey
-        v-for="(skId, idx) in enemy.scarletKeys"
-        :scarletKey="game.scarletKeys[skId]"
-        :game="game"
-        :playerId="playerId"
-        :key="skId"
-        @choose="choose"
-        :attached="true"
-        :style="{ 'z-index': enemy.scarletKeys.length - idx }"
       />
       <Story
         v-for="storyId in enemy.stories"

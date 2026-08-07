@@ -12,7 +12,7 @@ import Arkham.Classes.Query
 import Arkham.Effect.Types (makeEffectBuilder)
 import Arkham.GameValue
 import Arkham.Helpers.Campaign (getCampaignStoryCards)
-import Arkham.Helpers.Log (getHasRecord, getSomeRecordSet)
+import Arkham.Helpers.Log (getHasCrossedOutRecord, getHasRecord, getSomeRecordSet)
 import Arkham.Helpers.Modifiers (modifySelf)
 import Arkham.I18n
 import Arkham.Id
@@ -70,6 +70,18 @@ handOffArtifact iid asset = do
     select $ not_ (InvestigatorWithId iid) <> NearestToLocation (locationWithInvestigator iid)
   chooseOrRunOneM iid $ targets nearest (`takeControlOfAsset` asId asset)
 
+{- | The window a Task's progress check listens on.
+
+Every Task reads "When the game ends, if …: mark 1 progress under this Task", but a
+Task is an asset in the investigator's play area: it leaves play the moment they
+resign or are defeated, which is *before* the resolution opens the end-of-game
+window. Keyed on 'GameEnds' alone, a resigned investigator's Task is already gone
+and never marks progress. Same reason Hospital Debts and Embezzled Treasure pair
+the two windows.
+-}
+taskEnds :: WindowMatcher
+taskEnds = oneOf [GameEnds #when, InvestigatorEliminated #when You]
+
 investigatorHasTask
   :: (HasGame m, Tracing m, HasCardDef card) => InvestigatorId -> card -> m Bool
 investigatorHasTask iid (toCardDef -> cardDef) = do
@@ -90,8 +102,48 @@ artifactAssets =
   , (HorrorInClay, Assets.horrorInClay)
   ]
 
+{- | The five Artifacts that can be earned while the expedition is still in R'lyeh.
+The /Horror in Clay/ is only earned back in Arkham, during The Doom of Arkham, so
+the Sepulchre of the Sleeper's "all 5 artifacts" check must not count it.
+-}
+rlyehArtifacts :: [TheDrownedCityKey]
+rlyehArtifacts = [BarrierNode, ObsidianClaw, ShardOfYchlecht, TidalTablet, GrislyMask]
+
+{- | The earned Artifacts an investigator may still choose to begin play with.
+
+Each def here is the face an Artifact enters play on — the Obsidian Claw's is
+(Speed), per "Enters play (Speed) side faceup" — so choosing one always puts the
+correct side into play, whichever side it happened to end the last scenario on.
+
+Artifacts are unique, so one already in play is off the table. That check has to
+look at both faces: a Claw already flipped to (Power) is a different card code,
+and matching only (Speed) would offer it a second time.
+-}
+getAvailableArtifacts :: (HasGame m, Tracing m) => m [CardDef]
+getAvailableArtifacts = filterM (fmap not . selectAny . artifactInPlay) =<< getEarnedArtifacts
+
 getEarnedArtifacts :: (HasGame m, Tracing m) => m [CardDef]
 getEarnedArtifacts = map snd <$> filterM (getHasRecord . fst) artifactAssets
+
+{- | "Artifacts checked/listed and not crossed off under 'Artifacts Earned'." The
+Doom of Arkham Part I crosses out every Artifact no investigator still held when it
+ended, and crossing out does not clear the record, so Part II has to exclude them
+explicitly.
+-}
+getUncrossedArtifacts :: (HasGame m, Tracing m) => m [CardDef]
+getUncrossedArtifacts =
+  map snd
+    <$> filterM (\(k, _) -> andM [getHasRecord k, not <$> getHasCrossedOutRecord k]) artifactAssets
+
+{- | The locations The Doom of Arkham Part I left flooded, recorded by card code.
+Part II increases the flood level of each of them again during setup.
+-}
+getFloodedNeighborhoods :: (HasGame m, Tracing m) => m [CardCode]
+getFloodedNeighborhoods = getSomeRecordSet FloodedNeighborhoods
+
+-- | Matches an Artifact in play on either of its faces.
+artifactInPlay :: CardDef -> AssetMatcher
+artifactInPlay def = mapOneOf assetIs def.defs
 
 {- | The @Item@ assets in the /Expedition/ encounter set. Ruby Standish and Andy
 Van Nortwick are in the set too, but they are @Ally@ assets.
@@ -132,10 +184,37 @@ getRecordCountForInvestigator
 getRecordCountForInvestigator iid k =
   fieldMap InvestigatorLog (findWithDefault 0 (toCampaignLogKey k) . campaignLogRecordedCounts) iid
 
+{- | Whether an investigator has progress left to erase under a Task.
+
+Every Task checkpoint is a choice between erasing 1 progress for a small boon and
+marking 2 progress for a cost (usually trauma). Erasing from 0 progress is a
+no-op — 'decrementRecordCountForInvestigator' clamps at 0 — so at 0 the erase
+branch would be a boon for free, which is not the trade the checkpoint offers.
+Pass this to @labeledValidate'@ so the branch shows up disabled rather than
+vanishing, keeping the buttons lined up with the printed choices.
+-}
+canEraseProgress :: (HasGame m, Tracing m, IsCampaignLogKey k) => InvestigatorId -> k -> m Bool
+canEraseProgress iid k = (> 0) <$> getRecordCountForInvestigator iid k
+
 struggleForAir
   :: (Sourceable a, HasGame m, Tracing m, HasQueue Message m) => a -> InvestigatorId -> m ()
 struggleForAir a iid = do
   builder <- makeEffectBuilder "struggleForAir" Nothing a iid
+  push $ CreateEffect builder
+
+{- | Walk in Faith's two intro riders, one effect per investigator. Each is spent on
+that investigator's first encounter-deck draw of the scenario.
+-}
+walkInFaithDoubts
+  :: (Sourceable a, HasGame m, Tracing m, HasQueue Message m) => a -> InvestigatorId -> m ()
+walkInFaithDoubts a iid = do
+  builder <- makeEffectBuilder "walkInFaithDoubts" Nothing a iid
+  push $ CreateEffect builder
+
+walkInFaithResolve
+  :: (Sourceable a, HasGame m, Tracing m, HasQueue Message m) => a -> InvestigatorId -> m ()
+walkInFaithResolve a iid = do
+  builder <- makeEffectBuilder "walkInFaithResolve" Nothing a iid
   push $ CreateEffect builder
 
 decreaseFloodLevel :: ReverseQueue m => LocationId -> m ()
@@ -164,6 +243,9 @@ type Glyph = Text
 
 getKnownGlyphs :: (HasGame m, Tracing m) => m Text
 getKnownGlyphs = getSomeRecordSet DiscoveredGlyphs <&> \xs -> mconcat [x | String x <- xs]
+
+getTranslatedGlyphCount :: (HasGame m, Tracing m) => m Int
+getTranslatedGlyphCount = length <$> getSomeRecordSet @Value DiscoveredGlyphs
 
 {- | Glyphs are recorded uppercase (@glyphLetter@ upper-cases before inserting into
 the @DiscoveredGlyphs@ set), so normalize both sides: a card asking for @"qxgks"@

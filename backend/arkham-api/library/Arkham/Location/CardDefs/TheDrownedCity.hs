@@ -421,61 +421,87 @@ luminousArchivesArchiveOfMemory =
     CourtOfTheAncients
 
 -- Obsidian Canyons
+
+{- | Every Summit location shares one unrevealed back, so they can be shuffled
+into the Summit deck face-down and told apart only once revealed. R'lyeh Streets
+is the exception: it is placed face-up during setup and never enters the deck.
+-}
+summit :: Name
+summit = "Summit"
+
 rlyehStreets :: CardDef
 rlyehStreets =
   location_ "11648" "R'lyeh Streets" [Rlyeh, Central] ObsidianCanyons
 
 centralSpire :: CardDef
 centralSpire =
-  location_ "11649" "Central Spire" [Rlyeh, Central] ObsidianCanyons
+  locationWithUnrevealed_ "11649" summit [Summit] "Central Spire" [Rlyeh, Central] ObsidianCanyons
 
 floatingSpire :: CardDef
 floatingSpire =
-  location_ "11650" "Floating Spire" [Rlyeh, Central] ObsidianCanyons
+  locationWithUnrevealed_ "11650" summit [Summit] "Floating Spire" [Rlyeh, Central] ObsidianCanyons
 
 westernWall_11651 :: CardDef
 westernWall_11651 =
-  location_ "11651" "Western Wall" [Rlyeh, Central] ObsidianCanyons
+  locationWithUnrevealed_ "11651" summit [Summit] "Western Wall" [Rlyeh, Central] ObsidianCanyons
 
 ancientDome :: CardDef
 ancientDome =
-  location_ "11652" "Ancient Dome" [Rlyeh, Central] ObsidianCanyons
+  locationWithUnrevealed_ "11652" summit [Summit] "Ancient Dome" [Rlyeh, Central] ObsidianCanyons
 
 easternAthenaeum :: CardDef
 easternAthenaeum =
-  victory 1 $ location_ "11653" "Eastern Athenaeum" [Rlyeh, Summit, Glyph] ObsidianCanyons
+  victory 1
+    $ locationWithUnrevealed_
+      "11653"
+      summit
+      [Summit]
+      "Eastern Athenaeum"
+      [Rlyeh, Summit, Glyph]
+      ObsidianCanyons
 
 westernAthenaeum :: CardDef
 westernAthenaeum =
-  victory 1 $ location_ "11654" "Western Athenaeum" [Rlyeh, Summit, Glyph] ObsidianCanyons
+  victory 1
+    $ locationWithUnrevealed_
+      "11654"
+      summit
+      [Summit]
+      "Western Athenaeum"
+      [Rlyeh, Summit, Glyph]
+      ObsidianCanyons
 
 obsidianCliffs :: CardDef
 obsidianCliffs =
-  victory 1 $ location_ "11655" "Obsidian Cliffs" [Rlyeh, Summit] ObsidianCanyons
+  victory 1
+    $ locationWithUnrevealed_ "11655" summit [Summit] "Obsidian Cliffs" [Rlyeh, Summit] ObsidianCanyons
 
 suspendedReef :: CardDef
 suspendedReef =
-  location_ "11656" "Suspended Reef" [Rlyeh, Summit] ObsidianCanyons
+  quantity 3
+    $ locationWithUnrevealed_ "11656" summit [Summit] "Suspended Reef" [Rlyeh, Summit] ObsidianCanyons
 
 hangingShip :: CardDef
 hangingShip =
-  location_ "11657" "Hanging Ship" [Summit] ObsidianCanyons
+  quantity 2 $ locationWithUnrevealed_ "11657" summit [Summit] "Hanging Ship" [Summit] ObsidianCanyons
 
 ancientCanyons :: CardDef
 ancientCanyons =
-  location_ "11658" "Ancient Canyons" [Summit] ObsidianCanyons
+  locationWithUnrevealed_ "11658" summit [Summit] "Ancient Canyons" [Summit] ObsidianCanyons
 
 dazzlingSkyline :: CardDef
 dazzlingSkyline =
-  location_ "11659" "Dazzling Skyline" [Summit] ObsidianCanyons
+  quantity 3
+    $ locationWithUnrevealed_ "11659" summit [Summit] "Dazzling Skyline" [Summit] ObsidianCanyons
 
 aerialWaterfall :: CardDef
 aerialWaterfall =
-  location_ "11660" "Aerial Waterfall" [Summit] ObsidianCanyons
+  locationWithUnrevealed_ "11660" summit [Summit] "Aerial Waterfall" [Summit] ObsidianCanyons
 
 magneticSpires :: CardDef
 magneticSpires =
-  location_ "11661" "Magnetic Spires" [Summit] ObsidianCanyons
+  quantity 2
+    $ locationWithUnrevealed_ "11661" summit [Summit] "Magnetic Spires" [Summit] ObsidianCanyons
 
 -- TODO: back side of double-sided card (11662b)
 glyphOrrery :: CardDef
@@ -487,46 +513,61 @@ glyphOrrery =
 -- Sepulchre of the Sleeper
 dreamersRest :: CardDef
 dreamersRest =
-  location_ "11676" "Dreamer's Rest" [Rlyeh, Lair] SepulchreOfTheSleeper
+  location "11676" "Dreamer's Rest" [Rlyeh, Lair] Plus [Star] SepulchreOfTheSleeper
 
 sigilCarvedAlcoveStoryOfAmbition :: CardDef
 sigilCarvedAlcoveStoryOfAmbition =
-  location_
+  locationWithUnrevealedName
     "11677"
+    "Sigil-Carved Alcove"
     ("Sigil-Carved Alcove" <:> "Story of Ambition")
     [Rlyeh, Glyph]
+    Star
+    [Plus]
     SepulchreOfTheSleeper
 
 sigilCarvedAlcoveStoryOfResilience :: CardDef
 sigilCarvedAlcoveStoryOfResilience =
-  location_
+  locationWithUnrevealedName
     "11678"
+    "Sigil-Carved Alcove"
     ("Sigil-Carved Alcove" <:> "Story of Resilience")
     [Rlyeh, Glyph]
+    Star
+    [Plus]
     SepulchreOfTheSleeper
 
 sigilCarvedAlcoveStoryOfInfinity :: CardDef
 sigilCarvedAlcoveStoryOfInfinity =
-  location_
+  locationWithUnrevealedName
     "11679"
+    "Sigil-Carved Alcove"
     ("Sigil-Carved Alcove" <:> "Story of Infinity")
     [Rlyeh, Glyph]
+    Star
+    [Plus]
     SepulchreOfTheSleeper
 
 sigilCarvedAlcoveStoryOfDefiance :: CardDef
 sigilCarvedAlcoveStoryOfDefiance =
-  location_
+  locationWithUnrevealedName
     "11680"
+    "Sigil-Carved Alcove"
     ("Sigil-Carved Alcove" <:> "Story of Defiance")
     [Rlyeh, Glyph]
+    Star
+    [Plus]
     SepulchreOfTheSleeper
 
 sigilCarvedAlcoveStoryOfTheVoyage :: CardDef
 sigilCarvedAlcoveStoryOfTheVoyage =
-  location_
+  locationWithUnrevealedName
     "11681"
+    "Sigil-Carved Alcove"
     ("Sigil-Carved Alcove" <:> "Story of the Voyage")
     [Rlyeh, Glyph]
+    Star
+    [Plus]
     SepulchreOfTheSleeper
 
 -- The Doom of Arkham, Part I
@@ -541,38 +582,86 @@ tillinghastEsotericaEphemeralShop =
       TheDoomOfArkhamPartI
 
 -- The Doom of Arkham, Part II
-northsideTheDrownedCity :: CardDef
-northsideTheDrownedCity =
-  location_ "11692" ("Northside" <:> "Ruined") [Arkham, Ruined] TheDoomOfArkhamPartII
+northsideRuined :: CardDef
+northsideRuined =
+  location
+    "11692"
+    ("Northside" <:> "Ruined")
+    [Arkham, Ruined]
+    T
+    [Diamond, Triangle, Star]
+    TheDoomOfArkhamPartII
 
-downtown :: CardDef
-downtown =
-  location_ "11693" ("Downtown" <:> "Ruined") [Arkham, Ruined] TheDoomOfArkhamPartII
+downtownRuined :: CardDef
+downtownRuined =
+  location
+    "11693"
+    ("Downtown" <:> "Ruined")
+    [Arkham, Ruined]
+    Triangle
+    [Moon, T, Star]
+    TheDoomOfArkhamPartII
 
-easttownTheDrownedCity :: CardDef
-easttownTheDrownedCity =
-  location_ "11694" ("Easttown" <:> "Ruined") [Arkham, Ruined] TheDoomOfArkhamPartII
+easttownRuined :: CardDef
+easttownRuined =
+  location
+    "11694"
+    ("Easttown" <:> "Ruined")
+    [Arkham, Ruined]
+    Moon
+    [Circle, Triangle, Heart]
+    TheDoomOfArkhamPartII
 
-miskatonicUniversityTheDrownedCity :: CardDef
-miskatonicUniversityTheDrownedCity =
-  location_ "11695" ("Miskatonic University" <:> "Ruined") [Arkham, Ruined] TheDoomOfArkhamPartII
+miskatonicUniversityRuined :: CardDef
+miskatonicUniversityRuined =
+  location
+    "11695"
+    ("Miskatonic University" <:> "Ruined")
+    [Arkham, Ruined]
+    Diamond
+    [T, Plus, Circle, Square, Star]
+    TheDoomOfArkhamPartII
 
-rivertownTheDrownedCity :: CardDef
-rivertownTheDrownedCity =
-  location_ "11696" ("Rivertown" <:> "Ruined") [Arkham, Central, Ruined] TheDoomOfArkhamPartII
+rivertownRuined :: CardDef
+rivertownRuined =
+  location
+    "11696"
+    ("Rivertown" <:> "Ruined")
+    [Arkham, Central, Ruined]
+    Circle
+    [Moon, Diamond, Square, Heart]
+    TheDoomOfArkhamPartII
 
-stMarysHospitalTheDrownedCity :: CardDef
-stMarysHospitalTheDrownedCity =
-  location_ "11697" ("St. Mary's Hospital" <:> "Ruined") [Arkham, Ruined] TheDoomOfArkhamPartII
+stMarysHospitalRuined :: CardDef
+stMarysHospitalRuined =
+  location
+    "11697"
+    ("St. Mary's Hospital" <:> "Ruined")
+    [Arkham, Ruined]
+    Plus
+    [Diamond, Square, Star]
+    TheDoomOfArkhamPartII
 
-southside :: CardDef
-southside =
-  location_ "11698" ("Southside" <:> "Ruined") [Arkham, Ruined] TheDoomOfArkhamPartII
+southsideRuined :: CardDef
+southsideRuined =
+  location
+    "11698"
+    ("Southside" <:> "Ruined")
+    [Arkham, Ruined]
+    Square
+    [Diamond, Plus, Circle, Heart]
+    TheDoomOfArkhamPartII
 
 westernRooftops :: CardDef
 westernRooftops =
-  location_ "11699" "Western Rooftops" [Arkham, Rooftop] TheDoomOfArkhamPartII
+  location "11699" "Western Rooftops" [Arkham, Rooftop] Star [Diamond, T, Plus] TheDoomOfArkhamPartII
 
 easternRooftops :: CardDef
 easternRooftops =
-  location_ "11700" "Eastern Rooftops" [Arkham, Rooftop] TheDoomOfArkhamPartII
+  location
+    "11700"
+    "Eastern Rooftops"
+    [Arkham, Rooftop]
+    Heart
+    [Circle, Square, Moon]
+    TheDoomOfArkhamPartII

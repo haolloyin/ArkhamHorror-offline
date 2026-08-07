@@ -370,9 +370,13 @@ instance RunMessage LocationAttrs where
         else pure $ a & tokensL %~ subtractTokens tType n
     PlacedLocation _ _ lid | lid == locationId -> do
       let
-        doPlace =
-          selectOne ActiveInvestigator >>= traverse_ \active -> do
-            pushM $ checkAfter $ Window.PutLocationIntoPlay active lid
+        -- PlacedLocation carries no investigator: locations are put into play by
+        -- acts, agendas and other scenario cards, and the players advance those as
+        -- a group, so each investigator counts as having put it into play. Crediting
+        -- the active investigator instead fired "after you put a location into play"
+        -- for exactly one of them, and for nobody at all whenever that select came
+        -- back empty.
+        doPlace = pushM $ checkAfter $ Window.PutLocationIntoPlayByGroup lid
       pushM $ checkAfter $ Window.LocationEntersPlay lid
       if locationRevealed
         then do
@@ -397,8 +401,13 @@ instance RunMessage LocationAttrs where
           doPlace
           pure a
     RevealLocation miid lid | lid == locationId && not locationRevealed -> do
-      revealer <- maybe getLead pure miid
-      whenWindowMsg <- checkWindows [mkWindow Timing.When (Window.UnrevealedRevealLocation revealer lid)]
+      -- Same group attribution as the reveal windows below: setup and act/agenda
+      -- reveals arrive with no investigator, so every investigator is the revealer.
+      whenWindowMsg <-
+        checkWindows
+          [ mkWindow Timing.When
+              $ maybe (Window.UnrevealedRevealLocationByGroup lid) (`Window.UnrevealedRevealLocation` lid) miid
+          ]
       pushAll [whenWindowMsg, Do msg]
       pure a
     Do (RevealLocation miid lid) | lid == locationId && not locationRevealed -> do
@@ -418,10 +427,17 @@ instance RunMessage LocationAttrs where
         if revealerHere
           then join <$> fieldMay InvestigatorPreviousLocation revealer
           else pure Nothing
-      whenWindowMsg <- checkWindows [mkWindow Timing.When (Window.RevealLocation revealer lid)]
+      -- A reveal with no investigator behind it came from an act, agenda or other
+      -- scenario card. Those are advanced by the players as a group, so each of them
+      -- counts as the revealer; falling back to the lead fired "after you reveal a
+      -- location" for the lead alone. 'RevealLocationForcedAbilities' keeps the
+      -- single revealer either way -- its mFromLid means "moved in and revealed",
+      -- which is about one investigator's movement.
+      let revealWindow t = mkWindow t $ maybe (Window.RevealLocationByGroup lid) (`Window.RevealLocation` lid) miid
+      whenWindowMsg <- checkWindows [revealWindow Timing.When]
       revealForcedMsg <-
         checkWindows [mkWindow Timing.When (Window.RevealLocationForcedAbilities revealer lid mFromLid)]
-      afterWindowMsg <- checkWindows [mkWindow Timing.After (Window.RevealLocation revealer lid)]
+      afterWindowMsg <- checkWindows [revealWindow Timing.After]
       let currentClues = countTokens Clue locationTokens
 
       pushAll
@@ -507,7 +523,14 @@ instance RunMessage LocationAttrs where
     EndPhase -> do
       pure $ a & breachesL %~ fmap Breach.resetIncursion
     UnrevealLocation lid | lid == locationId -> pure $ a & revealedL .~ False
-    RemovedLocation lid -> pure $ a & directionsL %~ filterMap (/= []) . Map.map (filter (/= lid))
+    RemovedLocation lid ->
+      pure
+        $ a
+        & directionsL
+        %~ filterMap (/= [])
+        . Map.map (filter (/= lid))
+        & positionL
+        %~ \position -> if lid == locationId then Nothing else position
     UseResign iid source | isSource a source -> a <$ push (Resign iid)
     InvestigatorDrewEncounterCard _iid ec -> do
       pure $ a & cardsUnderneathL %~ filter ((/= ec.id) . (.id))
@@ -615,7 +638,7 @@ withDrawCardUnderneathAction x =
 
 instance HasAbilities LocationAttrs where
   getAbilities l =
-    [ basicAbility $ investigateAbility l AbilityInvestigate mempty (onLocation l)
+    [ basicAbility $ investigateAbilityAt l (LocationWithId l.id) AbilityInvestigate mempty (onLocation l)
     , basicAbility
         $ restricted
           l

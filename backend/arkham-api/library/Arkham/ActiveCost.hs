@@ -352,6 +352,9 @@ payCost msg c iid skipAdditionalCosts cost = do
     CostIfEnemy mtchr cost1 cost2 -> do
       hasEnemy <- selectAny mtchr
       payCost msg c iid skipAdditionalCosts $ if hasEnemy then cost1 else cost2
+    CostIfLocation mtchr cost1 cost2 -> do
+      hasLocation <- selectAny mtchr
+      payCost msg c iid skipAdditionalCosts $ if hasLocation then cost1 else cost2
     CostIfRemembered skey cost1 cost2 -> do
       ok <- remembered skey
       payCost msg c iid skipAdditionalCosts $ if ok then cost1 else cost2
@@ -482,7 +485,13 @@ payCost msg c iid skipAdditionalCosts cost = do
             ResourceCost resources -> do
               availableResources <- getSpendableResources iid
               pure $ min n (availableResources `div` resources)
+            ClueCost gv -> do
+              availableClues <- getSpendableClueCount [iid]
+              clues <- getGameValue gv
+              pure $ min n (availableClues `div` clues)
             SealCost matcher -> selectCount matcher
+            HandDiscardCost z matcher -> do
+              min n . (`div` z) <$> selectCount (inHandOf NotForPlay iid <> basic DiscardableCard <> matcher)
             _ -> pure n
           name <- fieldMap InvestigatorName toTitle iid
           choiceId <- getRandom

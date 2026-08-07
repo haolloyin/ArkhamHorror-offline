@@ -10,7 +10,7 @@ import {
   onUnmounted,
   type VNodeRef,
 } from 'vue'
-import { cardImg, imgsrc, isLocalized, toCamelCase } from '@/arkham/helpers'
+import { cardImg, formatContent, imgsrc, isLocalized, toCamelCase } from '@/arkham/helpers'
 import { homebrewTokenMap } from '@/arkham/homebrewAssets'
 import { BugAntIcon } from '@heroicons/vue/20/solid'
 import { useDebug } from '@/arkham/debug'
@@ -361,7 +361,13 @@ const overlayCardCode = computed<string | null>(() => {
   const match = card.value?.match(/\/cards\/c?(\d+)b?\.(?:avif|jpg|jpeg|png|webp)(?:\?.*)?$/i)
   return match?.[1] ?? null
 })
-const cardErrata = computed<string | null>(() => overlayCardDef.value?.errata ?? null)
+/* Card-def errata covers a whole card, but some errata only applies to one face —
+ * and the overlay resolves both faces to the same card def. A `data-errata`
+ * attribute lets whichever component knows which side is showing supply the text
+ * for just that side; it wins over the card def's own errata. */
+const cardErrata = computed<string | null>(
+  () => hoveredElement.value?.dataset.errata ?? overlayCardDef.value?.errata ?? null
+)
 
 watch(overlayCardCode, async (code) => {
   overlayCardDef.value = null
@@ -1211,7 +1217,7 @@ watchEffect(() => {
 
       <div v-for="entry in crossedOff" :key="entry" class="crossed-off" :class="{ [toCamelCase(entry)]: true }"></div>
 
-      <p v-if="cardErrata" class="card-errata">Errata: {{ cardErrata }}</p>
+      <p v-if="cardErrata" class="card-errata" v-html="`Errata: ${formatContent(cardErrata)}`"></p>
     </div>
 
     <div

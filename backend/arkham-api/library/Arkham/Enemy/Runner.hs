@@ -95,10 +95,10 @@ import Arkham.Message.Lifted (
   batched,
   capture,
   do_,
+  evasionResult,
   obtainCard,
   placeKey,
   removeEnemy,
-  evasionResult,
   scenarioSpecific,
   selectEach,
   successfulEvasion,
@@ -182,6 +182,9 @@ filterOutEnemyMessages eid ask'@(Ask pid q) = case q of
     x -> Just (Ask pid $ ChooseOneAtATime x)
   ChooseOneAtATimeWithAuto k msgs -> case mapMaybe (filterOutEnemyUiMessages eid) msgs of
     [] -> Nothing
+    -- Filtering can strip the question down to a single option, at which point the
+    -- auto ("resolve the rest") choice would just duplicate it.
+    [x] -> Just (Ask pid $ ChooseOneAtATime [x])
     x -> Just (Ask pid $ ChooseOneAtATimeWithAuto k x)
   ChooseUpgradeDeck -> Just (Ask pid ChooseUpgradeDeck)
   ChooseDeck -> Just ask'
@@ -248,9 +251,10 @@ getCanReady a = do
   phase <- getPhase
   pure $ CannotReady `notElem` mods && (DoesNotReadyDuringUpkeep `notElem` mods || phase /= #upkeep)
 
--- | Whether an enemy is currently barred from attacking. 'CannotAttack' is
--- unconditional; 'CannotAttackDuringEnemyPhase' only bites in the enemy phase,
--- since @Do EnemiesAttack@ is also pushed by card effects outside of it.
+{- | Whether an enemy is currently barred from attacking. 'CannotAttack' is
+unconditional; 'CannotAttackDuringEnemyPhase' only bites in the enemy phase,
+since @Do EnemiesAttack@ is also pushed by card effects outside of it.
+-}
 getCannotAttackNow :: HasGame m => [ModifierType] -> m Bool
 getCannotAttackNow mods
   | CannotAttack `elem` mods = pure True
@@ -2298,7 +2302,19 @@ instance RunMessage EnemyAttrs where
         AtLocation lid -> do
           let details = mkSpawnDetails enemyId (X.SpawnAtLocation lid)
           if isInPlayPlacement a.placement
-            then handlePlacement placement
+            then do
+              -- A ready, unengaged enemy engages any time it is at the same
+              -- location as an investigator (RR "Enemy Cards") -- including when
+              -- a card effect *places* an already-in-play enemy there rather
+              -- than spawning or moving it. Spawns engage through the
+              -- EnemySpawn flow and moves through After (EnemyEntered), but a
+              -- bare PlaceEnemy had no equivalent, so the enemy arrived
+              -- unengaged (Breaking and Entering putting the Hunting Horror in
+              -- the Restricted Hall, #5332). Pushed before handlePlacement so
+              -- engagement resolves ahead of the after-EnemyPlaced window, as
+              -- with enemy movement.
+              push $ EnemyCheckEngagement enemyId
+              handlePlacement placement
             else do
               pushAll
                 [ Will (EnemySpawn details)
@@ -2406,7 +2422,7 @@ instance RunMessage EnemyAttrs where
       -- generic DoBatch handler
       liftRunMessage (Do msg') a
     ForTarget (isTarget a -> True) msg' -> liftRunMessage msg' a
-    UseAbility _ ab _ | isSource a ab.source || isProxySource a ab.source || isIndexedSource a ab.source -> do
+    UseAbility _ ab _ | isSource a ab.source || isProxySource a ab.source || isIndexed a ab.source -> do
       push $ Do msg
       pure a
     InSearch msg'@(UseAbility _ ab _) | isSource a ab.source || isProxySource a ab.source -> do
