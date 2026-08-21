@@ -1,9 +1,6 @@
 module Arkham.Game.Settings where
 
-import Arkham.Ai.Orphans ()
-import Arkham.Ai.State (AiPlayerState)
 import Arkham.Card.CardCode (CardCode)
-import Arkham.Id (PlayerId)
 import Arkham.Prelude
 import Arkham.UltimatumsAndBoons.Types
 import Control.Monad.Fail
@@ -29,9 +26,6 @@ instance FromJSON AsIfRuling where
 data Settings = Settings
   { settingsAbilitiesCannotReactToThemselves :: Bool -- Grotesque Statue FAQ (September 2023)
   , settingsAsIfRuling :: AsIfRuling
-  , settingsAiPlayers :: Map PlayerId AiPlayerState
-  -- ^ Per-seat AI configuration. Empty for ordinary human-only games; absent
-  -- from older saves (defaults to 'mempty' on load).
   , settingsUltimatumsAndBoons :: Set UltimatumOrBoon
   -- ^ Variant rules selected at game creation; permanent for the campaign or
   -- standalone scenario per the FAQ, so nothing mutates this after creation.
@@ -68,9 +62,14 @@ asIfRulingFromStrictAsIfAt = \case
   False -> Chapter1AsIfRuling
   True -> Chapter2AsIfRuling
 
+{- | Fallback when the client doesn't send an explicit ruling. Official
+campaigns from @11@ on are Chapter 2. Homebrew campaigns (@:@-prefixed ids,
+which don't order against official ones) declare their chapter in their
+@campaign.json@ and the client sends it; without one they are Chapter 1.
+-}
 defaultAsIfRulingForCampaign :: Maybe Text -> AsIfRuling
 defaultAsIfRulingForCampaign = \case
-  Just cid | cid >= "11" -> Chapter2AsIfRuling
+  Just cid | not (":" `isPrefixOf` cid), cid >= "11" -> Chapter2AsIfRuling
   _ -> Chapter1AsIfRuling
 
 defaultSettings :: Settings
@@ -78,7 +77,6 @@ defaultSettings =
   Settings
     { settingsAbilitiesCannotReactToThemselves = True
     , settingsAsIfRuling = Chapter1AsIfRuling
-    , settingsAiPlayers = mempty
     , settingsUltimatumsAndBoons = mempty
     , settingsUltimatumsAndBoonsEnabled = True
     , settingsRolledUltimatumOrBoon = Nothing
@@ -91,7 +89,6 @@ instance ToJSON Settings where
     [ "settingsAbilitiesCannotReactToThemselves" .= settingsAbilitiesCannotReactToThemselves settings
     , "settingsAsIfRuling" .= settingsAsIfRuling settings
     , "settingsStrictAsIfAt" .= settingsStrictAsIfAt settings -- legacy/client compatibility
-    , "aiPlayers" .= settingsAiPlayers settings
     , "settingsUltimatumsAndBoons" .= settingsUltimatumsAndBoons settings
     , "settingsUltimatumsAndBoonsEnabled" .= settingsUltimatumsAndBoonsEnabled settings
     , "settingsRolledUltimatumOrBoon" .= settingsRolledUltimatumOrBoon settings
@@ -106,7 +103,6 @@ instance FromJSON Settings where
     legacyStrictAsIfAt <- o .:? "settingsStrictAsIfAt"
     asIfRuling <-
       o .:? "settingsAsIfRuling" .!= maybe defaultSettings.settingsAsIfRuling asIfRulingFromStrictAsIfAt legacyStrictAsIfAt
-    aiPlayers <- o .:? "aiPlayers" .!= mempty
     ultimatumsAndBoons <- o .:? "settingsUltimatumsAndBoons" .!= mempty
     ultimatumsAndBoonsEnabled <- o .:? "settingsUltimatumsAndBoonsEnabled" .!= True
     rolledUltimatumOrBoon <- o .:? "settingsRolledUltimatumOrBoon" .!= Nothing
@@ -116,7 +112,6 @@ instance FromJSON Settings where
       Settings
         { settingsAbilitiesCannotReactToThemselves = abilitiesCannotReactToThemselves
         , settingsAsIfRuling = asIfRuling
-        , settingsAiPlayers = aiPlayers
         , settingsUltimatumsAndBoons = ultimatumsAndBoons
         , settingsUltimatumsAndBoonsEnabled = ultimatumsAndBoonsEnabled
         , settingsRolledUltimatumOrBoon = rolledUltimatumOrBoon

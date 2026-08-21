@@ -7,7 +7,7 @@ import Arkham.Matcher
 import Arkham.Message
 import Arkham.Modifier
 import Arkham.Token
-import Arkham.Treachery.Cards qualified as Cards
+import Arkham.Treachery.CardDefs.TheDreamEaters qualified as Cards
 import Arkham.Treachery.Import.Lifted
 
 newtype Bloodlust = Bloodlust TreacheryAttrs
@@ -25,7 +25,7 @@ instance HasAbilities Bloodlust where
           1
           ( DuringSkillTest
               $ YourSkillTest
-              $ WhileAttackingAnEnemy AnyEnemy
+              $ WhileAttacking
               <> SkillTestSourceMatches (SourceIsAsset $ assetIs Assets.theHungeringBlade1 <> AssetControlledBy You)
           )
         $ FastAbility (ShuffleIntoDeckCost $ toTarget attrs)

@@ -112,7 +112,6 @@ import Arkham.SkillType ()
 import Arkham.Spawn qualified
 import Arkham.Token
 import Arkham.Token qualified as Token
-import Arkham.Tracing
 import Arkham.Trait
 import Arkham.Window (mkAfter, mkWhen)
 import Arkham.Window qualified as Window
@@ -131,7 +130,7 @@ AsIfAt, so use the investigator's physical placement; under Chapter 1 rules
 AsIfAt applies for the duration of the ability.
 -}
 disengageLocation
-  :: (HasCallStack, HasGame m, Tracing m) => InvestigatorId -> m LocationId
+  :: (HasCallStack, HasGame m) => InvestigatorId -> m LocationId
 disengageLocation iid = do
   settings <- getSettings
   mlid <-
@@ -150,6 +149,7 @@ filterOutEnemyMessages eid ask'@(Ask pid q) = case q of
   PayCostQuestion {} -> Just ask'
   QuestionWithSource {} -> Just ask'
   Read {} -> Just ask'
+  ChooseOneWizard {} -> Just ask'
   DropDown {} -> Just ask'
   PickSupplies {} -> Just ask'
   PickDestiny {} -> Just ask'
@@ -216,7 +216,7 @@ filterOutEnemyUiMessages eid = \case
   FightLabelWithSkill eid' _ _ | eid == eid' -> Nothing
   other -> Just other
 
-getInvestigatorsAtSameLocation :: (HasGame m, Tracing m) => EnemyAttrs -> m [InvestigatorId]
+getInvestigatorsAtSameLocation :: HasGame m => EnemyAttrs -> m [InvestigatorId]
 getInvestigatorsAtSameLocation attrs = do
   field EnemyLocation (toId attrs) >>= \case
     Nothing -> pure []
@@ -261,13 +261,13 @@ getCannotAttackNow mods
   | CannotAttackDuringEnemyPhase `elem` mods = (== #enemy) <$> getPhase
   | otherwise = pure False
 
-getCanEngage :: (HasGame m, Tracing m) => EnemyAttrs -> m Bool
+getCanEngage :: HasGame m => EnemyAttrs -> m Bool
 getCanEngage a = do
   keywords <- getModifiedKeywords a
   unengaged <- selectNone $ investigatorEngagedWith a.id
   pure $ all (`notElem` keywords) [#aloof, #massive] && unengaged
 
-getPaths :: (HasGame m, Tracing m) => EnemyAttrs -> [LocationId] -> m [LocationId]
+getPaths :: HasGame m => EnemyAttrs -> [LocationId] -> m [LocationId]
 getPaths a destinations =
   getLocationOf a >>= \case
     Nothing -> pure []
@@ -295,13 +295,13 @@ getPaths a destinations =
             pure $ if null barricadedPathIds then pathIds' else barricadedPathIds
           else pure pathIds'
 
-getActualAvailablePrey :: (HasGame m, Tracing m) => EnemyAttrs -> m [InvestigatorId]
+getActualAvailablePrey :: HasGame m => EnemyAttrs -> m [InvestigatorId]
 getActualAvailablePrey a =
   getPreyMatcher a >>= \case
     OnlyPrey m -> select m
     _ -> getAvailablePrey a
 
-getAvailablePrey :: (HasGame m, Tracing m) => EnemyAttrs -> m [InvestigatorId]
+getAvailablePrey :: HasGame m => EnemyAttrs -> m [InvestigatorId]
 getAvailablePrey a = runDefaultMaybeT [] do
   enemyLocation <- MaybeT $ field EnemyLocation a.id
   iids <- select $ investigatorAt enemyLocation <> InvestigatorCanBeEngagedBy a.id
@@ -622,8 +622,22 @@ instance RunMessage EnemyAttrs where
           -- never reaches here — `EnemyMove` filters those out (#5277) — so
           -- engagement-preserving self-moves (Knight of the Inner Circle) are
           -- unaffected.
+          --
+          -- A threat area belonging to an investigator *at* `lid` is also exempt:
+          -- that placement was written by this very entry, not left over from
+          -- wherever the enemy came from. `Do (EngageEnemy)` queues
+          -- [PlaceEnemy (InThreatArea iid), EnemyEntered] whenever a card effect
+          -- engages an enemy standing somewhere else ("Get over here!" on an
+          -- enemy at a connecting location), so rewriting it here undid the
+          -- engagement. `After (EnemyEntered)` re-engaged ordinary enemies via
+          -- `EnemyCheckEngagement` and hid the damage, but that check bails on
+          -- aloof/massive/exhausted/prey-restricted enemies — an Aloof Disciple
+          -- of the Devourer was fought but never engaged. Issue #5432.
           case a.placement of
             InThreatArea {} | isJust enemySpawnDetails -> pure a
+            InThreatArea iid' -> do
+              engagedHere <- (== Just lid) <$> getMaybeLocation iid'
+              pure $ if engagedHere then a else a & placementL .~ AtLocation lid
             _ -> pure $ a & placementL .~ AtLocation lid
     After (EnemyEntered eid lid) | eid == enemyId -> do
       case enemyPlacement of
@@ -848,7 +862,14 @@ instance RunMessage EnemyAttrs where
       -- `enemyMovement` describes that newer move, so this stale placement write
       -- must not drag the enemy back to the superseded destination.
       let supersededMidMove = maybe False ((/= ToLocation lid) . moveDestination) enemyMovement
-      if current == Just lid || leftPlayMidMove || supersededMidMove
+      -- The enemy was put back in the shadows while this move's enter-windows
+      -- were open, which clears `enemyMovement` (see `PlaceEnemy InTheShadows`).
+      -- `InTheShadows` is an *in-play* placement, so `leftPlayMidMove` above
+      -- cannot see it; without this the exposure's deferred placement write
+      -- drags the enemy straight back out (#5365). A live exposure always still
+      -- has its movement recorded, so it is unaffected.
+      let cancelledIntoShadows = enemyPlacement == InTheShadows && isNothing enemyMovement
+      if current == Just lid || leftPlayMidMove || supersededMidMove || cancelledIntoShadows
         then pure a
         else pure $ a & placementL .~ AtLocation lid
     After (EndTurn _) | not enemyDefeated -> a <$ push (EnemyCheckEngagement $ toId a)
@@ -1300,9 +1321,14 @@ instance RunMessage EnemyAttrs where
             ]
       pure a
     EnemyEvaded iid eid | eid == enemyId -> do
+      -- The exhaust/disengage lives in `Do msg`, and the whole cascade rides in
+      -- a batch fronted by the EnemyWouldBeEvaded would-windows, so a reaction
+      -- that replaces the evasion (Reminiscence (Covenant)) can CancelBatch and
+      -- leave the enemy engaged and ready.
+      (batchId, wouldMsgs) <- wouldWindows $ Window.EnemyWouldBeEvaded iid enemyId
       whenWindow <- checkWindows [mkWhen $ Window.EnemyEvaded iid enemyId]
       afterWindow <- checkWindows [mkAfter $ Window.EnemyEvaded iid enemyId]
-      pushAll [whenWindow, Do msg, afterWindow]
+      push $ Would batchId $ wouldMsgs <> [whenWindow, Do msg, afterWindow]
       pure a
     Do (EnemyEvaded iid eid) | eid == enemyId -> do
       mods <- getModifiers iid
@@ -1945,6 +1971,15 @@ instance RunMessage EnemyAttrs where
         Just target | isTarget target (sourceToTarget source) -> push $ toDiscard GameSource a
         _ -> pure ()
       pure a
+    -- An enemy standing on a location that leaves play goes with it. Only a
+    -- \*direct* placement counts: an enemy attached to an asset, swarming a host
+    -- or sitting in a threat area reaches the location through that host, and
+    -- leaves play when the host does. Going through `Discard` (rather than
+    -- being swept from `Game.Runner`) is what gives cards attached to this
+    -- enemy their `EnemyLeavesPlay #when` window before it goes, #5426.
+    RemovedLocation lid | isDirectlyAtLocation lid a.placement -> do
+      push $ toDiscard GameSource a
+      pure a
     ShuffleBackIntoEncounterDeck source (isTarget a -> True) -> do
       mods <- getModifiers (toTarget a)
       blocked <-
@@ -2006,13 +2041,12 @@ instance RunMessage EnemyAttrs where
             AsSwarm eid' _ -> do
               pushAll [before, EngageEnemy iid eid' mTarget False, after]
             _ -> do
-              massive <- eid <=~> MassiveEnemy
               mlid <- getMaybeLocation iid
               enemyLocation <- field EnemyLocation eid
               canEnter <-
                 maybe (pure False) (\loc -> (enemyLocation == Just loc ||) <$> canEnterLocation enemyId loc) mlid
 
-              when (not massive && canEnter) do
+              when canEnter do
                 Lifted.batched \_ -> do
                   Lifted.checkWhen $ Window.EnemyWouldEngage iid eid
                   Lifted.do_ msg
@@ -2021,8 +2055,19 @@ instance RunMessage EnemyAttrs where
       let (before, _, after) = frame (Window.EnemyEngaged iid eid)
       mlid <- getMaybeLocation iid
       enemyLocation <- field EnemyLocation eid
+      -- A massive enemy can never be placed in a threat area; it is engaged with
+      -- everyone at its location, so a card effect that engages it (Stalked in
+      -- the Dark on a Shadow-spawned Hunting Horror) resolves by moving it to
+      -- that investigator's location instead of being dropped entirely.
+      massive <- eid <=~> MassiveEnemy
+      let
+        placement =
+          if massive
+            then [PlaceEnemy eid (AtLocation lid) | lid <- maybeToList mlid, Just lid /= enemyLocation]
+            else [PlaceEnemy eid (InThreatArea iid)]
       pushAll
-        $ [before, PlaceEnemy eid (InThreatArea iid)]
+        $ [before]
+        <> placement
         <> [EnemyEntered eid lid | lid <- maybeToList mlid, Just lid /= enemyLocation]
         <> [after]
 
@@ -2333,6 +2378,32 @@ instance RunMessage EnemyAttrs where
         HiddenInHand _ -> do
           obtainCard (toCardId a)
           handlePlacement placement
+        -- Returning an enemy to the shadows cancels an engagement that is still
+        -- queued behind an open `#when EnemyEngaged` window. `Do (EngageEnemy)`
+        -- pushes that window and the threat-area placement together, so a forced
+        -- reaction in the window resolves first: act 1 of Shades of Suffering
+        -- advances off that very window, and its advance puts Tzu San Niang back
+        -- in the shadows and redistributes her concealed mini-cards. The stale
+        -- placement then dragged her into the investigator's threat area, leaving
+        -- her in play twice -- mini-card *and* enemy (#5365). The act's failure
+        -- branch already calls `cancelEnemyEngagement` by hand; this covers every
+        -- other route back into the shadows.
+        InTheShadows -> do
+          mQueuedEngagement <- lift $ findFromQueue \case
+            PlaceEnemy eid' (InThreatArea _) -> eid' == enemyId
+            _ -> False
+          case mQueuedEngagement of
+            Just (PlaceEnemy _ (InThreatArea iid)) -> cancelEnemyEngagement iid enemyId
+            _ -> pure ()
+          -- ...and it cancels any in-flight move. Exposing a concealed enemy
+          -- moves it out of the shadows, but `Do (EnemyMove)` commits the
+          -- placement *after* the enter-windows, so the enemy is still
+          -- `InTheShadows` while they run -- which makes this very placement a
+          -- no-op and leaves the move free to land it at the mini-card's
+          -- location anyway. Dropping `enemyMovement` is what `Do (EnemyMove)`
+          -- reads to tell a live exposure from a cancelled one (#5365).
+          a' <- handlePlacement placement
+          pure $ a' & movementL .~ Nothing
         _ -> handlePlacement placement
     Blanked msg' -> liftRunMessage msg' a
     UseCardAbility iid (isSource a -> True) AbilityAttack _ _ -> do

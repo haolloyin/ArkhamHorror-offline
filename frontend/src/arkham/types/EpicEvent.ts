@@ -21,6 +21,12 @@ export interface GroupPlayerInfo {
   investigatorId: string | null
 }
 
+export interface ReplicateTarget {
+  target: unknown
+  cardCode: string
+  kind: 'location' | 'investigator' | 'enemy'
+}
+
 export interface GroupDigest {
   ordinal: number
   name: string
@@ -30,6 +36,7 @@ export interface GroupDigest {
   seatCount: number
   youAreSeated: boolean
   players: GroupPlayerInfo[]
+  replicateTargets: ReplicateTarget[]
 }
 
 export interface EventDetails {
@@ -40,6 +47,7 @@ export interface EventDetails {
   createdAt: string
   sharedState: SharedEventState
   totalInvestigators: number
+  playWithBlobElse: boolean
   groups: GroupDigest[]
 }
 
@@ -60,6 +68,7 @@ export interface CreateEventPost {
   scenarioId: string
   difficulty: string
   includeTarotReadings: boolean
+  playWithBlobElse: boolean
   // Minutes for the shared countdown; 0 means "no time limit".
   timeLimitMinutes: number
   groups: CreateEventGroup[]
@@ -82,10 +91,9 @@ export const TIMER_STARTED_AT = 'timer-started-at'
 // Total investigators across all groups; the shared-clue requirement scales off it.
 export const TOTAL_INVESTIGATORS = 'total-investigators'
 
-// Shared CUMULATIVE clue progress per act stage. The counter `act-progress:<stage>`
-// exists (seeded to 0) only for acts that advance on a GLOBAL clue threshold
-// (The Blob's acts 1 & 3, not act 2). Within-cycle progress is `value mod threshold`
-// where `threshold = 2 * total-investigators`.
+// Shared clue progress per act stage. The Blob's Epic Act 1 is the only act with
+// a global clue threshold; its pool resets when the organizer resolves an advance.
+// The threshold is `2 * total-investigators`.
 export function actProgressKey(stage: number): string {
   return `act-progress:${stage}`
 }
@@ -99,8 +107,8 @@ export function actProgressValue(state: SharedEventState, stage: number): number
 }
 
 // `awaiting-organizer:<stage>` gates a shared act advance: when the pooled clues
-// exceed the threshold the backend sets it to 1 and waits for the organizer to
-// choose which groups spend (an exact-match pool auto-resolves without it).
+// reaches the threshold the backend sets it to 1 and waits for the organizer to
+// choose which groups supply the exact required spend.
 export const AWAITING_ORGANIZER = 'awaiting-organizer'
 
 export function awaitingOrganizerKey(stage: number): string {
@@ -187,6 +195,18 @@ export const groupPlayerInfoDecoder = JsonDecoder.object<GroupPlayerInfo>(
   'GroupPlayerInfo',
 )
 
+export const replicateTargetDecoder = JsonDecoder.object<ReplicateTarget>(
+  {
+    target: JsonDecoder.succeed(),
+    cardCode: JsonDecoder.string(),
+    kind: JsonDecoder.oneOf(
+      [JsonDecoder.isExactly('location'), JsonDecoder.isExactly('investigator'), JsonDecoder.isExactly('enemy')],
+      'ReplicateTarget.kind',
+    ),
+  },
+  'ReplicateTarget',
+)
+
 export const groupDigestDecoder = JsonDecoder.object<GroupDigest>(
   {
     ordinal: JsonDecoder.number(),
@@ -197,6 +217,7 @@ export const groupDigestDecoder = JsonDecoder.object<GroupDigest>(
     seatCount: JsonDecoder.number(),
     youAreSeated: JsonDecoder.boolean(),
     players: JsonDecoder.array(groupPlayerInfoDecoder, 'GroupPlayerInfo[]'),
+    replicateTargets: JsonDecoder.array(replicateTargetDecoder, 'ReplicateTarget[]'),
   },
   'GroupDigest',
 )
@@ -210,6 +231,7 @@ export const eventDetailsDecoder = JsonDecoder.object<EventDetails>(
     createdAt: JsonDecoder.string(),
     sharedState: sharedEventStateDecoder,
     totalInvestigators: JsonDecoder.number(),
+    playWithBlobElse: JsonDecoder.boolean(),
     groups: JsonDecoder.array(groupDigestDecoder, 'GroupDigest[]'),
   },
   'EventDetails',

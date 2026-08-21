@@ -17,10 +17,9 @@ import Arkham.Prelude
 import Arkham.Projection
 import Arkham.Source
 import Arkham.Story.Types (Field (..))
-import Arkham.Tracing
 import Arkham.Trait (Trait, toTraits)
 
-sourceTraits :: (HasCallStack, HasGame m, Tracing m) => Source -> m (Set Trait)
+sourceTraits :: (HasCallStack, HasGame m) => Source -> m (Set Trait)
 sourceTraits = \case
   PaymentSource s -> sourceTraits s
   UseAbilitySource _ s _ -> sourceTraits s
@@ -73,7 +72,7 @@ sourceTraits = \case
   ConcealedCardSource _ -> pure mempty
   UltimatumOrBoonSource _ -> pure mempty
 
-getSourceController :: (HasGame m, Tracing m) => Source -> m (Maybe InvestigatorId)
+getSourceController :: HasGame m => Source -> m (Maybe InvestigatorId)
 getSourceController = \case
   AbilitySource s _ -> getSourceController s
   UseAbilitySource iid _ _ -> pure $ Just iid
@@ -95,7 +94,7 @@ ability is additionally credited, so effects performed via a location/encounter 
 count for "you deal/heal/defeat" cards. See issue #4902.
 -}
 checkSourceOwner
-  :: (HasCallStack, HasGame m, Tracing m)
+  :: (HasCallStack, HasGame m)
   => Bool -> Matcher.InvestigatorMatcher -> Source -> m Bool
 checkSourceOwner creditUser whoMatcher = go
  where
@@ -147,7 +146,7 @@ checkSourceOwner creditUser whoMatcher = go
     PaymentSource s' -> go s'
     _ -> pure False
 
-sourceMatches :: (HasCallStack, HasGame m, Tracing m) => Source -> Matcher.SourceMatcher -> m Bool
+sourceMatches :: (HasCallStack, HasGame m) => Source -> Matcher.SourceMatcher -> m Bool
 sourceMatches s = \case
   Matcher.SourceIsCancelable sm -> case s of
     CardCostSource _ -> pure False
@@ -353,26 +352,29 @@ sourceMatches s = \case
       UseAbilitySource _ s' _ -> sourceMatches s' Matcher.SourceIsPlayerCard
       _ -> pure False
   Matcher.SourceWithCard cardMatcher -> do
-    let
-      getCardSource = \case
-        AbilitySource source' _ -> getCardSource source'
-        UseAbilitySource _ source' _ -> getCardSource source'
-        AssetSource aid -> fieldMay AssetCard aid
-        EventSource eid -> fieldMay EventCard eid
-        SkillSource sid -> fieldMay SkillCard sid
-        EnemySource eid -> fieldMay EnemyCard eid
-        TreacherySource tid -> fieldMay TreacheryCard tid
-        LocationSource lid -> fieldMay LocationCard lid
-        StorySource sid -> fieldMay StoryCard sid
-        InvestigatorSource _ -> pure Nothing
-        CardIdSource cid -> Just <$> getCard cid
-        _ -> pure Nothing
-    mCard <- getCardSource s
+    mCard <- sourceCard s
     pure $ case mCard of
       Just c -> c `cardMatch` cardMatcher
       Nothing -> False
+  Matcher.SourceWithExtendedCard cardMatcher ->
+    sourceCard s >>= maybe (pure False) (<=~> cardMatcher)
 
-sourceTypes :: (HasCallStack, Tracing m, HasGame m) => Source -> m (Set CardType)
+sourceCard :: HasGame m => Source -> m (Maybe Card)
+sourceCard = \case
+  AbilitySource source' _ -> sourceCard source'
+  UseAbilitySource _ source' _ -> sourceCard source'
+  AssetSource aid -> fieldMay AssetCard aid
+  EventSource eid -> fieldMay EventCard eid
+  SkillSource sid -> fieldMay SkillCard sid
+  EnemySource eid -> fieldMay EnemyCard eid
+  TreacherySource tid -> fieldMay TreacheryCard tid
+  LocationSource lid -> fieldMay LocationCard lid
+  StorySource sid -> fieldMay StoryCard sid
+  InvestigatorSource _ -> pure Nothing
+  CardIdSource cid -> Just <$> getCard cid
+  _ -> pure Nothing
+
+sourceTypes :: (HasCallStack, HasGame m) => Source -> m (Set CardType)
 sourceTypes = \case
   PaymentSource s -> sourceTypes s
   UseAbilitySource _ s _ -> sourceTypes s

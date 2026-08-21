@@ -1,11 +1,17 @@
 module Arkham.Helpers.Discover where
 
 import Arkham.Action qualified as Action
-import Arkham.Campaigns.TheScarletKeys.Concealed.Helpers (ForExpose (..), chooseExposeConcealedAt, getConcealedAt)
+import Arkham.Campaigns.TheScarletKeys.Concealed.Helpers (
+  ForExpose (..),
+  chooseExposeConcealedAt,
+  exposeConcealed,
+  getConcealedAt,
+ )
 import Arkham.Classes.HasGame
+import Arkham.Classes.HasQueue (evalQueueT)
 import Arkham.Discover
 import {-# SOURCE #-} Arkham.Game ()
-import Arkham.Helpers.Investigator (getCanDiscoverClues)
+import Arkham.Helpers.Investigator (getCanDiscoverClues, getCanExposeAt)
 import Arkham.Helpers.Message (push, pushAll)
 import Arkham.Helpers.Modifiers
 import Arkham.Helpers.Window (checkWindows, frame)
@@ -15,29 +21,30 @@ import Arkham.Location.Types (Field (..))
 import Arkham.Matcher.Location (LocationMatcher (LocationWithId))
 import Arkham.Message
 import Arkham.Message qualified as Msg
+import Arkham.Message.Lifted.Choose (chooseOneM, chooseTargetM, labeledI)
 import Arkham.Message.Lifted.Queue (ReverseQueue)
 import Arkham.Modifier
 import Arkham.Prelude
 import Arkham.Projection
 import Arkham.Source
 import Arkham.Target
-import Arkham.Tracing
 import Arkham.Window qualified as Window
 import Data.Map.Strict qualified as Map
 
-getDiscoverLocation :: (HasGame m, Tracing m) => InvestigatorId -> Discover -> m (Maybe LocationId)
+getDiscoverLocation :: HasGame m => InvestigatorId -> Discover -> m (Maybe LocationId)
 getDiscoverLocation iid d = case d.location of
   DiscoverAtLocation lid' -> pure (Just lid')
   DiscoverYourLocation -> field InvestigatorLocation iid
 
-getDiscoveredTotal :: (HasGame m, Tracing m) => InvestigatorId -> Discover -> m Int
-getDiscoveredTotal iid d = getDiscoverLocation iid d >>= \case
-  Nothing -> pure 0
-  Just lid -> do
-    mods <- getModifiers iid
-    let additionalDiscovered = getSum $ fold [Sum x | d.isInvestigate == IsInvestigate, DiscoveredClues x <- mods]
-    base <- total lid (d.count + additionalDiscovered)
-    min base <$> field LocationClues lid
+getDiscoveredTotal :: HasGame m => InvestigatorId -> Discover -> m Int
+getDiscoveredTotal iid d =
+  getDiscoverLocation iid d >>= \case
+    Nothing -> pure 0
+    Just lid -> do
+      mods <- getModifiers iid
+      let additionalDiscovered = getSum $ fold [Sum x | d.isInvestigate == IsInvestigate, DiscoveredClues x <- mods]
+      base <- total lid (d.count + additionalDiscovered)
+      min base <$> field LocationClues lid
  where
   total lid' n = do
     let
@@ -48,13 +55,32 @@ getDiscoveredTotal iid d = getDiscoverLocation iid d >>= \case
     mMax :: Maybe Int <- foldr getMaybeMax Nothing <$> getModifiers lid'
     pure $ maybe n (min n) mMax
 
--- | Resolve a successful @Investigate@ at a location (regular or enemy-location).
--- Fire the @SuccessfulInvestigation@ window frame and push the actual
--- @DiscoverClues@, honoring any @AlternateSuccessfullInvestigation@ redirects.
---
--- @selfSource@ is the location's own source (used as the discover source);
--- @source@ is the source of the resolving skill test (forwarded to alternate
--- successful-investigation targets).
+withExposeInsteadOfInvestigating
+  :: (ReverseQueue m, Sourceable source)
+  => InvestigatorId -> source -> LocationId -> [Message] -> m [Message]
+withExposeInsteadOfInvestigating iid (toSource -> source) lid msgs = do
+  mods <- getModifiers iid
+  -- riders are locations where we can discover additional clues, since the replacement
+  -- effect should cover the entire effect we can only expose one card
+  let riders = nub [olid | DiscoveredCluesAt olid _ <- mods, olid /= lid]
+  concealed <- concatForM (lid : riders) \lid' ->
+    getCanExposeAt iid source lid' >>= \case
+      False -> pure []
+      True -> getConcealedAt (ForExpose source) lid'
+  if null concealed
+    then pure msgs
+    else evalQueueT $ chooseOneM iid do
+      labeledI "exposeConcealedCard" $ chooseTargetM iid concealed (exposeConcealed iid source . (.id))
+      labeledI "doNotExposeConcealed" $ pushAll msgs
+
+{- | Resolve a successful @Investigate@ at a location (regular or enemy-location).
+Fire the @SuccessfulInvestigation@ window frame and push the actual
+@DiscoverClues@, honoring any @AlternateSuccessfullInvestigation@ redirects.
+
+@selfSource@ is the location's own source (used as the discover source);
+@source@ is the source of the resolving skill test (forwarded to alternate
+successful-investigation targets).
+-}
 resolveSuccessfulInvestigation
   :: ReverseQueue m => LocationId -> Source -> InvestigatorId -> Source -> Int -> m ()
 resolveSuccessfulInvestigation lid selfSource iid source n = do
@@ -69,14 +95,15 @@ resolveSuccessfulInvestigation lid selfSource iid source n = do
     push $ Successful (Action.Investigate, toTarget lid) iid source target' n
   push after
 
--- | Set up clue discovery at a location (regular or enemy-location), so that an
--- investigator standing on an enemy-location can actually discover its clues.
--- Computes the discoverable counts (respecting @MaxCluesDiscovered@ and
--- @DiscoveredCluesAt@), fires @WouldDiscoverClues@ windows, and hands off to the
--- generic @DoStep 1 (DiscoverClues ...)@ pipeline in the investigator runner;
--- when nothing can be discovered, offers to expose any concealed cards instead.
---
--- @lid@ must equal the discover target (@d.location == DiscoverAtLocation lid@).
+{- | Set up clue discovery at a location (regular or enemy-location), so that an
+investigator standing on an enemy-location can actually discover its clues.
+Computes the discoverable counts (respecting @MaxCluesDiscovered@ and
+@DiscoveredCluesAt@), fires @WouldDiscoverClues@ windows, and hands off to the
+generic @DoStep 1 (DiscoverClues ...)@ pipeline in the investigator runner;
+when nothing can be discovered, offers to expose any concealed cards instead.
+
+@lid@ must equal the discover target (@d.location == DiscoverAtLocation lid@).
+-}
 resolveDiscoverCluesAt :: ReverseQueue m => LocationId -> InvestigatorId -> Discover -> m ()
 resolveDiscoverCluesAt lid iid d = do
   mods <- getModifiers iid

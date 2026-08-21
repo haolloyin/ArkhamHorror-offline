@@ -58,9 +58,8 @@ import { awaitingOrganizer, type SharedEventState } from '@/arkham/types/EpicEve
 import { useMenu } from '@/composable/menu'
 import useEmitter from '@/composable/useEmitter'
 import { useDebug } from '@/arkham/debug'
-import { useAi } from '@/arkham/ai'
-import { useSettings } from '@/stores/settings'
-import { cardImg, imgsrc } from '@/arkham/helpers'
+import { cardImg, imgsrc, isTypingTarget } from '@/arkham/helpers'
+import { cardFaceImages, cardHasDistinctBack } from '@/arkham/cardImages'
 import { handleEmbeddedI18n } from '@/arkham/i18n'
 import { getGameLocalStorageItem, setGameLocalStorageItem } from '@/arkham/localStorage'
 import * as Arkham from '@/arkham/types/Game'
@@ -91,9 +90,8 @@ import PlayerEventBar from '@/arkham/components/PlayerEventBar.vue'
 import EventStartBarrier from '@/arkham/components/EventStartBarrier.vue'
 import EventActAdvanceBarrier from '@/arkham/components/EventActAdvanceBarrier.vue'
 import StandaloneScenario from '@/arkham/components/StandaloneScenario.vue'
+import StoryQuestion from '@/arkham/components/StoryQuestion.vue'
 import AchievementToast from '@/arkham/components/AchievementToast.vue'
-import AiControlPanel from '@/arkham/components/AiControlPanel.vue'
-import AiQuestionsPanel from '@/arkham/components/AiQuestionsPanel.vue'
 import Draggable from '@/components/Draggable.vue'
 import Menu from '@/components/Menu.vue'
 import Prompt from '@/components/Prompt.vue'
@@ -123,6 +121,7 @@ type ServerResult =
   | { tag: 'GameUI'; contents: string }
   | { tag: 'GameAudio'; contents: string }
   | { tag: 'SharedStateUpdate'; contents: SharedEventState }
+  | { tag: 'EventChanged' }
 
 export interface Props {
   gameId: string
@@ -132,12 +131,6 @@ export interface Props {
 const props = withDefaults(defineProps<Props>(), { spectate: false })
 
 const debug = useDebug()
-const ai = useAi()
-const settings = useSettings()
-// AI-investigator UI/driver is gated on the dev-only "AI Investigators" settings
-// flag (Settings → danger zone). The flag is itself `isDevBuild() && stored`, so
-// it is never enabled in production and defaults OFF in dev until toggled on.
-const aiDevEnabled = computed(() => settings.aiInvestigatorsEnabled)
 const emitter = useEmitter()
 const router = useRouter()
 const route = useRoute()
@@ -194,6 +187,21 @@ watch(
     eventStore.load(eid).catch((e) => console.error(e))
   },
   { immediate: true },
+)
+
+// Main Street can transfer this player's complete investigator state to a
+// sibling game. EventChanged refreshes the roster; follow that authoritative
+// membership so the old websocket is replaced by the destination game's room.
+watch(
+  [() => eventStore.event, () => userStore.currentUser?.username],
+  ([event, username]) => {
+    if (!event || !username || event.role === 'organizer' || props.spectate) return
+    const currentGroup = event.groups.find((group) => group.gameId === props.gameId)
+    if (currentGroup?.players.some((player) => player.username === username)) return
+    const destination = event.groups.find((group) => group.players.some((player) => player.username === username))
+    if (!destination?.gameId) return
+    void router.replace({ name: 'Game', params: { gameId: destination.gameId }, query: { event: event.id } })
+  },
 )
 
 // "Epic Multiplayer" time limit. The event id this game view actively
@@ -447,7 +455,59 @@ const choices = computed(() => {
   return choicesByPlayer.value.get(playerId.value) ?? []
 })
 const gameOver = computed(() => game.value?.gameState.tag === 'IsOver')
-const question = computed(() => (playerId.value ? game.value?.question[playerId.value] : null))
+const questionPlayerId = computed(() => {
+  const currentGame = game.value
+  if (!currentGame) return playerId.value
+  if (playerId.value && currentGame.question[playerId.value]) return playerId.value
+  if (solo.value && currentGame.gameState.tag === 'IsChooseDecks') {
+    return Object.keys(currentGame.question)[0] ?? playerId.value
+  }
+  return playerId.value
+})
+const question = computed(() => {
+  const owner = questionPlayerId.value
+  return owner ? game.value?.question[owner] : null
+})
+
+watch(questionPlayerId, (owner) => {
+  if (owner && owner !== playerId.value) playerId.value = owner
+})
+
+// Replacing a killed or insane investigator is a chain of setup questions
+// (deck, trauma, lead investigator, scenario setup). Some transitions can occur
+// after the upgrade component has unmounted, so its local waiting poll cannot
+// carry the UI through the whole chain. Keep the game view synchronized until
+// the engine leaves IsChooseDecks.
+let chooseDecksPoll: ReturnType<typeof setTimeout> | null = null
+async function pollChooseDecksState() {
+  try {
+    const latest = await fetchGame(props.gameId, props.spectate)
+    game.value = latest.game
+    if (latest.playerId && !latest.game.question[playerId.value ?? '']) {
+      playerId.value = latest.playerId
+    }
+    followPendingUpgradeQuestion(latest.game)
+    if (latest.game.gameState.tag === 'IsChooseDecks') {
+      chooseDecksPoll = setTimeout(pollChooseDecksState, 750)
+    } else {
+      chooseDecksPoll = null
+    }
+  } catch {
+    chooseDecksPoll = setTimeout(pollChooseDecksState, 1500)
+  }
+}
+
+watch(
+  () => game.value?.gameState.tag,
+  (tag) => {
+    if (tag === 'IsChooseDecks' && chooseDecksPoll === null) {
+      chooseDecksPoll = setTimeout(pollChooseDecksState, 500)
+    } else if (tag !== 'IsChooseDecks' && chooseDecksPoll !== null) {
+      clearTimeout(chooseDecksPoll)
+      chooseDecksPoll = null
+    }
+  },
+)
 
 function questionTag(q: Question | null | undefined): string | null {
   if (!q) return null
@@ -459,9 +519,26 @@ function questionTag(q: Question | null | undefined): string | null {
 // which Campaign.vue renders under exactly this condition. Read off an explicit
 // game rather than game.value: applyGameUpdate can defer the game.value swap into
 // a view transition, so an incoming update must be inspected directly.
+function followPendingUpgradeQuestion(g: Arkham.Game) {
+  if (!solo.value || g.gameState.tag !== 'IsChooseDecks') return
+  const currentPlayerId = playerId.value
+  if (currentPlayerId && g.question[currentPlayerId]) return
+
+  // Replacement investigators can produce follow-up trauma and setup questions
+  // after ChooseUpgradeDeck has been answered. Keep following whichever solo
+  // investigator owns the continuation instead of remaining on the answered tab.
+  const pendingPlayer = Object.keys(g.question)[0]
+  if (pendingPlayer) playerId.value = pendingPlayer
+}
+
+watch([game, playerId, solo], ([currentGame]) => {
+  if (currentGame) followPendingUpgradeQuestion(currentGame)
+})
+
 function scenarioBoardMounted(g: Arkham.Game) {
   const scenario = g.scenario
   if (!scenario) return false
+  if (g.gameState.tag !== 'IsActive' && g.gameState.tag !== 'IsOver') return false
   if (scenario.campaignStep) return false
   if (!scenario.started) return false
   return Object.keys(g.investigators).length > 0
@@ -533,61 +610,6 @@ watch(activePlayerId, (newActivePlayerId, oldActivePlayerId) => {
 
   playAudioFile('turnIndicator.ogg')
 })
-
-// --- "AI asks questions" fetch trigger (dev-only) ----------------------------
-// On a genuine old->new turn-start edge where the new active seat is an AI seat,
-// pull the AI's pending questions and merge them into the store. Gated on the
-// dev flag; guarded to the turn-start edge so it never refetch-spams. AI-target
-// questions are auto-resolved here; human-target ones render in AiQuestionsPanel.
-watch(activePlayerId, (newActivePlayerId, oldActivePlayerId) => {
-  if (!aiDevEnabled.value || props.spectate) return
-  if (!newActivePlayerId || !oldActivePlayerId || newActivePlayerId === oldActivePlayerId) return
-  const g = game.value
-  if (!g) return
-  if (!isInvestigatorTurn(g)) return
-  if (!(newActivePlayerId in g.settings.aiPlayers)) return
-
-  Api.fetchAiQuestions(g.id)
-    .then((qs) => {
-      ai.mergeQuestions(qs, g.scenarioSteps)
-      resolveAiTargetQuestions()
-    })
-    .catch((e) => console.error(e))
-})
-
-// A skill test opening is another moment an AI can offer help: committing a card
-// to the performer's test (offerCommit). Fetch when a test opens, regardless of
-// whose turn it is, so an AI can offer to boost a (human or AI) performer.
-watch(() => (game.value?.skillTest ?? null) !== null, (hasTest, hadTest) => {
-  if (!hasTest || hadTest) return
-  if (!aiDevEnabled.value || props.spectate) return
-  const g = game.value
-  if (!g) return
-  if (Object.keys(g.settings.aiPlayers).length === 0) return
-
-  Api.fetchAiQuestions(g.id)
-    .then((qs) => {
-      ai.mergeQuestions(qs, g.scenarioSteps)
-      resolveAiTargetQuestions()
-    })
-    .catch((e) => console.error(e))
-})
-
-// Auto-resolve any AI-target question that carries a precomputed answer: replay
-// its chosen option's RAW config Messages over the debug channel and drop it from
-// the store so it never renders. Human-target questions are left for the panel.
-function resolveAiTargetQuestions() {
-  const g = game.value
-  if (!g) return
-  for (const q of [...ai.questions]) {
-    if (!q.toIsAi || q.aiAnswer === null) continue
-    const option = q.options[q.aiAnswer]
-    if (option) {
-      for (const message of option.messages) debug.send(g.id, message)
-    }
-    ai.dismissQuestion(q.id)
-  }
-}
 
 type SkipTriggerEntry = { playerId: string; choiceIdx: number; investigatorId: string }
 
@@ -717,9 +739,17 @@ const onError = () => {
   }
   socketError.value = true
 }
+let hasConnectedOnce = false
+
 const onConnected = () => {
   socketError.value = false
   processing.value = false
+  // Anything published while the socket was down is gone -- the server drops
+  // updates for rooms with no subscriber rather than buffering them. On a
+  // RECONNECT (not the initial connect, which the page load already fetched
+  // for) pull the current state so we can't sit on a stale board.
+  if (hasConnectedOnce) void resyncGame()
+  hasConnectedOnce = true
 }
 
 const onMessage = (_ws: WebSocket, event: MessageEvent) => {
@@ -793,19 +823,33 @@ function scheduleApplyUpdate(payload: string) {
       if (!locked) {
         // PlayerTabs owns in-scenario perspective changes so tab routing and
         // return navigation remain coordinated. Campaign/setup screens do not
-        // mount PlayerTabs, though, so follow their sole question here.
-        // Otherwise a multihanded solo game goes inert the moment the engine
-        // asks a seat other than the one in view — the next player's ChooseDeck,
-        // the second investigator's Forgotten Age supplies pick (#5337), a
-        // per-investigator interlude choice: the question is present, but this
-        // view still holds the previous playerId and choose() answers as that
-        // seat, so it can neither render nor answer it.
+        // mount PlayerTabs, though, so follow another pending question when the
+        // current seat has finished answering. Some sequential group stories
+        // keep an empty Read question parked for every seat, so presence alone
+        // does not mean the current seat still has an answer to give.
         const questionPlayers = Object.keys(updatedGame.question)
-        if (solo.value && !props.spectate && questionPlayers.length === 1) {
-          const questionPlayer = questionPlayers[0]
-          if (questionPlayer !== playerId.value && !scenarioBoardMounted(updatedGame)) {
-            playerId.value = questionPlayer
-          }
+        const actionableQuestionPlayers = questionPlayers.filter(
+          (pid) => ArkhamGame.choices(updatedGame, pid).length > 0,
+        )
+        const currentPlayer = playerId.value ?? ''
+        const currentQuestion = updatedGame.question[currentPlayer]
+        const currentReadIsWaiting =
+          questionTag(currentQuestion) === 'Read' &&
+          ArkhamGame.choices(updatedGame, currentPlayer).length === 0 &&
+          actionableQuestionPlayers.length > 0
+        const nextQuestionPlayer = !questionPlayers.includes(currentPlayer)
+          ? questionPlayers[0]
+          : currentReadIsWaiting
+            ? actionableQuestionPlayers[0]
+            : null
+
+        if (
+          solo.value &&
+          !props.spectate &&
+          nextQuestionPlayer &&
+          !scenarioBoardMounted(updatedGame)
+        ) {
+          playerId.value = nextQuestionPlayer
         }
         continueSkipAll()
       }
@@ -859,8 +903,7 @@ function sendSkipFor(targetPlayerId: string, choiceIdx: number) {
   oldQuestion.value = game.value.question
   const questionVersion = game.value.scenarioSteps
   setGameQuestion({})
-  processing.value = true
-  send(
+  sendAnswer(
     JSON.stringify({
       tag: 'Answer',
       contents: { choice: choiceIdx, playerId: targetPlayerId, questionVersion },
@@ -889,204 +932,74 @@ const { send, close } = useWebSocket(websocketUrl, {
   onMessage,
 })
 
-// --- AI-investigator driver (dev-only) ---------------------------------------
-// For each parked question belonging to an enabled AI seat, schedule (after that
-// seat's response delay) an `AiAnswer` over this same websocket; the backend
-// computes and applies the AI's move. Manual override always works: the creator
-// clicking a normal choice for an AI seat (solo mode lets one tab answer any
-// seat) just resolves it via the existing `choose` path.
+/*
+ * A GameUpdate is the only message carrying new board state, and it reaches us
+ * over a different path than the log lines do: the server broadcasts log lines
+ * in-process, but publishes GameUpdate through Redis pub/sub so it can reach
+ * other pods. When that path breaks, the failure is silent and deeply
+ * confusing -- log lines keep scrolling while the board freezes, so it reads
+ * as "the server ignored my click" and invites the player to click again.
+ *
+ * We resync on RECONNECT ONLY. There is deliberately no timer here.
+ *
+ * There used to be one: every answer armed a watchdog that refetched over REST
+ * if no GameUpdate arrived in time. Do not reintroduce it. It is a retry storm
+ * with a trigger threshold, and on 2026-08-15 it took the site down.
+ *
+ * The mechanism: the timer fired a full fetchGame -- the most expensive endpoint
+ * we have, the entire game plus log -- per client, per answer, up to four times.
+ * Actions hold a transaction and a FOR UPDATE lock on the game row for all of
+ * runMessages, so those refetches compete for the very connection pool the
+ * stalled actions are occupying. Once latency crossed the threshold, every
+ * waiting client ADDED load, which pushed latency higher, which fired more
+ * watchdogs. Positive feedback, ending in 30s RunMessagesTimeouts.
+ *
+ * Note the shape of that failure: below the threshold nothing fires and
+ * everything is healthy, so it presents as a cliff rather than a slope. It
+ * looked like a regression that "started at 10pm" when it was really a capacity
+ * ceiling finally letting normal latency cross 5s. Raising the threshold only
+ * moves the cliff; it does not remove it.
+ *
+ * And the timer was largely redundant anyway. The silent-dead-subscriber case it
+ * was written for is detected and repaired server-side by the pub/sub heartbeat
+ * on arkham:pubsub:health (see pubSubSupervisor in Api.Arkham.Helpers), which
+ * tears down and resubscribes a connection that stops delivering. A client-side
+ * timer second-guessing that buys little and costs a stampede.
+ *
+ * If a future silent-loss bug does need client cover, make it cheap and
+ * self-limiting -- probe a few bytes of current step and only fetch the whole
+ * game when it actually advanced, with jitter so clients cannot synchronise.
+ */
+let resyncing = false
 
-// Setup/lobby questions the AI must never touch (it has no decision model for
-// these). Tags are read after unwrapping QuestionLabel/PayCostQuestion/QuestionWithSource.
-const AI_SETUP_DENYLIST = new Set<string>([
-  'ChooseDeck',
-  'ChooseUpgradeDeck',
-  'PickScenarioSettings',
-  'PickCampaignSettings',
-  'PickCampaignSpecific',
-  'PickScenarioSpecific',
-  'ContinueCampaign',
-  'PickDestiny',
-])
-
-// Pending scheduled sends, keyed by playerId; tracks the questionVersion the send
-// was armed for so a question change cancels/reschedules instead of firing stale.
-const aiScheduled = new Map<string, { version: number; timer: ReturnType<typeof setTimeout> }>()
-// The (playerId -> questionVersion) we last actually sent an AiAnswer for. Drives
-// the loop-guard: if the same (seat, version) is still pending after our send, the
-// AI couldn't resolve it, so we stop and hand it to the human.
-const aiSentVersion = new Map<string, number>()
-// Reactive set of AI seats currently "stuck" (handed back to the human creator).
-const aiStuckSeats = ref<Set<string>>(new Set())
-
-// All configured AI seats (used to mount the dev panel); the driver further
-// filters to enabled seats.
-const aiSeatIds = computed(() =>
-  game.value ? Object.keys(game.value.settings.aiPlayers) : [],
-)
-
-function innerQuestionTag(q: Question | undefined): string | null {
-  let cur: Question | undefined = q
-  while (
-    cur &&
-    (cur.tag === 'QuestionLabel' || cur.tag === 'PayCostQuestion' || cur.tag === 'QuestionWithSource')
-  ) {
-    cur = 'question' in cur ? cur.question : undefined
-  }
-  return cur ? cur.tag : null
-}
-
-function enabledAiSeats(g: Arkham.Game): string[] {
-  const seats = g.settings.aiPlayers
-  return Object.keys(seats).filter((pid) => seats[pid]?.aiEnabled)
-}
-
-// The investigator id seated at an AI playerId (AI seats map to an investigator
-// via investigator.playerId), or null if that seat isn't seated yet.
-function aiSeatInvestigatorId(g: Arkham.Game, pid: string): string | null {
-  for (const investigator of Object.values(g.investigators)) {
-    if (investigator.playerId === pid) return investigator.id
-  }
-  return null
-}
-
-// A skill-test ASSIST commit window for an AI seat: there is an active skill
-// test, the seat has a parked question, and the seat is NOT the performer (the
-// performer's own AI commit window is driven normally by the backend). The
-// backend's AiAnswer driver loops on these assist windows, so we leave them
-// parked and surface the dev "Request assist" button instead (AiControlPanel).
-function isAiAssistWindow(g: Arkham.Game, pid: string): boolean {
-  if (!g.skillTest) return false
-  if (!(pid in g.question)) return false
-  const invId = aiSeatInvestigatorId(g, pid)
-  return invId !== null && invId !== g.skillTest.investigator
-}
-
-function cancelAiTimer(pid: string) {
-  const sched = aiScheduled.get(pid)
-  if (sched) {
-    clearTimeout(sched.timer)
-    aiScheduled.delete(pid)
+/*
+ * Pull current state over REST and apply it. Called on reconnect, where whatever
+ * the server currently holds is authoritative: anything published while the
+ * socket was down is gone, because the server drops updates for rooms with no
+ * subscriber rather than buffering them.
+ */
+async function resyncGame() {
+  if (resyncing) return
+  resyncing = true
+  try {
+    const { game: refetched } = await fetchGame(props.gameId, props.spectate)
+    applyGameUpdate(refetched, uiLock.value)
+    updateGameLog(refetched.log)
+    processing.value = false
+  } catch (e) {
+    console.error('Resync after reconnect failed', e)
+  } finally {
+    resyncing = false
   }
 }
 
-function cancelAllAiTimers() {
-  for (const { timer } of aiScheduled.values()) clearTimeout(timer)
-  aiScheduled.clear()
+// Every path that answers a question goes through here, so there is one place to
+// change if answering ever needs to do more than flip `processing`.
+function sendAnswer(payload: string) {
+  processing.value = true
+  send(payload)
 }
 
-function setAiStuck(pid: string, stuck: boolean) {
-  if (stuck === aiStuckSeats.value.has(pid)) return
-  const next = new Set(aiStuckSeats.value)
-  if (stuck) next.add(pid)
-  else next.delete(pid)
-  aiStuckSeats.value = next
-}
-
-function driveAi() {
-  // Flag off (or spectating): stand down and clear any armed sends.
-  if (!aiDevEnabled.value || props.spectate) {
-    cancelAllAiTimers()
-    return
-  }
-  const g = game.value
-  if (!g) {
-    cancelAllAiTimers()
-    return
-  }
-
-  // Master kill-switch off, or not in active play (setup/lobby/over): stand down.
-  if (!ai.enabled || g.gameState.tag !== 'IsActive') {
-    cancelAllAiTimers()
-    return
-  }
-
-  const seats = enabledAiSeats(g)
-  if (seats.length === 0) {
-    cancelAllAiTimers()
-    return
-  }
-
-  const version = g.scenarioSteps
-
-  // Drop scheduled sends for seats no longer pending / no longer AI-enabled.
-  for (const pid of [...aiScheduled.keys()]) {
-    if (!(pid in g.question) || !seats.includes(pid)) cancelAiTimer(pid)
-  }
-  // Clear stale stuck flags once a seat's question clears or its version advances.
-  for (const pid of [...aiStuckSeats.value]) {
-    if (!(pid in g.question) || aiSentVersion.get(pid) !== version) setAiStuck(pid, false)
-  }
-
-  for (const pid of seats) {
-    const q = g.question[pid]
-    if (!q) continue
-
-    const tag = innerQuestionTag(q)
-    if (tag && AI_SETUP_DENYLIST.has(tag)) continue
-
-    // Skill-test ASSIST window: the backend AiAnswer driver loops on a teammate
-    // AI's commit window during another investigator's test. Never auto-answer
-    // it and never mark it "stuck" — leave it parked for the human / the dev
-    // "Request assist" button. Cancel any send already armed before the test.
-    if (isAiAssistWindow(g, pid)) {
-      cancelAiTimer(pid)
-      continue
-    }
-
-    // Loop-guard: we already auto-answered this exact (seat, version) and it is
-    // STILL pending -> the AI couldn't resolve this question shape. Mark the seat
-    // stuck and stop auto-answering it; the human creator answers it manually.
-    // Normal auto-answering resumes once the version advances.
-    if (aiSentVersion.get(pid) === version) {
-      setAiStuck(pid, true)
-      cancelAiTimer(pid)
-      continue
-    }
-    setAiStuck(pid, false)
-
-    const existing = aiScheduled.get(pid)
-    if (existing) {
-      if (existing.version === version) continue // already armed for this version
-      cancelAiTimer(pid) // version moved on -> reschedule against the current one
-    }
-
-    const delay = g.settings.aiPlayers[pid]?.aiResponseDelayMs ?? 1500
-    const timer = setTimeout(() => {
-      aiScheduled.delete(pid)
-      const cur = game.value
-      // Re-validate at fire time so a question change/clear, a state change, a
-      // disabled seat, or a paused master switch cancels the stale send.
-      if (!cur || !ai.enabled || props.spectate) return
-      if (cur.gameState.tag !== 'IsActive') return
-      if (cur.scenarioSteps !== version) return
-      if (!(pid in cur.question)) return
-      if (!enabledAiSeats(cur).includes(pid)) return
-      // A skill test that opened after this send was armed turns the seat's
-      // question into an assist window; don't fire AiAnswer into it (it loops).
-      if (isAiAssistWindow(cur, pid)) return
-      aiSentVersion.set(pid, version)
-      send(JSON.stringify({ tag: 'AiAnswer', playerId: pid }))
-    }, Math.max(0, delay))
-    aiScheduled.set(pid, { version, timer })
-  }
-}
-
-// Re-evaluate whenever the game updates (every server push reassigns game.value)
-// and whenever the client master switch flips.
-watch(game, () => {
-  // Drop "AI asks questions" entries that predate the current game state (undo,
-  // or advancing past the window they belonged to).
-  if (game.value) ai.clearStale(game.value.scenarioSteps)
-  driveAi()
-})
-watch(() => ai.enabled, () => driveAi())
-// Toggling the dev "AI Investigators" flag mid-session stands the driver down /
-// brings it back up immediately (the AiControlPanel mount is reactive on its own).
-watch(aiDevEnabled, (enabled) => {
-  if (!enabled) ai.clearQuestions()
-  driveAi()
-})
 const handleResult = (result: ServerResult) => {
   processing.value = false
   switch (result.tag) {
@@ -1233,6 +1146,11 @@ const handleResult = (result: ServerResult) => {
       // live; harmless no-op for ordinary games that never receive this tag.
       eventStore.applySharedState(result.contents)
       return
+    case 'EventChanged': {
+      const eid = resolvedEventId.value
+      if (eid) void eventStore.load(eid).catch((e) => console.error(e))
+      return
+    }
     case 'GameUpdate':
       // Flush the latest state onto the board even while a revelation/modal holds
       // the UI lock, so the table behind it reflects the current situation instead
@@ -1373,6 +1291,7 @@ const feedKonami = (rawKey: string): boolean => {
 // Keyboard Shortcuts
 const handleKeyPress = (event: KeyboardEvent) => {
   if (filingBug.value) return
+  if (isTypingTarget(event.target)) return
   if (event.ctrlKey) return
   if (event.metaKey) return
   if (event.altKey) return
@@ -1652,12 +1571,41 @@ function preloadImages(game: Arkham.Game): void {
 }
 
 async function loadAllImages(game: Arkham.Game): Promise<void> {
-  const pending: string[] = []
-  for (const card of Object.values(game.cards)) {
+  const cards = Object.values(game.cards)
+  const visibleImages = cards.map((card) => {
     const { cardCode, isFlipped } = toCardContents(card)
-    const url = cardImg(`${cardCode.replace(/^c/, '')}${isFlipped ? 'b' : ''}`)
-    if (!preloaded.has(url) && !preloading.has(url)) pending.push(url)
+    return cardImg(`${cardCode.replace(/^c/, '')}${isFlipped ? 'b' : ''}`)
+  })
+
+  // Start visible art immediately; card definitions may still be loading.
+  const visibleLoad = loadImages(visibleImages)
+  const cardDefs = store.loaded ? store.cards : await store.fetchCards()
+
+  if (cardDefs) {
+    const defsByCode = new Map<string, (typeof cardDefs)[number]>()
+    for (const cardDef of cardDefs) {
+      defsByCode.set(cardDef.cardCode.replace(/^c/, ''), cardDef)
+      defsByCode.set(cardDef.art.replace(/^c/, ''), cardDef)
+    }
+
+    const reverseImages = cards.flatMap((card) => {
+      const cardDef = defsByCode.get(toCardContents(card).cardCode.replace(/^c/, ''))
+      if (!cardDef || !cardHasDistinctBack(cardDef)) return []
+
+      const { front, back } = cardFaceImages(cardDef)
+      return back ? [front, back] : [front]
+    })
+    await Promise.all([visibleLoad, loadImages(reverseImages)])
+    return
   }
+
+  await visibleLoad
+}
+
+async function loadImages(urls: string[]): Promise<void> {
+  const pending = [...new Set(urls)].filter(
+    (url) => !preloaded.has(url) && !preloading.has(url),
+  )
   if (pending.length === 0) return
   pending.forEach((url) => preloading.add(url))
 
@@ -1709,8 +1657,7 @@ async function choose(idx: number) {
     if (!shouldPreserveFocusedChaosWindow() && !shouldPreserveFocusedCardChoice()) {
       setGameQuestion({})
     }
-    processing.value = true
-    send(
+    sendAnswer(
       JSON.stringify({
         tag: 'Answer',
         contents: { choice: idx, playerId: playerId.value, questionVersion },
@@ -1723,8 +1670,7 @@ async function chooseDeck(deckId: string): Promise<void> {
   if (game.value && !props.spectate) {
     oldQuestion.value = game.value.question
     setGameQuestion({})
-    processing.value = true
-    send(JSON.stringify({ tag: 'DeckAnswer', deckId, playerId: playerId.value }))
+    sendAnswer(JSON.stringify({ tag: 'DeckAnswer', deckId, playerId: playerId.value }))
   }
 }
 
@@ -1732,8 +1678,7 @@ async function chooseDeckList(deckList: object): Promise<void> {
   if (game.value && !props.spectate) {
     oldQuestion.value = game.value.question
     setGameQuestion({})
-    processing.value = true
-    send(JSON.stringify({ tag: 'DeckListAnswer', deckList, playerId: playerId.value }))
+    sendAnswer(JSON.stringify({ tag: 'DeckListAnswer', deckList, playerId: playerId.value }))
   }
 }
 
@@ -1742,8 +1687,7 @@ async function choosePaymentAmounts(amounts: Record<string, number>): Promise<vo
     oldQuestion.value = game.value.question
     const questionVersion = game.value.scenarioSteps
     setGameQuestion({})
-    processing.value = true
-    send(
+    sendAnswer(
       JSON.stringify({
         tag: 'PaymentAmountsAnswer',
         contents: { amounts, questionVersion, playerId: playerId.value },
@@ -1756,8 +1700,7 @@ async function scenarioSpecificAnswer(key: string, value: unknown): Promise<void
   if (game.value && !props.spectate) {
     oldQuestion.value = game.value.question
     setGameQuestion({})
-    processing.value = true
-    send(JSON.stringify({ tag: 'ScenarioSpecificAnswer', contents: [key, value] }))
+    sendAnswer(JSON.stringify({ tag: 'ScenarioSpecificAnswer', contents: [key, value] }))
   }
 }
 
@@ -1766,8 +1709,7 @@ async function chooseAmounts(amounts: Record<string, number>): Promise<void> {
     oldQuestion.value = game.value.question
     const questionVersion = game.value.scenarioSteps
     setGameQuestion({})
-    processing.value = true
-    send(
+    sendAnswer(
       JSON.stringify({
         tag: 'AmountsAnswer',
         contents: { amounts, questionVersion, playerId: playerId.value },
@@ -1785,6 +1727,7 @@ function localize(str: string): string {
 
 async function update(state: Arkham.Game) {
   game.value = state
+  followPendingUpgradeQuestion(state)
 }
 
 function switchInvestigator(newPlayerId: string) {
@@ -1908,7 +1851,7 @@ onUnmounted(() => {
   focusLightObserver = null
   if (focusLightAnimationFrame !== null) cancelAnimationFrame(focusLightAnimationFrame)
   window.removeEventListener('arkham-setting-change', handleSettingChange)
-  cancelAllAiTimers()
+  if (chooseDecksPoll !== null) clearTimeout(chooseDecksPoll)
   delete (window as any).sendDebug
   delete (window as any).undo
   delete (window as any).debugChoose
@@ -1927,15 +1870,6 @@ onUnmounted(() => {
     </div>
   </div>
   <div id="game" v-else-if="ready && game && playerId" :style="{ '--epic-bar-height': epicBarHeight + 'px' }">
-    <AiControlPanel
-      v-if="aiDevEnabled && game && aiSeatIds.length > 0"
-      :game="game"
-      :stuck-seats="aiStuckSeats"
-    />
-    <AiQuestionsPanel
-      v-if="aiDevEnabled && game && aiSeatIds.length > 0"
-      :game="game"
-    />
     <dialog v-if="error" class="error-dialog">
       <h2>{{ $t('error') }}</h2>
       <p class="error-message">{{ error }}</p>
@@ -2048,6 +1982,16 @@ onUnmounted(() => {
               <div class="shortcut-row">
                 <div class="shortcut-name">{{ $t('gameBar.shortcutToggleDebug') }}</div>
                 <div class="shortcut-keys"><kbd>D</kbd></div>
+              </div>
+              <div class="shortcut-row">
+                <div class="shortcut-name">{{ $t('gameBar.shortcutSelectInvestigator') }}</div>
+                <div class="shortcut-keys"><kbd>1</kbd><span class="chord-arrow">…</span><kbd>4</kbd></div>
+              </div>
+              <div v-if="solo" class="shortcut-row">
+                <div class="shortcut-name">{{ $t('gameBar.shortcutSwitchPerspective') }}</div>
+                <div class="shortcut-keys">
+                  <kbd>Shift</kbd><span class="chord-arrow">+</span><kbd>1</kbd><span class="chord-arrow">…</span><kbd>4</kbd>
+                </div>
               </div>
               <template v-for="item in menuItems" :key="item.id">
                 <div v-if="item.shortcut" class="shortcut-row">
@@ -2416,6 +2360,13 @@ onUnmounted(() => {
           @choose="choose"
           @update="update"
           @toggleRealityAcidLight="toggleRealityAcidLight"
+        />
+        <StoryQuestion
+          v-else-if="question"
+          :game="game"
+          :question="question"
+          :playerId="playerId"
+          @choose="choose"
         />
         <div
           class="sidebar"

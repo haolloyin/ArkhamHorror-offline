@@ -9,8 +9,6 @@ import Arkham.Action qualified as Action
 import Arkham.ActiveCost
 import Arkham.Agenda
 import Arkham.Agenda.Types (Field (..), doomL)
-import Arkham.Ai.Helpers (overAiPlayers, overAiSeat)
-import Arkham.Ai.State (AiPlayerState (..))
 import Arkham.Asset
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Asset.Types (Asset, AssetAttrs (..), Field (..), assetIsStory)
@@ -142,7 +140,6 @@ import Arkham.Target
 import Arkham.Tarot qualified as Tarot
 import Arkham.Timing qualified as Timing
 import Arkham.Token qualified as Token
-import Arkham.Tracing
 import Arkham.Treachery
 import Arkham.Treachery.Types (
   Field (..),
@@ -169,6 +166,17 @@ getInvestigatorsInOrder :: HasGame m => m [InvestigatorId]
 getInvestigatorsInOrder = do
   g <- getGame
   pure $ g ^. playerOrderL
+
+{- | The revelation messages to push for a card that is resolving its revelation,
+honouring 'AdditionalRevelations' ("resolve its revelation effect an additional
+time"). Only the revelation itself repeats: callers keep the surrounding
+@When revelation@ and @After revelation@ single, so the card is discarded once,
+marked resolved once, and surges at most once no matter how many times its
+revelation resolves.
+-}
+resolveRevelations :: [ModifierType] -> Message -> [Message]
+resolveRevelations modifiers' revelation =
+  replicate (1 + max 0 (sum [n | AdditionalRevelations n <- modifiers'])) revelation
 
 runGameMessage :: Runner Game
 runGameMessage msg g = case msg of
@@ -250,12 +258,6 @@ runGameMessage msg g = case msg of
         { gameSettings =
             g.gameSettings {settingsScreamedAllies = insertSet code (settingsScreamedAllies g.gameSettings)}
         }
-  RegisterAiPlayer pid st -> pure $ overAiPlayers (Map.insert pid st) g
-  SetAiFocusOverride pid mFocus -> pure $ overAiSeat pid (\s -> s {aiFocusOverride = mFocus}) g
-  AddAiPriority pid target -> pure $ overAiSeat pid (\s -> s {aiPriorities = s.aiPriorities <> [target]}) g
-  RemoveAiPriority pid target -> pure $ overAiSeat pid (\s -> s {aiPriorities = filter (/= target) s.aiPriorities}) g
-  SetAiEnabled pid b -> pure $ overAiSeat pid (\s -> s {aiEnabled = b}) g
-  SetAiResponseDelay pid n -> pure $ overAiSeat pid (\s -> s {aiResponseDelayMs = n}) g
   ResetLocationOffsets -> pure $ g & locationOffsetsL .~ mempty
   SetCardOwner cardId iid -> do
     -- Debug: force one card's owner to iid across every representation it lives in
@@ -845,6 +847,23 @@ runGameMessage msg g = case msg of
             _ -> pure []
         else pure []
 
+    -- Riders declared with 'AdditionalCostToPerformAction' were previously only
+    -- consulted for affordability and never charged; collect them here so they
+    -- are actually paid. Mirrors 'Arkham.Helpers.Ability.performActionCosts'.
+    performActionCosts <-
+      if doDelayAdditionalCosts
+        then pure []
+        else do
+          ownMods <- getModifiers iid
+          locationMods <- getMaybeLocation iid >>= maybe (pure []) getModifiers
+          let
+            matchesAction = \case
+              IsAnyAction -> True
+              IsAction act -> act `elem` abilityActions ability
+              AnyActionTarget ts -> any matchesAction ts
+              _ -> False
+          pure [c | AdditionalCostToPerformAction t c <- ownMods <> locationMods, matchesAction t]
+
     let
       costF =
         case find isSetCost modifiers' of
@@ -864,7 +883,9 @@ runGameMessage msg g = case msg of
     -- like those provided by Shortcut (2) we have to add a 0 value ActionCost
     -- here so that it can add the additional
     let
-      fixEnemy = maybe id replaceThatEnemy $ getThatEnemy windows'
+      fixEnemy =
+        (maybe id replaceThatInvestigator $ getThatInvestigator windows')
+          . (maybe id replaceThatEnemy $ getThatEnemy windows')
       activeCost =
         ActiveCost
           { activeCostId = acId
@@ -872,7 +893,12 @@ runGameMessage msg g = case msg of
               fixEnemy
                 $ mconcat
                   ( costF (abilityCost ability)
-                      : additionalCosts ++ investigateCosts ++ exploreCosts ++ resignCosts ++ [ActionCost 0]
+                      : additionalCosts
+                        ++ investigateCosts
+                        ++ exploreCosts
+                        ++ resignCosts
+                        ++ performActionCosts
+                        ++ [ActionCost 0]
                   )
           , activeCostPayments = Cost.NoPayment
           , activeCostTarget = ForAbility ability
@@ -1344,22 +1370,24 @@ runGameMessage msg g = case msg of
   When (RemoveLocation lid) -> do
     pushM $ checkWindows [mkWhen (Window.LeavePlay $ toTarget lid)]
     pure g
-  RemovedLocation lid -> do
-    push $ Do msg
-    treacheries <- select $ TreacheryAt $ LocationWithId lid
-    pushAll $ concatMap (resolve . toDiscard GameSource) treacheries
-    enemies <- select $ enemyAt lid
-    pushAll $ concatMap (resolve . toDiscard GameSource) enemies
-    events <- select $ eventAt lid
-    pushAll $ concatMap (resolve . toDiscard GameSource) events
-    assets <- select $ assetAt lid
-    pushAll $ concatMap (resolve . toDiscard GameSource) assets
-    investigators <- select $ investigatorAt lid
-    -- since we handle the would be defeated window in the previous message we
-    -- skip directly to the is defeated message even though we would normally
-    -- not want to do this
-    pushAll $ concatMap (resolve . Msg.InvestigatorIsDefeated (toSource lid)) investigators
-    pure g
+  -- Nothing to sweep from here. Each entity notices that its own location left
+  -- play and discards itself (the `RemovedLocation` cases in the Enemy, Event,
+  -- Asset, Treachery and Investigator runners), and anything *attached* to one
+  -- of those entities rides along on its host's removal instead.
+  --
+  -- Do not move the sweep back here. `enemyAt`/`eventAt`/`assetAt` resolve a
+  -- location transitively through `placementLocation`, so an attachment counts
+  -- as being "at" its host's location -- and because `runGameMessage` is not
+  -- inside `runQueueT`, consecutive pushes here prepend and resolve in reverse
+  -- source order. Together that discarded a Rod of Carnamagos Rot before its
+  -- host enemy ever reached its leave-play window, so the Rot's forced
+  -- `EnemyLeavesPlay #when` reaction never fired and it went to the discard
+  -- pile instead of back to the bonded cards, #5426.
+  --
+  -- `Do (RemovedLocation lid)` is queued as a sibling behind this message (see
+  -- `removedLocation` in Arkham.Message.Lifted.Location) so the location entity
+  -- outlives the entities standing on it.
+  RemovedLocation _ -> pure g
   Do (RemovedLocation lid) -> do
     maybeLocation lid >>= \case
       Nothing -> pure g
@@ -1511,19 +1539,18 @@ runGameMessage msg g = case msg of
           _ -> cur
 
         afterPlay = foldl' modifyAfterPlay (skillAfterPlay $ toAttrs skill) mods
+        -- @skillOwner@ is the investigator who committed the card, which is not
+        -- necessarily who owns it (e.g. Guided by the Unseen (3) commits a card out of the
+        -- performing investigator's deck). A committed card always returns to its owner.
+        owner = fromMaybe (skillOwner $ toAttrs skill) card.owner
       pure
         $ if
           | DevourThis iid' <- afterPlay ->
               (Run [ObtainCard (toCard skill).id, Devoured iid' (toCard skill)], Nothing)
           | ReturnToHandAfterTest `elem` mods ->
-              ( ReturnToHand (skillOwner $ toAttrs skill) (SkillTarget skillId)
-              , Nothing
-              )
+              (ReturnToHand owner (SkillTarget skillId), Nothing)
           | PlaceOnBottomOfDeckInsteadOfDiscard `elem` mods ->
-              ( PutCardOnBottomOfDeck
-                  (skillOwner $ toAttrs skill)
-                  (Deck.InvestigatorDeck $ skillOwner $ toAttrs skill)
-                  (toCard skill)
+              ( PutCardOnBottomOfDeck owner (Deck.InvestigatorDeck owner) (toCard skill)
               , Just skillId
               )
           | LeaveCardWhereItIs `elem` mods ->
@@ -1531,17 +1558,10 @@ runGameMessage msg g = case msg of
           | CampaignModifier "hollowed" `elem` mods ->
               (RemoveFromGame (SkillTarget skillId), Nothing)
           | ShuffleIntoDeckInsteadOfDiscard `elem` mods ->
-              ( ShuffleIntoDeck
-                  (Deck.InvestigatorDeck $ skillOwner $ toAttrs skill)
-                  (toTarget skill)
-              , Just skillId
-              )
+              (ShuffleIntoDeck (Deck.InvestigatorDeck owner) (toTarget skill), Just skillId)
           | otherwise -> case afterPlay of
               DiscardThis -> case toCard skill of
-                PlayerCard pc ->
-                  ( AddToDiscard (skillOwner $ toAttrs skill) pc
-                  , Just skillId
-                  )
+                PlayerCard pc -> (AddToDiscard owner pc, Just skillId)
                 _ -> error "Unhandled encounter card skill"
               ExileThis -> case toCard skill of
                 PlayerCard _ ->
@@ -1555,11 +1575,9 @@ runGameMessage msg g = case msg of
                 (RemoveFromGame (SkillTarget skillId), Nothing)
               PlaceThisBeneath target -> (Msg.PlaceUnderneath target [toCard skill], Nothing)
               ReturnThisToHand ->
-                (ReturnToHand (skillOwner $ toAttrs skill) (SkillTarget skillId), Nothing)
+                (ReturnToHand owner (SkillTarget skillId), Nothing)
               ShuffleThisBackIntoDeck ->
-                ( ShuffleIntoDeck (Deck.InvestigatorDeck $ skillOwner $ toAttrs skill) (toTarget skill)
-                , Just skillId
-                )
+                (ShuffleIntoDeck (Deck.InvestigatorDeck owner) (toTarget skill), Just skillId)
               DeferDiscard -> (Noop, Nothing)
 
     -- A committed skill leaving the test must return any chaos tokens it
@@ -1839,7 +1857,12 @@ runGameMessage msg g = case msg of
               let revelation = Revelation iid (TreacherySource tid)
               pushAll
                 $ CardEnteredPlay iid card
-                : (guard (not ignoreRevelation) *> [When revelation, revelation, MoveWithSkillTest (After revelation)])
+                : ( guard (not ignoreRevelation)
+                      *> ( [When revelation]
+                             <> resolveRevelations modifiers' revelation
+                             <> [MoveWithSkillTest (After revelation)]
+                         )
+                  )
                   <> [UnsetActiveCard]
               pure
                 $ g
@@ -1984,7 +2007,10 @@ runGameMessage msg g = case msg of
       CheckWindows [] -> True
       Do (CheckWindows []) -> True
       _ -> False
-    pure g
+    -- The `Would bId []` that would have cleared the current batch was just
+    -- removed, so clear it here; otherwise every window checked for the rest of
+    -- the game is stamped with this dead batch id.
+    pure $ g & currentBatchIdL %~ \c -> if c == Just bId then Nothing else c
   IgnoreBatch bId -> do
     removeAllMessagesMatching $ \case
       Would bId' _ -> bId == bId'
@@ -2192,6 +2218,12 @@ runGameMessage msg g = case msg of
           HunterGroup ->
             mapFromList <$> forMaybeM (mapToList targetMap) \(target, msgs) -> runMaybeT do
               eid <- hoistMaybe target.enemy
+              -- An enemy batched into the hunter group can leave play while an
+              -- earlier target's move resolves (Sunken Halls defeating it as it
+              -- enters, a WouldMoveFromHunter reaction, ...), so confirm it is
+              -- still on the table before projecting any of its fields.
+              enemyAttrs <- toAttrs <$> MaybeT (project @Enemy eid)
+              guard $ isInPlayPlacement enemyAttrs.placement && not enemyAttrs.defeated
               kws <- lift $ toList <$> getModifiedKeywords eid
               liftGuardM $ flip anyM kws \case
                 Keyword.Patrol lm -> matches eid (#ready <> #unengaged <> not_ (EnemyAt $ replaceThatEnemy eid lm))
@@ -2354,7 +2386,10 @@ runGameMessage msg g = case msg of
                   playerId <- getPlayer iid
                   pure $ Just $ singletonMap playerId [Label lbl xs]
                 _ -> pure Nothing
-            push $ AskMap askMap
+            -- Every option was popped off the queue above, so nothing regenerates
+            -- these seats: without Retain, one player answering discards every other
+            -- player's option along with its messages (#4787).
+            push $ Retain (AskMap askMap)
     pure g
   SkillTestResultOption opt -> do
     fromQueue (elem CollectSkillTestOptions) >>= \case
@@ -2413,7 +2448,16 @@ runGameMessage msg g = case msg of
           isOpt (SkillTestResultOptions _) = True
           isOpt _ = False
        in (filter (not . isOpt) q, concatMap gather q)
-    unless (null collected) $ push $ SkillTestResultOptions collected
+    unless (null collected) do
+      -- Double or Nothing resolves the determined results twice. Each repeat has
+      -- to be its own ordering round, so the extra ones ride inside 'Run': the
+      -- 'SkillTestResultOptions' handler merges with an immediately adjacent
+      -- option message, which would otherwise collapse both rounds into a single
+      -- prompt with duplicated entries.
+      times <- getSkillTestResolveTimes
+      pushAll
+        $ SkillTestResultOptions collected
+        : replicate (times - 1) (Run [SkillTestResultOptions collected])
     pure g
   Flipped (AssetSource aid) card | toCardType card /= AssetType -> do
     replaceCard card.id card
@@ -3600,11 +3644,11 @@ runGameMessage msg g = case msg of
           ]
             <> [ResolvedCard iid (toCard treachery) | needsResolve]
         else
-          [ When revelation
-          , revelation
-          , MoveWithSkillTest $ Run [After revelation, AfterRevelation iid treacheryId]
-          , UnsetActiveCard
-          ]
+          [When revelation]
+            <> resolveRevelations modifiers' revelation
+            <> [ MoveWithSkillTest $ Run [After revelation, AfterRevelation iid treacheryId]
+               , UnsetActiveCard
+               ]
             <> [ResolvedCard iid (toCard treachery) | needsResolve]
     pure $ g & (if ignoreRevelation then activeCardL .~ Nothing else id)
   MoveWithSkillTest msg' -> do
@@ -3775,7 +3819,7 @@ runGameMessage msg g = case msg of
   _ -> pure g
 
 -- TODO: Clean this up, the found of stuff is a bit messy
-preloadEntities :: (HasGame m, Tracing m) => Game -> m Game
+preloadEntities :: HasGame m => Game -> m Game
 preloadEntities g = do
   let
     investigators = view (entitiesL . investigatorsL) g

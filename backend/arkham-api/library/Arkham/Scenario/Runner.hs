@@ -24,7 +24,12 @@ import Arkham.Agenda.Sequence qualified as Agenda
 import Arkham.Agenda.Types (Field (..))
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Asset.Types (Field (..))
-import Arkham.Campaign.Types (Field (..), getRandomBasicWeakness)
+import Arkham.Campaign.Types (
+  Field (..),
+  basicWeaknessCodes,
+  getRandomBasicWeakness,
+  getRandomBasicWeaknessExcluding,
+ )
 import Arkham.CampaignLog hiding (optionsL)
 import Arkham.CampaignLogKey
 import Arkham.CampaignStep
@@ -74,7 +79,6 @@ import Arkham.Homebrew.Tokens
 import Arkham.I18n (countVar, withI18n)
 import Arkham.Id
 import Arkham.Investigator.Types (Field (..))
-import Arkham.Label (mkLabel)
 import Arkham.Location.Grid
 import Arkham.Location.Types (Field (..))
 import Arkham.Matcher qualified as Matcher
@@ -93,7 +97,7 @@ import Arkham.Skill.Types qualified as Field
 import Arkham.Story.Types (Field (..))
 import Arkham.Tarot
 import Arkham.Token
-import Arkham.Treachery.Cards qualified as Treacheries
+import Arkham.Treachery.CardDefs.TheDreamEaters.PointOfNoReturn qualified as Treacheries
 import Arkham.Treachery.Types (Field (..))
 import Arkham.UltimatumsAndBoons (
   Boon (..),
@@ -183,7 +187,7 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
     pure $ overAttrs (inResolutionL .~ False) a
   BeginGame -> do
     mFalseAwakeningPointOfNoReturn <-
-      getMaybeCampaignStoryCard Treacheries.falseAwakeningPointOfNoReturn
+      getMaybeCampaignStoryCard Treacheries.falseAwakening
     for_ mFalseAwakeningPointOfNoReturn \falseAwakening -> do
       tid <- getRandom
       pushAll
@@ -247,7 +251,13 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
           disaster <- hasUltimatumOrBoon (Ultimatum UltimatumOfDisaster)
           extraWeakness <-
             if disaster
-              then (: []) <$> getRandomBasicWeakness investigatorClass playerCount mDecklist
+              then
+                (: [])
+                  <$> getRandomBasicWeaknessExcluding
+                    (basicWeaknessCodes baseRandomWeaknesses)
+                    investigatorClass
+                    playerCount
+                    mDecklist
               else pure []
           let randomWeaknesses = baseRandomWeaknesses <> extraWeakness
           morrigan <- hasBoon BoonOfTheMorrigan
@@ -994,8 +1004,12 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
         other -> encounterDecksL . at other . non (Deck [], []) . _2
     case unDeck (a ^. deckL') of
       [] -> do
-        when (notNull (a ^. discardL')) $ do
-          pushAll [ShuffleEncounterDiscardBackInByKey key, Do (DrawCards iid drawing)]
+        -- With nothing left to draw from we still report the draw, carrying whatever
+        -- was drawn before the deck ran dry, so that scenarios which replace an
+        -- impossible encounter draw (Lost Quantum) can react to it.
+        if notNull (a ^. discardL')
+          then pushAll [ShuffleEncounterDiscardBackInByKey key, Do (DrawCards iid drawing)]
+          else push $ DrewCards iid $ finalizeDraw drawing drawing.alreadyDrawn
         pure a
       xs -> do
         let (drew, rest) = splitAt drawing.amount xs
@@ -1021,8 +1035,9 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
     key <- getEncounterDeckKey iid
     case unDeck (a ^. deckLens handler) of
       [] -> do
-        when (notNull (a ^. discardLens handler)) $ do
-          pushAll [ShuffleEncounterDiscardBackInByKey key, Do (DrawCards iid drawing)]
+        if notNull (a ^. discardLens handler)
+          then pushAll [ShuffleEncounterDiscardBackInByKey key, Do (DrawCards iid drawing)]
+          else push $ DrewCards iid $ finalizeDraw drawing drawing.alreadyDrawn
         pure a
       xs -> do
         let (drew, rest) = splitAt drawing.amount xs
@@ -1822,7 +1837,9 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
       $ map
         (mkWhen . Window.InvestigatorWouldBeDefeated (DefeatedByOther $ LocationSource lid))
         investigatorIds
-    push $ RemovedLocation lid
+    -- pushes the deletion of the location entity behind the announcement, so
+    -- everything standing on the location gets to leave play first, #5426
+    pushAll [RemovedLocation lid, Do (RemovedLocation lid)]
     pure $ a & gridL %~ deleteInGrid lid
   RemoveEnemyLocation lid ->
     pure $ a & gridL %~ deleteInGrid lid
@@ -1933,7 +1950,12 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
   RestartScenario -> do
     standalone <- getIsStandalone
     pushAll
-      $ ResetGame
+      -- Killed/insane investigators cannot be used for the rest of the campaign, so their
+      -- players must pick a replacement before the scenario is set up again. Without this
+      -- they are reset back into play, matchers filter every one of them out, and setup
+      -- ends up in `Begin InvestigationPhase` with no investigators at all (#5367).
+      $ HandleKilledOrInsaneInvestigators
+      : ResetGame
       : [StandaloneSetup | standalone]
         <> [ ChooseLeadInvestigator
            , SetPlayerOrder
@@ -2023,17 +2045,22 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
           Nothing -> scenarioGrid
           Just oldPos -> clearGrid oldPos scenarioGrid
         grid = insertGrid gloc gridCleared
-    -- Neighbours are looked up by grid label, and the mover still carries its old
-    -- label at this point: a location sliding one cell over would otherwise find
-    -- itself sitting in the cell it just vacated and record itself as its own
-    -- neighbour (seen with the Great Lift). The cell it left is empty, so drop it.
+    -- Neighbours come from the freshly updated grid, never from labels. Labels are
+    -- set by a *queued* SetLocationLabel, so mid-move they lie in both directions:
+    -- the mover still carries its old label (a location sliding one cell over would
+    -- record itself as its own neighbour — the Great Lift), and when two locations
+    -- swap places (Dark Matter's "switch two locations") the second mover finds two
+    -- locations claiming the same label and can pick the wrong one, leaving the pair
+    -- disconnected. `grid` already has the mover in its new cell and its old cell
+    -- cleared, so both cases fall out correctly.
     let getAdjacent dir = do
-          mlid <- selectOne $ Matcher.LocationWithLabel $ mkLabel $ gridLabel $ updatePosition pos dir
-          pure $ if mlid == Just lid then Nothing else mlid
-    mTopLocation <- getAdjacent GridUp
-    mBottomLocation <- getAdjacent GridDown
-    mLeftLocation <- getAdjacent GridLeft
-    mRightLocation <- getAdjacent GridRight
+          GridLocation _ lid' <- viewGrid (updatePosition pos dir) grid
+          guard (lid' /= lid)
+          pure lid'
+        mTopLocation = getAdjacent GridUp
+        mBottomLocation = getAdjacent GridDown
+        mLeftLocation = getAdjacent GridLeft
+        mRightLocation = getAdjacent GridRight
     pushAll
       $ [ LocationMoved lid
         , SetLocationLabel lid (gridLabel pos)

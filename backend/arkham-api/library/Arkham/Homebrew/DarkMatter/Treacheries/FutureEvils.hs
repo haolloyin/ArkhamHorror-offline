@@ -1,9 +1,9 @@
 module Arkham.Homebrew.DarkMatter.Treacheries.FutureEvils (futureEvils) where
 
 import Arkham.Ability
+import Arkham.Homebrew.DarkMatter.CardDefs.Treacheries qualified as Cards
 import Arkham.Matcher
 import Arkham.Placement
-import Arkham.Homebrew.DarkMatter.CardDefs.Treacheries qualified as Cards
 import Arkham.Treachery.Import.Lifted
 import Arkham.Window (Window, windowType)
 import Arkham.Window qualified as Window
@@ -24,7 +24,12 @@ instance HasAbilities FutureEvils where
   getAbilities (FutureEvils a) =
     [ mkAbility a 1
         $ forced
-        $ PlacedDoomCounter #after (NotSource SourceIsPlayerCard) AnyTarget
+        $ PlacedDoomCounter
+          #after
+          -- the additional doom this ability places is itself a non-player
+          -- source, so without excluding ourselves this retriggers forever
+          (NotSource SourceIsPlayerCard <> NotSource (SourceIsTreacheryEffect $ TreacheryWithId a.id))
+          AnyTarget
     ]
 
 instance RunMessage FutureEvils where

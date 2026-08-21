@@ -1,14 +1,14 @@
 module Arkham.Scenario.Scenarios.WarOfTheOuterGods (warOfTheOuterGods) where
 
-import Arkham.Act.Cards qualified as Acts
-import Arkham.Agenda.Cards qualified as Agendas
+import Arkham.Act.CardDefs.WarOfTheOuterGods qualified as Acts
+import Arkham.Agenda.CardDefs.WarOfTheOuterGods qualified as Agendas
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Card
 import Arkham.ChaosToken
 import Arkham.Classes.HasGame
 import Arkham.Difficulty
 import Arkham.EncounterSet qualified as Set
-import Arkham.Enemy.Cards qualified as Enemies
+import Arkham.Enemy.CardDefs.WarOfTheOuterGods qualified as Enemies
 import Arkham.Enemy.Types (Field (..))
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Location (withLocationOf)
@@ -18,7 +18,7 @@ import Arkham.Helpers.SkillTest (getSkillTest)
 import Arkham.Helpers.Xp
 import Arkham.Id
 import Arkham.Investigator.Types (Field (InvestigatorClues))
-import Arkham.Location.Cards qualified as Locations
+import Arkham.Location.CardDefs.WarOfTheOuterGods qualified as Locations
 import Arkham.Matcher hiding (EnemyAttacks)
 import Arkham.Message (CanAdvance (..), GroupKey (..))
 import Arkham.Message.Lifted.Choose
@@ -28,7 +28,6 @@ import Arkham.Resolution
 import Arkham.Scenario.Import.Lifted
 import Arkham.Scenarios.WarOfTheOuterGods.Helpers
 import Arkham.SkillTest.Base (skillTestCommittedCards)
-import Arkham.Tracing
 import Arkham.Trait (Trait (Hex, Insect, Mutated))
 
 newtype WarOfTheOuterGods = WarOfTheOuterGods ScenarioAttrs
@@ -393,7 +392,7 @@ isPendingWarringAttackChoice = \case
 {- | Keep every non-warring choice, and keep a warring attack only if its
 attacker still has a warring target other than the just-defeated enemy.
 -}
-warringAttackStillValid :: (HasGame m, Tracing m) => EnemyId -> UI Message -> m Bool
+warringAttackStillValid :: HasGame m => EnemyId -> UI Message -> m Bool
 warringAttackStillValid defeatedEid = \case
   TargetLabel _ [ScenarioSpecific "warringAttack" v] -> do
     ts <- getWarringTargets (toResult v)

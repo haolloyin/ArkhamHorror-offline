@@ -303,6 +303,7 @@ data EncounterSet
   | TheBlobThatAteEverythingELSE
   | TheBlobThatAteEverything
   | MiGoIncursion
+  | MiGoIncursionII
   | BlobEpicMultiplayer
   | BlobSingleGroup
   | FortuneAndFolly
@@ -374,13 +375,32 @@ data EncounterSet
   | TheInescapable
   | Dreams
   | AlienMachinery
+  | RiverOfBlood
+  | NewHorizons
+  | BloodMoney
+  | Afflicted
+  | AgentsOfZburamoarte
+  | BloodBlight
+  | BloodMoon
+  | Bloodthirst
+  | ChildrenOfBlood
+  | FriendsInLowPlaces
+  | Hunted
+  | Infected
+  | Misinformation
+  | Mongrels
+  | PreyedUpon
+  | SanguineSecrets
+  | Stalked
+  | Vermin
   | Homebrew Text
   | Test
   deriving stock (Show, Eq, Ord, Data)
 
--- | Official sets encode as their constructor name, homebrew sets as their slug
--- (e.g. @":dark-matter:anachronism"@). Parsing falls back to 'Homebrew' for any
--- unrecognized string.
+{- | Official sets encode as their constructor name, homebrew sets as their slug
+(e.g. @":dark-matter:anachronism"@). Parsing falls back to 'Homebrew' for any
+unrecognized string.
+-}
 instance ToJSON EncounterSet where
   toJSON (Homebrew t) = String t
   toJSON s = String (tshow s)
@@ -397,4 +417,3 @@ officialEncounterSets =
 instance FromJSON EncounterSet where
   parseJSON = withText "EncounterSet" \t ->
     pure $ fromMaybe (Homebrew t) (lookup t officialEncounterSets)
-

@@ -10,14 +10,14 @@ import Arkham.Campaigns.TheDreamEaters.Meta qualified as TheDreamEaters
 import Arkham.Classes
 import Arkham.Difficulty
 import Arkham.Id
+import Arkham.Metrics (withMetric)
 import Arkham.Prelude
-import Arkham.Tracing
 import Control.Monad.Fail
 import GHC.Records
 
 instance RunMessage Campaign where
   runMessage msg x@(Campaign a) =
-    withSpan_ ("Campaign[" <> unCampaignId x.id <> "].runMessage") do
+    withMetric ("Campaign[" <> unCampaignId x.id <> "].runMessage") do
       Campaign <$> runMessage msg a
 
 lookupCampaign :: CampaignId -> Difficulty -> Campaign
@@ -66,6 +66,7 @@ allCampaigns = (homebrewCampaigns <>) $
     , ("54", SomeCampaign returnToTheCircleUndone)
     , ("00", SomeCampaign standaloneCampaign)
     , ("12", SomeCampaign brethrenOfAsh)
+    , ("13", SomeCampaign childrenOfBlood)
     , ("11", SomeCampaign theDrownedCity)
     , ("83", SomeCampaign guardiansOfTheAbyss)
     ]

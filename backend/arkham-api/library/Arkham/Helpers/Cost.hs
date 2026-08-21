@@ -53,7 +53,6 @@ import Arkham.SkillType
 import Arkham.Source
 import Arkham.Target
 import Arkham.Token qualified as Token
-import Arkham.Tracing
 import Arkham.Window (Window (..), mkWhen)
 import Arkham.Window qualified as Window
 import Control.Lens (non)
@@ -86,7 +85,7 @@ getAdditionalActionCost :: HasGame m => InvestigatorId -> Target -> Action -> m 
 getAdditionalActionCost iid target action = mconcat <$> getAdditionalActionCosts iid target action
 
 getCanAffordAdditionalActionCost
-  :: (HasCallStack, HasGame m, Tracing m, Sourceable source)
+  :: (HasCallStack, HasGame m, Sourceable source)
   => InvestigatorId
   -> source
   -> Target
@@ -120,7 +119,7 @@ hasSkillTestCost = \case
   _ -> False
 
 getCanAffordCost
-  :: (HasCallStack, HasGame m, Tracing m, Sourceable source)
+  :: (HasCallStack, HasGame m, Sourceable source)
   => InvestigatorId
   -> source
   -> [Action]
@@ -133,7 +132,7 @@ getCanAffordCost iid source actions windows' cost =
 {- | Total uses of @uType@ spendable from @assets@, including uses granted by
 other assets/events via @ProvidesUses@/@ProvidesProxyUses@ modifiers.
 -}
-getSpendableUseCount :: (Tracing m, HasGame m) => [AssetId] -> UseType -> m Int
+getSpendableUseCount :: HasGame m => [AssetId] -> UseType -> m Int
 getSpendableUseCount assets uType =
   flip evalStateT assets $ do
     sum <$> for assets \asset -> do
@@ -157,7 +156,7 @@ getSpendableUseCount assets uType =
       lift $ fieldMap AssetUses ((+ fromOtherSources) . findWithDefault 0 uType) asset
 
 getCanAffordCost_
-  :: (HasCallStack, HasGame m, Tracing m, Sourceable source)
+  :: (HasCallStack, HasGame m, Sourceable source)
   => InvestigatorId
   -> source
   -> [Action]
@@ -165,8 +164,7 @@ getCanAffordCost_
   -> Bool
   -> Cost
   -> m Bool
-getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_ = withSpan' "getCanAffordCost" \currentSpan -> do
-  addAttribute currentSpan "cost" (tshow cost_)
+getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_ = do
   cached (CanAffordCostKey iid source actions windows' canModify cost_) do
     case cost_ of
       ConcealedXCost -> do
@@ -305,6 +303,7 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
           _ -> error "Unhandled shuffle attached card into deck cost"
       EnemyAttackCost eid -> selectAny $ Matcher.EnemyWithId eid <> Matcher.EnemyCanAttack (Matcher.InvestigatorWithId iid)
       DrawEncounterCardsCost _n -> can.target.encounterDeck iid
+      DiscardEncounterUntilFirstCost _requester _matcher -> can.target.encounterDeck iid
       CostWhenEnemy mtchr c -> do
         hasEnemy <- selectAny mtchr
         if hasEnemy then getCanAffordCost_ iid source actions windows' canModify c else pure True
@@ -479,6 +478,22 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
             else pure 0
         clues <- field InvestigatorClues iid
         pure $ (clues + z) >= n
+      InvestigatorPlaceClueOnLocationCost investigatorMatcher gv -> do
+        n <- getPlayerCountValue gv
+        -- Unaffordable when the matcher resolves to nobody, so an ability whose
+        -- cost is placed by the window's investigator is not offered when that
+        -- investigator has no clue to place.
+        selectOne (Matcher.replaceYouMatcher iid investigatorMatcher) >>= \case
+          Nothing -> pure False
+          Just placer -> do
+            clues <- field InvestigatorClues placer
+            pure $ clues >= n
+      CalculatedGroupClueCost calc locationMatcher -> do
+        cost <- calculate calc
+        let lm = Matcher.replaceYouMatcher iid locationMatcher
+        iids <- select $ Matcher.InvestigatorAt lm
+        totalSpendableClues <- getSpendableClueCount iids
+        pure $ totalSpendableClues >= cost
       GroupClueCost n locationMatcher -> do
         cost <- getPlayerCountValue n
         let lm = Matcher.replaceYouMatcher iid locationMatcher
@@ -696,14 +711,14 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
         iid <=~> (Matcher.InvestigatorWithSupply supply <> Matcher.InvestigatorAt locationMatcher)
       ResolveEachHauntedAbility _ -> pure True
 
-getSpendableResources :: (HasGame m, Tracing m) => InvestigatorId -> m Int
+getSpendableResources :: HasGame m => InvestigatorId -> m Int
 getSpendableResources iid = do
   mods <- getModifiers iid
   let extraResources = sum [x | ExtraResources x <- mods]
   pooledResources <- sum <$> traverse (field AssetResources) [aid | AsIfResourcePool aid <- mods]
   fieldMap InvestigatorResources (+ (pooledResources + extraResources)) iid
 
-getSpendableClueCount :: (HasGame m, Tracing m) => [InvestigatorId] -> m Int
+getSpendableClueCount :: HasGame m => [InvestigatorId] -> m Int
 getSpendableClueCount investigatorIds =
   getSum <$> foldMapM (fmap Sum . Investigator.getSpendableClueCount) investigatorIds
 

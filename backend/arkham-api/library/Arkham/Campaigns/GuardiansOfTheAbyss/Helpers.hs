@@ -6,7 +6,7 @@ import Arkham.Card
 import Arkham.Classes.HasGame
 import Arkham.Classes.HasQueue (push)
 import Arkham.Classes.Query
-import Arkham.Enemy.Cards qualified as Enemies
+import Arkham.Enemy.CardDefs.GuardiansOfTheAbyss.BrotherhoodOfTheBeast qualified as Enemies
 import Arkham.Enemy.Types (Field (EnemyCardCode))
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Log hiding (crossOutRecordSetEntries, recordSetInsert, recordSetReplace)
@@ -31,13 +31,12 @@ import Arkham.Projection
 import Arkham.Scenario.Types (Field (ScenarioCardsUnderScenarioReference))
 import Arkham.ScenarioLogKey
 import Arkham.Source
-import Arkham.Tracing
 import Arkham.Trait (Trait (Cultist))
 
 campaignI18n :: (HasI18n => a) -> a
 campaignI18n = standaloneI18n "guardiansOfTheAbyss"
 
-getStrengthOfTheAbyss :: (HasGame m, Tracing m) => m Int
+getStrengthOfTheAbyss :: HasGame m => m Int
 getStrengthOfTheAbyss = scenarioCount StrengthOfTheAbyss
 
 addStrengthOfTheAbyss :: ReverseQueue m => Int -> m ()

@@ -29,7 +29,7 @@ import Arkham.Source
 import Arkham.Target
 import Arkham.Tarot
 import Arkham.Xp
-import Control.Monad.Writer hiding (filterM)
+import Control.Monad.Writer
 import Data.Aeson.TH
 import Data.Aeson.Types (Parser)
 import Data.Data
@@ -76,6 +76,18 @@ data XpBreakdownStep = XpBreakdownStep
   }
   deriving stock (Show, Eq, Ord, Generic, Data)
 
+{- | A recorded change to the campaign chaos bag, grouped by the campaign step it
+happened during. The bag is kept in full on both sides so the campaign log can show
+what was added and removed (the multiset difference) and what the bag looked like
+before and after.
+-}
+data ChaosBagChange = ChaosBagChange
+  { cbcStep :: CampaignStep
+  , cbcBefore :: [ChaosTokenFace]
+  , cbcAfter :: [ChaosTokenFace]
+  }
+  deriving stock (Show, Eq, Ord, Generic, Data)
+
 data CampaignAttrs = CampaignAttrs
   { campaignId :: CampaignId
   , campaignName :: Text
@@ -83,6 +95,7 @@ data CampaignAttrs = CampaignAttrs
   , campaignStoryCards :: Map InvestigatorId [Card]
   , campaignDifficulty :: Difficulty
   , campaignChaosBag :: [ChaosTokenFace]
+  , campaignChaosBagHistory :: [ChaosBagChange]
   , campaignLog :: CampaignLog
   , campaignStep :: CampaignStep
   , campaignCompletedSteps :: [CampaignStep]
@@ -207,6 +220,25 @@ usedAbilitiesL = lens campaignUsedAbilities $ \m x -> m {campaignUsedAbilities =
 xpBreakdownL :: Lens' CampaignAttrs [XpBreakdownStep]
 xpBreakdownL = lens campaignXpBreakdown $ \m x -> m {campaignXpBreakdown = x}
 
+chaosBagHistoryL :: Lens' CampaignAttrs [ChaosBagChange]
+chaosBagHistoryL = lens campaignChaosBagHistory $ \m x -> m {campaignChaosBagHistory = x}
+
+{- | Change the campaign chaos bag, recording the change so the campaign log can show
+the bag's history. Everything that happens during one campaign step folds into a
+single entry, and an entry that nets back to where it started is dropped.
+-}
+overCampaignChaosBag :: ([ChaosTokenFace] -> [ChaosTokenFace]) -> CampaignAttrs -> CampaignAttrs
+overCampaignChaosBag f attrs
+  | sort before == sort after = attrs
+  | otherwise = attrs & chaosBagL .~ after & chaosBagHistoryL %~ record
+ where
+  before = campaignChaosBag attrs
+  after = f before
+  step = normalizedCampaignStep (campaignStep attrs)
+  record = \case
+    c : rest | c.cbcStep == step -> [c {cbcAfter = after} | sort c.cbcBefore /= sort after] <> rest
+    history -> ChaosBagChange step before after : history
+
 completeStep :: CampaignStep -> [CampaignStep] -> [CampaignStep]
 completeStep step' steps = step' : steps
 
@@ -224,8 +256,14 @@ instance Entity CampaignAttrs where
   overAttrs f = f
 
 getRandomBasicWeakness :: MonadRandom m => ClassSymbol -> Int -> Maybe ArkhamDBDecklist -> m CardDef
-getRandomBasicWeakness investigatorClass playerCount mDecklist =
-  sampleRandomBasicWeakness
+getRandomBasicWeakness = getRandomBasicWeaknessExcluding []
+
+-- | 'getRandomBasicWeakness', skipping weaknesses whose canonical card code is excluded.
+getRandomBasicWeaknessExcluding
+  :: MonadRandom m => [CardCode] -> ClassSymbol -> Int -> Maybe ArkhamDBDecklist -> m CardDef
+getRandomBasicWeaknessExcluding excluded investigatorClass playerCount mDecklist =
+  sampleRandomBasicWeaknessExcluding
+    excluded
     RandomBasicWeaknessContext
       { rbwInvestigatorClass = investigatorClass
       , rbwPlayerCount = playerCount
@@ -233,14 +271,33 @@ getRandomBasicWeakness investigatorClass playerCount mDecklist =
       , rbwStandalone = False
       }
 
+{- | Replace every random basic weakness placeholder in the deck with an actual weakness.
+Each draw excludes what the earlier draws produced, and the basic weaknesses already in
+the deck, since only one physical copy of each exists (#5424).
+-}
 addRandomBasicWeaknessIfNeeded
-  :: CardGen m => ClassSymbol -> Int -> Maybe ArkhamDBDecklist -> Deck PlayerCard -> m (Deck PlayerCard, [Card])
+  :: CardGen m
+  => ClassSymbol -> Int -> Maybe ArkhamDBDecklist -> Deck PlayerCard -> m (Deck PlayerCard, [Card])
 addRandomBasicWeaknessIfNeeded investigatorClass playerCount mDecklist deck = do
-  runWriterT do
-    Deck <$> flip filterM (unDeck deck) \card -> do
-      when (toCardDef card == randomWeakness) do
-        getRandomBasicWeakness investigatorClass playerCount mDecklist >>= lift . genCard >>= tell . pure
-      pure $ toCardDef card /= randomWeakness
+  let (placeholders, rest) = partition ((== randomWeakness) . toCardDef) (unDeck deck)
+  weaknesses <- foldM drawWeakness [] placeholders
+  pure (Deck rest, weaknesses)
+ where
+  inDeck = basicWeaknessCodes $ unDeck deck
+  drawWeakness acc _ = do
+    cardDef <-
+      getRandomBasicWeaknessExcluding
+        (inDeck <> basicWeaknessCodes acc)
+        investigatorClass
+        playerCount
+        mDecklist
+    card <- genCard cardDef
+    pure $ acc <> [card]
+
+-- | The canonical card codes of the basic weaknesses among these cards.
+basicWeaknessCodes :: HasCardDef a => [a] -> [CardCode]
+basicWeaknessCodes =
+  map canonicalCardCode . filter ((== Just BasicWeakness) . cdCardSubType) . map toCardDef
 
 campaignWith
   :: forall a
@@ -270,6 +327,7 @@ campaign f campaignId' name difficulty =
       , campaignStoryCards = mempty
       , campaignDifficulty = difficulty
       , campaignChaosBag = campaignTokens @a difficulty
+      , campaignChaosBagHistory = mempty
       , campaignLog = mkCampaignLog
       , campaignStep = ContinueCampaignStep $ Continuation PrologueStep False False Nothing False
       , campaignCompletedSteps = []
@@ -336,6 +394,13 @@ instance FromJSON XpBreakdownStep where
   parseJSON = withObject "XpBreakdownStep" $ \o ->
     XpBreakdownStep <$> o .: "step" <*> o .: "investigators" <*> o .: "entries"
 
+instance ToJSON ChaosBagChange where
+  toJSON c = object ["step" .= c.cbcStep, "before" .= c.cbcBefore, "after" .= c.cbcAfter]
+
+instance FromJSON ChaosBagChange where
+  parseJSON = withObject "ChaosBagChange" $ \o ->
+    ChaosBagChange <$> o .: "step" <*> o .: "before" <*> o .: "after"
+
 oldBreakdown :: Map ScenarioId XpBreakdown -> [(CampaignStep, XpBreakdown)]
 oldBreakdown = map (first ScenarioStep) . Map.toList
 
@@ -356,6 +421,7 @@ instance FromJSON CampaignAttrs where
       (o .: "storyCards") <|> (o .: "storyCards" >>= parseEitherCards)
     campaignDifficulty <- o .: "difficulty"
     campaignChaosBag <- o .: "chaosBag"
+    campaignChaosBagHistory <- o .:? "chaosBagHistory" .!= mempty
     campaignLog <- o .: "log"
     campaignStep <- o .: "step"
     campaignCompletedSteps <- o .: "completedSteps"

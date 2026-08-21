@@ -54,7 +54,6 @@ import Arkham.Prelude
 import Arkham.Projection
 import Arkham.Timing qualified as Timing
 import Arkham.Token qualified as Token
-import Arkham.Tracing
 import Arkham.Window (mkAfter, mkWhen, mkWindow)
 import Arkham.Window qualified as Window
 import Arkham.Zone qualified as Zone
@@ -64,7 +63,7 @@ import Data.Aeson.Lens (_Bool)
 import Data.IntMap.Strict qualified as IntMap
 import Data.Map.Strict qualified as Map
 
-defeated :: (HasGame m, Tracing m) => AssetAttrs -> Source -> m (Maybe DefeatedBy)
+defeated :: HasGame m => AssetAttrs -> Source -> m (Maybe DefeatedBy)
 defeated AssetAttrs {assetId, assetAssignedHealthDamage, assetAssignedSanityDamage} source = do
   canBeDefeated <- withoutModifier assetId CannotBeDefeated
   remainingHealth <- field AssetRemainingHealth assetId
@@ -87,9 +86,18 @@ instance RunMessage Asset where
         ReturnLocationToGame _ -> Asset <$> runMessage msg a
         _ -> pure x
       else do
-        inPlay <- elem (toId x) <$> select AnyAsset
-        modifiers' <- if inPlay then getModifiers (toTarget x) else pure []
-        let msg' = if any (`elem` modifiers') [Blank, BlankExceptForcedAbilities] then Blanked msg else msg
+        -- Same operands, cheap one first: getModifiers reads the preloaded
+        -- modifier map, while `select AnyAsset` builds and scans the whole
+        -- in-play asset list. This runs for every asset on every message, so
+        -- test the rare condition (a Blank modifier) before confirming the
+        -- asset is in play.
+        modifiers' <- getModifiers (toTarget x)
+        msg' <-
+          if any (`elem` modifiers') [Blank, BlankExceptForcedAbilities]
+            then do
+              inPlay <- elem (toId x) <$> select AnyAsset
+              pure $ if inPlay then Blanked msg else msg
+            else pure msg
         Asset <$> runMessage msg' a
 
 instance RunMessage AssetAttrs where
@@ -665,6 +673,13 @@ instance RunMessage AssetAttrs where
       pure a
     RemovedFromPlay (isSource a -> True) -> do
       pure $ a & placementL .~ OutOfPlay Zone.RemovedZone
+    -- An asset placed directly on a location leaves play with it. An asset in an
+    -- investigator's play area, in a vehicle, or attached to another entity only
+    -- reaches the location through that host and leaves play when the host does,
+    -- #5426.
+    RemovedLocation lid | isDirectlyAtLocation lid a.placement -> do
+      push $ toDiscard GameSource a
+      pure a
     PlaceKey (isTarget a -> True) k -> do
       pure $ a & (keysL %~ insertSet k)
     HealAllDamage (isTarget a -> True) source | assetDamage a > 0 -> do

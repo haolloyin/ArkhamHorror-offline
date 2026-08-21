@@ -90,11 +90,13 @@ data AppSettings = AppSettings
     , appMailtrapApiToken :: Token
     , appBugsnagApiKey :: Text
     , appAssetHost :: Maybe Text
-    , appCollectMlData :: Bool
-    -- ^ Collect imitation-learning data: when True, 'updateGame' logs one
-    -- @ArkhamMlDecision@ row per human, multi-choice decision. Default False;
-    -- sourced from the @ARKHAM_COLLECT_ML@ env var (see @config/settings.yml@).
-    -- When False the capture is byte-for-byte inert (no extra query/insert).
+    , appWebsocketCompression :: Bool
+    -- ^ permessage-deflate on the game/event websockets. Defaults on; it takes
+    -- a 206 KB 'PublicGame' update to ~33 KB. It is also the one thing on that
+    -- path that costs CPU and allocation per message, and the load only shows
+    -- up under real concurrency, so keep it switchable in production without a
+    -- rebuild: @ARKHAM_WS_COMPRESSION=false@. See
+    -- 'Api.Handler.Arkham.Games.Shared.websocketConnectionOptions'.
     }
 
 instance FromJSON AppSettings where
@@ -123,8 +125,7 @@ instance FromJSON AppSettings where
         appMailtrapApiToken <- o .: "mailtrap-api-token"
         appBugsnagApiKey <- o .: "bugsnag-api-token"
         appAssetHost <- o .:? "asset-host"
-        appCollectMlData <- o .:? "collect-ml" .!= False
-
+        appWebsocketCompression <- o .:? "websocket-compression" .!= True
         pure AppSettings {..}
 
 -- | Raw bytes at compile time of @config/settings.yml@

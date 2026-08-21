@@ -18,6 +18,7 @@ import Arkham.I18n
 import Arkham.Id
 import Arkham.Key
 import Arkham.Location.Grid
+import Arkham.LocationSymbol (LocationSymbol)
 import Arkham.Matcher.Enemy
 import Arkham.Matcher.Investigator
 import Arkham.Matcher.Location
@@ -35,12 +36,10 @@ import Arkham.Source
 import Arkham.Target
 import Arkham.Tarot
 import Arkham.Text (FlavorText (..), FlavorTextEntry (..), FlavorTextModifier (..), toI18n)
-import Arkham.Tracing
 import Arkham.Window (defaultWindows)
 import Control.Monad.Catch (MonadCatch, MonadMask, MonadThrow)
 import Control.Monad.State.Strict
 import Control.Monad.Writer.Strict
-import OpenTelemetry.Trace.Monad (MonadTracer (..))
 
 data ChooseState = ChooseState
   { terminated :: Bool
@@ -62,11 +61,7 @@ newtype ChooseT m a = ChooseT {unChooseT :: StateT ChooseState (WriterT [UI Mess
     , MonadCatch
     , MonadThrow
     , MonadMask
-    , Tracing
     )
-
-instance MonadTracer m => MonadTracer (ChooseT m) where
-  getTracer = ChooseT $ lift $ lift getTracer
 
 instance HasGame m => HasGame (ChooseT m) where
   getGame = lift getGame
@@ -241,6 +236,11 @@ labeled' :: (HasI18n, ReverseQueue m) => Text -> QueueT Message m () -> ChooseT 
 labeled' label action = unterminated do
   msgs <- lift $ capture action
   tell [Label ("$" <> labelKey label) msgs]
+
+connectionLabeled' :: ReverseQueue m => LocationSymbol -> QueueT Message m () -> ChooseT m ()
+connectionLabeled' sym action = unterminated do
+  msgs <- lift $ capture action
+  tell [ConnectionLabel sym msgs]
 
 info' :: ReverseQueue m => FlavorTextBuilder () -> ChooseT m ()
 info' flavor = unterminated $ tell [Info $ buildFlavor flavor]
@@ -559,6 +559,30 @@ investigatorStoryWithChooseOneM' iid builder choices = do
   (_, choices') <- runChooseT choices
   pid <- getPlayer iid
   playerStoryWithChooseOne pid (buildFlavor builder) choices'
+
+wizardChoice'
+  :: (HasI18n, ReverseQueue m) => Text -> FlavorText -> QueueT Message m () -> m (WizardChoice Message)
+wizardChoice' label flavor action = do
+  messages <- capture action
+  pure $ WizardChoice ("$" <> labelKey label) flavor messages
+
+chooseOneWizard'
+  :: (HasI18n, ReverseQueue m)
+  => InvestigatorId
+  -> FlavorText
+  -> Text
+  -> Text
+  -> [WizardChoice Message]
+  -> m ()
+chooseOneWizard' iid flavor confirm back choices = do
+  pid <- getPlayer iid
+  push
+    $ Msg.Ask pid
+    $ ChooseOneWizard
+      flavor
+      choices
+      ("$" <> labelKey confirm)
+      ("$" <> labelKey back)
 
 playerStoryWithChooseOneM'
   :: ReverseQueue m => PlayerId -> FlavorTextBuilder () -> ChooseT m a -> m ()

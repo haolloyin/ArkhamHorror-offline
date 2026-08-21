@@ -1,7 +1,7 @@
 module Arkham.Scenario.Scenarios.FortuneAndFolly (fortuneAndFolly, fortuneAndFollyPart2) where
 
-import Arkham.Act.Cards qualified as Acts
-import Arkham.Agenda.Cards qualified as Agendas
+import Arkham.Act.CardDefs.FortuneAndFolly qualified as Acts
+import Arkham.Agenda.CardDefs.FortuneAndFolly qualified as Agendas
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Asset.Types (Field (AssetCard, AssetCardCode, AssetPlacement))
 import Arkham.Campaign.Types (Field (..))
@@ -14,7 +14,7 @@ import Arkham.Campaigns.TheScarletKeys.Key.Types (Field (ScarletKeyTokens))
 import Arkham.Campaigns.TheScarletKeys.Meta hiding (Standard)
 import Arkham.Card
 import Arkham.EncounterSet qualified as Set
-import Arkham.Enemy.Cards qualified as Enemies
+import Arkham.Enemy.CardDefs.FortuneAndFolly qualified as Enemies
 import {-# SOURCE #-} Arkham.GameEnv
 import Arkham.Helpers
 import Arkham.Helpers.Campaign (campaignField)
@@ -28,7 +28,7 @@ import Arkham.Id
 import Arkham.Investigator.Types (Field (InvestigatorClues, InvestigatorDamage, InvestigatorHorror))
 import Arkham.Keyword qualified as Keyword
 import Arkham.Layout
-import Arkham.Location.Cards qualified as Locations
+import Arkham.Location.CardDefs.FortuneAndFolly qualified as Locations
 import Arkham.Location.Types (Field (LocationCardsUnderneath, LocationPrintedSymbol))
 import Arkham.LocationSymbol
 import Arkham.Matcher hiding (AssetCard, Discarded, enemyAt)
@@ -44,11 +44,11 @@ import Arkham.Scenario.Options
 import Arkham.Scenario.Types (ScenarioAttrs (..), campaignStepL)
 import Arkham.ScenarioLogKey
 import Arkham.Scenarios.FortuneAndFolly.Helpers
-import Arkham.Story.Cards qualified as Stories
+import Arkham.Story.CardDefs.FortuneAndFolly qualified as Stories
 import Arkham.Story.Types (Field (StoryClues))
 import Arkham.Token
 import Arkham.Trait (Trait (Casino, Role, Unpracticed))
-import Arkham.Treachery.Cards qualified as Treacheries
+import Arkham.Treachery.CardDefs.FortuneAndFolly qualified as Treacheries
 import Arkham.Window qualified as Window
 import Data.Map.Strict qualified as Map
 
@@ -160,7 +160,8 @@ instance HasModifiersFor FortuneAndFolly where
       ]
       \(enemyCode, patrolDestination, patrolDirection) ->
         selectEach (LocationWithEnemy $ enemyIsExact enemyCode) \loc -> do
-          reversed <- selectAny $ enemyIsExact enemyCode <> EnemyWithModifier (ScenarioModifier "reverseDirection")
+          reversed <-
+            selectAny $ enemyIsExact enemyCode <> EnemyWithModifier (ScenarioModifier "reverseDirection")
           sym <- field LocationPrintedSymbol loc
           let newSym = Map.findWithDefault sym sym $ case patrolDirection of
                 Clockwise -> if reversed then counterClockwiseMap else clockwiseMap

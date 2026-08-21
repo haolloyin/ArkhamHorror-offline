@@ -25,11 +25,12 @@ import Arkham.Classes.Query
 import Arkham.Criteria
 import Arkham.Difficulty qualified as Difficulty
 import Arkham.Effect.Window
-import Arkham.Enemy.Cards qualified as Enemies
+import Arkham.Enemy.CardDefs.TheScarletKeys.RedCoterie qualified as Enemies
 import Arkham.Helpers.Campaign (getCampaignMeta, getCampaignStoryCards)
 import Arkham.Helpers.Modifiers (getModifiers)
 import Arkham.Helpers.Query (allInvestigators)
 import Arkham.Helpers.Scenario (getGrid, unlessStandalone)
+import Arkham.Helpers.Source (sourceMatches)
 import Arkham.Helpers.Xp
 import Arkham.I18n
 import Arkham.Id
@@ -48,7 +49,6 @@ import Arkham.Scenario.Setup (ScenarioBuilderT, addToEncounterDeck)
 import Arkham.Scenario.Types
 import Arkham.Source
 import Arkham.Target
-import Arkham.Tracing
 import Arkham.Window qualified as Window
 import Arkham.Xp
 import Data.Map.Strict qualified as Map
@@ -144,19 +144,27 @@ exposed iid enemy c body = do
   checkAfter $ Window.CampaignEvent idkey (Just iid) Null
   checkAfter $ Window.CampaignEvent "exposed[enemy]" (Just iid) Null
 
-getCanExpose :: (Tracing m, HasGame m) => InvestigatorId -> ConcealedCard -> m Bool
-getCanExpose iid card = runValidT do
+getCanExpose
+  :: (HasGame m, Sourceable source) => InvestigatorId -> source -> ConcealedCard -> m Bool
+getCanExpose iid (toSource -> source) card = runValidT do
   imods <- lift $ getModifiers iid
   guard $ CannotExpose `notElem` imods
   case card.placement of
     AtLocation location -> do
       guard $ noExposeAt location `notElem` imods
-      liftGuardM $ matches location $ LocationWithoutModifier NoExposeAt
+      -- Coterie Envoy only blocks exposure "via player card effects"
+      isPlayerSource <- lift $ sourceMatches source SourceIsPlayerCard
+      when isPlayerSource
+        $ liftGuardM
+        $ matches location
+        $ LocationWithoutModifier NoExposeAt
     _ -> pure ()
 
-exposedDecoy :: ReverseQueue m => InvestigatorId -> ConcealedCard -> Maybe Text -> m ()
-exposedDecoy iid card@(toTarget -> c) mtext = do
-  whenM (getCanExpose iid card) do
+exposedDecoy
+  :: (ReverseQueue m, Sourceable source)
+  => InvestigatorId -> source -> ConcealedCard -> Maybe Text -> m ()
+exposedDecoy iid source card@(toTarget -> c) mtext = do
+  whenM (getCanExpose iid source card) do
     let ekey = "exposed[decoy]"
     mods <- getModifiers c
     batched \_ -> do
@@ -179,7 +187,7 @@ afterExposed c = CampaignEvent #after Nothing ekey
  where
   ekey = "exposed[" <> unCardCode (toCardCode c) <> "]"
 
-allConcealedMiniCards :: (HasGame m, Tracing m) => m [ConcealedCardId]
+allConcealedMiniCards :: HasGame m => m [ConcealedCardId]
 allConcealedMiniCards = concat <$> selectField LocationConcealedCards Anywhere
 
 placeConcealedCard :: ReverseQueue m => InvestigatorId -> ConcealedCardId -> Placement -> m ()
@@ -201,7 +209,7 @@ removeHollow c = do
   obtainCard c
   fetchCard c >>= scenarioSpecific "removedHollow"
 
-keysFor :: (Tracing m, HasGame m, HasCardCode a) => a -> m [CardDef]
+keysFor :: (HasGame m, HasCardCode a) => a -> m [CardDef]
 keysFor a = do
   statuses <- keyStatus <$> getCampaignMeta @TheScarletKeysMeta
   pure $ Map.assocs statuses & mapMaybe \(k, v) -> do

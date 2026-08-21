@@ -106,7 +106,6 @@ import Arkham.Source
 import Arkham.Spawn
 import Arkham.Target
 import Arkham.Token
-import Arkham.Tracing
 import Arkham.Trait (Trait)
 import Arkham.Window (Window (..))
 import Arkham.Window qualified as Window
@@ -780,7 +779,7 @@ drawAnotherChaosToken iid = do
     Just _ -> push $ DrawAnotherChaosToken iid
     Nothing -> push $ RequestAnotherChaosToken iid GameSource
 
-eachInvestigator :: (HasGame m, Tracing m) => (InvestigatorId -> m ()) -> m ()
+eachInvestigator :: HasGame m => (InvestigatorId -> m ()) -> m ()
 eachInvestigator f = do
   inResolution <- getInResolution
   investigators <- if inResolution then allInvestigators else getInvestigators
@@ -796,7 +795,7 @@ forInvestigator' :: ReverseQueue m => InvestigatorId -> QueueT Message m () -> m
 forInvestigator' iid = capture >=> traverse_ (forInvestigator iid)
 
 selectEachDiscardable
-  :: (HasCardCode a, HasGame m, Tracing m)
+  :: (HasCardCode a, HasGame m)
   => a -> (forall target. Targetable target => target -> m ()) -> m ()
 selectEachDiscardable (toCardCode -> cardCode) f = do
   selectEach (AssetIs cardCode <> DiscardableAsset) f
@@ -1114,6 +1113,19 @@ chooseInvestigatorAmounts iid label maxAmount iids target = do
     (TotalAmountTarget maxAmount)
     (map (\x -> (toTitle x, (0, maxAmount))) xs)
     target
+
+{- | Like 'chooseAmounts', but keys each choice by the asset's own id so the
+answer maps back to a specific asset even when two copies share a name.
+-}
+chooseAssetAmounts
+  :: (ReverseQueue m, Targetable target)
+  => InvestigatorId -> Text -> Int -> [AssetId] -> target -> m ()
+chooseAssetAmounts iid label maxAmount assets target = do
+  player <- getPlayer iid
+  choices <- for assets \aid -> do
+    name <- field Field.AssetName aid
+    pure $ AmountChoice (unAssetId aid) (toTitle name) 0 maxAmount
+  push $ Ask player $ ChooseAmounts label (TotalAmountTarget maxAmount) choices (toTarget target)
 
 withInvestigatorAmounts
   :: ReverseQueue m => [(NamedUUID, Int)] -> (InvestigatorId -> Int -> m ()) -> m ()
@@ -2235,13 +2247,15 @@ erroring, so callers can fall back to another anchor.
 insertAfterMatchingMaybe
   :: (MonadTrans t, HasQueue Message m) => [Message] -> (Message -> Bool) -> t m Bool
 insertAfterMatchingMaybe msgs p = lift $ withQueue \queue ->
-  let (before, rest) = break p queue
+  let (before, rest) = break p' queue
    in case rest of
         (x : xs) -> (before <> (x : msgs <> xs), True)
         _ -> maybe (queue, False) (,True) (go [] queue)
  where
+  -- see 'QueueWrapper': the anchor may be wrapped in Priority/Retain
+  p' = matchesQueued p
   go _acc [] = Nothing
-  go acc (x : xs) = case x of
+  go acc (x : xs) = case stripQueueWrappers x of
     MoveWithSkillTest inner ->
       case inner of
         Run innerMsgs
@@ -2249,14 +2263,14 @@ insertAfterMatchingMaybe msgs p = lift $ withQueue \queue ->
           , (y : ys) <- afterInner ->
               Just $ reverse acc <> (MoveWithSkillTest (Run (beforeInner <> (y : msgs <> ys))) : xs)
          where
-          (beforeInner, afterInner) = break p innerMsgs
+          (beforeInner, afterInner) = break p' innerMsgs
         _ -> go (x : acc) xs
     Run innerMsgs
       | not (null afterInner)
       , (y : ys) <- afterInner ->
           Just $ reverse acc <> (Run (beforeInner <> (y : msgs <> ys)) : xs)
      where
-      (beforeInner, afterInner) = break p innerMsgs
+      (beforeInner, afterInner) = break p' innerMsgs
     _ -> go (x : acc) xs
 
 afterMove
@@ -2901,7 +2915,7 @@ chaosTokenEffect
 chaosTokenEffect (toSource -> source) token modifier =
   Msg.pushM $ Msg.chaosTokenEffect source token modifier
 
-whenNotAtMax :: (HasGame m, Tracing m) => CardDef -> Int -> (Int -> m ()) -> m ()
+whenNotAtMax :: HasGame m => CardDef -> Int -> (Int -> m ()) -> m ()
 whenNotAtMax def n f = do
   mEffect <-
     selectOne $ EffectWithCardCode "maxef" <> EffectWithTarget (CardCodeTarget $ toCardCode def)
@@ -3227,7 +3241,7 @@ lookAtTopOfDeck
 lookAtTopOfDeck iid target = push $ LookAtTopOfDeck iid (toTarget target) 1
 
 temporaryModifier
-  :: (Targetable target, Sourceable source, HasQueue Message m, MonadRandom m, HasGame m, Tracing m)
+  :: (Targetable target, Sourceable source, HasQueue Message m, MonadRandom m, HasGame m)
   => target
   -> source
   -> ModifierType
@@ -3236,7 +3250,7 @@ temporaryModifier
 temporaryModifier target source modType = temporaryModifiers target source [modType]
 
 temporaryModifiers
-  :: (Targetable target, Sourceable source, HasQueue Message m, MonadRandom m, HasGame m, Tracing m)
+  :: (Targetable target, Sourceable source, HasQueue Message m, MonadRandom m, HasGame m)
   => target
   -> source
   -> [ModifierType]
@@ -3256,7 +3270,6 @@ temporaryModifiersMany
      , HasQueue Message m
      , MonadRandom m
      , HasGame m
-     , Tracing m
      )
   => source
   -> [(target, [ModifierType])]

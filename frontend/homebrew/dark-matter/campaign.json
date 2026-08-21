@@ -2,6 +2,7 @@
   "id": ":dark-matter",
   "name": "Dark Matter",
   "homebrew": true,
+  "chapter": 1,
   "designer": "Axolotl",
   "difficultyLevels": {
     "Easy": [
@@ -18,9 +19,6 @@
       "Skull",
       "Cultist",
       "Cultist",
-      "Tablet",
-      "Tablet",
-      "ElderThing",
       "AutoFail",
       "ElderSign"
     ],
@@ -39,9 +37,6 @@
       "Skull",
       "Cultist",
       "Cultist",
-      "Tablet",
-      "Tablet",
-      "ElderThing",
       "AutoFail",
       "ElderSign"
     ],
@@ -61,9 +56,6 @@
       "Skull",
       "Cultist",
       "Cultist",
-      "Tablet",
-      "Tablet",
-      "ElderThing",
       "AutoFail",
       "ElderSign"
     ],
@@ -83,9 +75,6 @@
       "Skull",
       "Cultist",
       "Cultist",
-      "Tablet",
-      "Tablet",
-      "ElderThing",
       "AutoFail",
       "ElderSign"
     ]

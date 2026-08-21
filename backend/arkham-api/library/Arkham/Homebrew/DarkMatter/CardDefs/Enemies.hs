@@ -6,27 +6,37 @@ import Arkham.Homebrew.DarkMatter.Traits
 import Arkham.Keyword qualified as Keyword
 import Arkham.LocationSymbol qualified as LS
 
+{- | A scanning back: the icons are printed at the bottom of the card's @b@
+side, so that side is the card's back for display too — not the generic
+encounter back. Mirrors @CardDefs.Stories.withScanIcons@ and the locations'
+'singleSidedWithFlippedBack'.
+-}
 withScanIcons :: [LS.LocationSymbol] -> CardDef -> CardDef
-withScanIcons icons def = def {cdMeta = insertMap "scanIcons" (toJSON icons) def.meta}
+withScanIcons icons def =
+  def
+    { cdMeta = insertMap "scanIcons" (toJSON icons) def.meta
+    , cdOtherSide = Just (flippedCardCode def.cardCode)
+    }
 
 -- deep_space
 theFeasterFromAfar :: CardDef
 theFeasterFromAfar =
-  (enemy ":dark-matter:007" "The Feaster from Afar" Set.DeepSpace 1)
-    { cdHealthDamage = healthDamage 2
-    , cdSanityDamage = sanityDamage 2
-    , cdFight = fight 3
-    , cdEvade = evade 3
-    , cdHealth = healthPerInvestigator 3
-    , cdCardTraits = setFromList [Avatar, AncientOne, Elite]
-    , cdVictoryPoints = Just 1
-    }
+  withScanIcons [LS.Hourglass, LS.Triangle, LS.Trefoil, LS.Square, LS.Equals, LS.Diamond]
+    $ (enemy ":dark-matter:007" "The Feaster from Afar" Set.DeepSpace 1)
+      { cdHealthDamage = healthDamage 2
+      , cdSanityDamage = sanityDamage 2
+      , cdFight = fight 3
+      , cdEvade = evade 3
+      , cdHealth = healthPerInvestigator 3
+      , cdCardTraits = setFromList [Avatar, AncientOne, Elite]
+      , cdVictoryPoints = Just 1
+      }
 
 -- the_tatterdemalion
 cybervirus :: CardDef
 cybervirus =
   withScanIcons [LS.Trefoil]
-    $ (enemy ":dark-matter:028" "Cybervirus" Set.TheTatterdemalion 1)
+    $ (enemy ":dark-matter:029" "Cybervirus" Set.TheTatterdemalion 1)
       { cdSanityDamage = sanityDamage 2
       , cdFight = fight 2
       , cdEvade = evade 4
@@ -34,12 +44,13 @@ cybervirus =
       , cdCardTraits = setFromList [Virtual]
       , cdVictoryPoints = Just 1
       , cdKeywords = setFromList [Keyword.Peril, Keyword.Hidden]
+      , cdRevelation = IsRevelation
       }
 
 jv7Hyades :: CardDef
 jv7Hyades =
   withScanIcons [LS.T]
-    $ (enemy ":dark-matter:033" ("JV-7 'Hyades'" <:> "Artificial Co-Pilot") Set.TheTatterdemalion 1)
+    $ (enemy ":dark-matter:034" ("JV-7 'Hyades'" <:> "Artificial Co-Pilot") Set.TheTatterdemalion 1)
       { cdHealthDamage = healthDamage 1
       , cdSanityDamage = sanityDamage 1
       , cdFight = fight 2
@@ -52,7 +63,7 @@ jv7Hyades =
 lr02Hali :: CardDef
 lr02Hali =
   withScanIcons [LS.Triangle, LS.Circle, LS.Plus]
-    $ (enemy ":dark-matter:035" "LR-02 'Hali'" Set.TheTatterdemalion 1)
+    $ (enemy ":dark-matter:036" "LR-02 'Hali'" Set.TheTatterdemalion 1)
       { cdHealthDamage = healthDamage 1
       , cdSanityDamage = sanityDamage 1
       , cdFight = fight 3
@@ -81,7 +92,7 @@ uplA21Demhe =
 -- artificial_intelligence
 systemBug :: CardDef
 systemBug =
-  (enemy ":dark-matter:052" "System Bug" Set.ArtificialIntelligence 3)
+  (enemy ":dark-matter:053" "System Bug" Set.ArtificialIntelligence 3)
     { cdHealthDamage = healthDamage 1
     , cdFight = fight 3
     , cdEvade = evade 2
@@ -92,9 +103,12 @@ systemBug =
 -- electric_nightmare
 shadowOfThoughts :: CardDef
 shadowOfThoughts =
-  (enemy ":dark-matter:076" "Shadow of Thoughts" Set.ElectricNightmare 1)
+  (enemy ":dark-matter:077" "Shadow of Thoughts" Set.ElectricNightmare 1)
     { cdHealthDamage = healthDamage 1
     , cdSanityDamage = sanityDamage 2
+    , -- X, the shroud of this enemy's location; the value comes from the card's
+      -- own EnemyFight modifier, which needs a printed value to add to
+      cdFight = fightX
     , cdEvade = evade 2
     , cdHealth = health 5
     , cdCardTraits = setFromList [Virtual, Abomination]
@@ -103,7 +117,7 @@ shadowOfThoughts =
 
 glitchInTheSystem :: CardDef
 glitchInTheSystem =
-  (enemy ":dark-matter:079" "Glitch in the System" Set.ElectricNightmare 3)
+  (enemy ":dark-matter:080" "Glitch in the System" Set.ElectricNightmare 3)
     { cdHealthDamage = healthDamage 1
     , cdFight = fight 2
     , cdEvade = evade 0
@@ -119,6 +133,8 @@ manifestedWhispers =
     , cdEvade = evade 3
     , cdHealth = health 1
     , cdCardTraits = setFromList [Monster]
+    , cdKeywords = setFromList [Keyword.Hidden, Keyword.Peril]
+    , cdRevelation = IsRevelation
     }
 
 virtualByakhee :: CardDef
@@ -150,6 +166,7 @@ houndOfTindalos =
     , cdEvade = evade 4
     , cdHealth = health 4
     , cdCardTraits = setFromList [Creature, Liminal, Elite]
+    , cdKeywords = setFromList [Keyword.Massive, Keyword.Alert, Keyword.Retaliate]
     , cdVictoryPoints = Just 1
     }
 
@@ -161,6 +178,7 @@ miGoStabilizer =
     , cdEvade = evade 1
     , cdHealth = health 2
     , cdCardTraits = setFromList [MiGo, Machine]
+    , cdKeywords = setFromList [Keyword.Hunter]
     }
 
 quantumPhantom :: CardDef
@@ -219,6 +237,21 @@ rats =
     }
 
 -- strange_moons
+haita :: CardDef
+haita =
+  doubleSided ":dark-matter:156"
+    $ (enemy ":dark-matter:156b" ("Haïta" <:> "The God of Shepherds") Set.StrangeMoons 1)
+      { cdSanityDamage = sanityDamage 2
+      , cdHealthDamage = healthDamage 1
+      , cdFight = fight 3
+      , cdHealth = healthPerInvestigator 3
+      , cdEvade = evade 3
+      , cdCardTraits = setFromList [Abomination, Humanoid, Elite]
+      , cdVictoryPoints = Just 1
+      , cdKeywords = setFromList [Keyword.Aloof, Keyword.Retaliate, Keyword.Hunter]
+      , cdUnique = True
+      }
+
 theGreys :: CardDef
 theGreys =
   doubleSided ":dark-matter:163b"
@@ -228,6 +261,23 @@ theGreys =
       , cdEvade = evade 4
       , cdHealth = health 1
       , cdCardTraits = setFromList [Alien, Humanoid]
+      , cdKeywords = setFromList [Keyword.Aloof]
+      }
+
+miGoScientist :: CardDef
+miGoScientist =
+  doubleSided ":dark-matter:163"
+    $ (enemy ":dark-matter:163b" "Mi-Go Scientist" Set.StrangeMoons 1)
+      { cdHealthDamage = healthDamage 1
+      , cdSanityDamage = sanityDamage 1
+      , cdFight = fight 4
+      , cdEvade = evade 4
+      , cdHealth = health 3
+      , cdCardTraits = setFromList [MiGo]
+      , cdVictoryPoints = Just 0
+      , cdKeywords =
+          setFromList
+            [Keyword.Aloof, Keyword.Patrol (LocationWithDistanceFrom 1 (LocationWithEnemy ThatEnemy) Anywhere)]
       }
 
 parasite :: CardDef
@@ -264,6 +314,21 @@ viciousByakhee =
     }
 
 -- the_machine_in_yellow
+theStranger :: CardDef
+theStranger =
+  doubleSided ":dark-matter:194"
+    $ (enemy ":dark-matter:194b" "The Stranger" Set.TheMachineInYellow 1)
+      { cdHealthDamage = healthDamage 1
+      , cdSanityDamage = sanityDamage 1
+      , cdFight = fight 3
+      , cdHealth = healthPerInvestigator 3
+      , cdEvade = evade 3
+      , cdCardTraits = setFromList [Humanoid, Elite]
+      , cdVictoryPoints = Just 1
+      , cdKeywords = setFromList [Keyword.Aloof, Keyword.Hunter]
+      , cdUnique = True
+      }
+
 yourOtherSelf :: CardDef
 yourOtherSelf =
   (enemy ":dark-matter:197" "Your Other Self" Set.TheMachineInYellow 4)
@@ -388,37 +453,40 @@ domaagTeel =
 
 shamblerFromTheStars :: CardDef
 shamblerFromTheStars =
-  (enemy ":dark-matter:273" "Shambler from the Stars" Set.Starfall 1)
-    { cdHealthDamage = healthDamage 1
-    , cdSanityDamage = sanityDamage 1
-    , cdFight = fight 3
-    , cdEvade = evade 3
-    , cdHealth = healthPerInvestigator 2
-    , cdCardTraits = setFromList [Monster, Elite]
-    , cdVictoryPoints = Just 1
-    }
+  withScanIcons [LS.T, LS.Triangle, LS.Equals, LS.Hourglass]
+    $ (enemy ":dark-matter:273" "Shambler from the Stars" Set.Starfall 1)
+      { cdHealthDamage = healthDamage 1
+      , cdSanityDamage = sanityDamage 1
+      , cdFight = fight 3
+      , cdEvade = evade 3
+      , cdHealth = healthPerInvestigator 2
+      , cdCardTraits = setFromList [Monster, Elite]
+      , cdVictoryPoints = Just 1
+      }
 
 exoroid :: CardDef
 exoroid =
-  (enemy ":dark-matter:274" "Exoroid" Set.Starfall 1)
-    { cdHealthDamage = healthDamage 1
-    , cdSanityDamage = sanityDamage 1
-    , cdFight = fight 2
-    , cdEvade = evade 4
-    , cdHealth = healthPerInvestigator 2
-    , cdCardTraits = setFromList [Monster]
-    }
+  withScanIcons [LS.Heart, LS.Triangle]
+    $ (enemy ":dark-matter:274" "Exoroid" Set.Starfall 1)
+      { cdHealthDamage = healthDamage 1
+      , cdSanityDamage = sanityDamage 1
+      , cdFight = fight 2
+      , cdEvade = evade 4
+      , cdHealth = healthPerInvestigator 2
+      , cdCardTraits = setFromList [Monster]
+      }
 
 martianCrab :: CardDef
 martianCrab =
-  (enemy ":dark-matter:277" "Martian Crab" Set.Starfall 1)
-    { cdHealthDamage = healthDamage 2
-    , cdFight = fight 5
-    , cdEvade = evade 2
-    , cdHealth = healthPerInvestigator 3
-    , cdCardTraits = setFromList [Creature]
-    , cdVictoryPoints = Just 1
-    }
+  withScanIcons [LS.Circle, LS.Triangle, LS.Square]
+    $ (enemy ":dark-matter:277" "Martian Crab" Set.Starfall 1)
+      { cdHealthDamage = healthDamage 2
+      , cdFight = fight 5
+      , cdEvade = evade 2
+      , cdHealth = healthPerInvestigator 3
+      , cdCardTraits = setFromList [Creature]
+      , cdVictoryPoints = Just 1
+      }
 
 cyberCultist :: CardDef
 cyberCultist =

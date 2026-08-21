@@ -82,7 +82,6 @@ import Arkham.SkillType
 import Arkham.Source
 import Arkham.Target
 import Arkham.Token qualified as Token
-import Arkham.Tracing
 import Arkham.Window (Window (..), mkAfter, mkWhen)
 import Arkham.Window qualified as Window
 import Control.Lens (non, over, transform)
@@ -124,7 +123,7 @@ costPaymentsL = lens activeCostPayments $ \m x -> m {activeCostPayments = x}
 costSealedChaosTokensL :: Lens' ActiveCost [ChaosToken]
 costSealedChaosTokensL = lens activeCostSealedChaosTokens $ \m x -> m {activeCostSealedChaosTokens = x}
 
-getActionCostModifier :: (HasGame m, Tracing m) => ActiveCost -> m Int
+getActionCostModifier :: HasGame m => ActiveCost -> m Int
 getActionCostModifier ac = do
   let iid = ac.investigator
   takenActions <- field InvestigatorActionsTaken iid
@@ -198,7 +197,7 @@ nonAttackOfOpportunityActions = [#fight, #evade, #resign, #parley]
 
 payCost
   :: forall m
-   . (Tracing m, HasGame m, HasQueue Message m, HasCallStack, CardGen m)
+   . (HasGame m, HasQueue Message m, HasCallStack, CardGen m)
   => Message
   -> ActiveCost
   -> InvestigatorId
@@ -387,6 +386,9 @@ payCost msg c iid skipAdditionalCosts cost = do
       if Blank `elem` mods
         then pure c
         else payCost msg c iid skipAdditionalCosts cost'
+    DiscardEncounterUntilFirstCost requester matcher -> do
+      push $ DiscardUntilFirst iid requester Deck.EncounterDeck matcher
+      pure c
     GloriaCost -> do
       mtarget <- getSkillTestTarget
       case mtarget of
@@ -1204,6 +1206,15 @@ payCost msg c iid skipAdditionalCosts cost = do
       n <- getPlayerCountValue x
       push $ InvestigatorPlaceCluesOnLocation iid source n
       withPayment $ CluePayment iid n
+    InvestigatorPlaceClueOnLocationCost investigatorMatcher x -> do
+      n <- getPlayerCountValue x
+      -- The initiator pays, but the clues come from the matched investigator and
+      -- land on *their* location.
+      selectOne (replaceYouMatcher iid investigatorMatcher) >>= \case
+        Nothing -> pure c
+        Just placer -> do
+          push $ InvestigatorPlaceCluesOnLocation placer source n
+          withPayment $ CluePayment placer n
     GroupClueCostRange (sVal, eVal) locationMatcher -> do
       let lm = replaceYouMatcher iid locationMatcher
       mVal <- min eVal . getSum <$> selectAgg Sum InvestigatorClues (InvestigatorAt lm)
@@ -1216,6 +1227,10 @@ payCost msg c iid skipAdditionalCosts cost = do
               [ (tshow n, pay (GroupClueCost (Static n) lm))
               | n <- [sVal .. mVal]
               ]
+      pure c
+    CalculatedGroupClueCost calc locationMatcher -> do
+      n <- calculate calc
+      push $ pay (GroupClueCost (Static n) locationMatcher)
       pure c
     GroupClueCost x locationMatcher -> do
       totalClues <- getPlayerCountValue x
@@ -1777,7 +1792,17 @@ instance RunMessage ActiveCost where
         ForCost card ->
           pushAll
             [SealedChaosToken token (Just c.investigator) (toTarget card) | token <- c.sealedChaosTokens]
-        ForAdditionalCost _ -> pure ()
+        ForAdditionalCost _ -> do
+          -- FAQ 1.1: spending an action provokes an attack of opportunity even
+          -- when the ability that spent it is fast (Olivier Bishop moving out of
+          -- an Arcane Lock location). Inside an action bracket the action itself
+          -- already provoked, so don't fire twice.
+          when (totalActionPayment c.payments > 0) do
+            unlessM getGameInAction do
+              pushAll
+                [ Will (CheckAttackOfOpportunity c.investigator False Nothing)
+                , CheckAttackOfOpportunity c.investigator False Nothing
+                ]
       push PaidAllCosts
       pure c
     Do (DiscardCard _ _ cardId) -> do

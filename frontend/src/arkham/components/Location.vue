@@ -2,7 +2,6 @@
 import { useI18n } from 'vue-i18n'
 import { onBeforeUnmount, ComputedRef, ref, computed, watch, nextTick } from 'vue'
 import { useDebug } from '@/arkham/debug'
-import { useAi } from '@/arkham/ai'
 import { Game } from '@/arkham/types/Game'
 import { imgsrc } from '@/arkham/helpers'
 import { cardArt, cardImage } from '@/arkham/cardImages'
@@ -14,6 +13,7 @@ import DebugLocation from '@/arkham/components/debug/Location.vue'
 import { AbilityLabel, AbilityMessage, Message, MessageType } from '@/arkham/types/Message'
 import { actionsToList } from '@/arkham/types/Action'
 import ConcealedCard from '@/arkham/components/ConcealedCard.vue'
+import FlameWrap from '@/arkham/components/FlameWrap.vue'
 import KeyToken from '@/arkham/components/Key.vue'
 import Seal from '@/arkham/components/Seal.vue'
 import Locus from '@/arkham/components/Locus.vue'
@@ -26,7 +26,6 @@ import ScarletKey from '@/arkham/components/ScarletKey.vue'
 import Treachery from '@/arkham/components/Treachery.vue'
 import Token from '@/arkham/components/Token.vue'
 import AbilitiesMenu from '@/arkham/components/AbilitiesMenu.vue'
-import AiTargetMenu from '@/arkham/components/AiTargetMenu.vue'
 import PoolItem from '@/arkham/components/PoolItem.vue'
 import TokenPool from '@/arkham/components/TokenPool.vue'
 import * as Arkham from '@/arkham/types/Location'
@@ -35,6 +34,7 @@ import { cardFacedown, Card } from '../types/Card'
 import useHighlighter from '@/composable/useHighlighter'
 import { IsMobile } from '@/arkham/isMobile'
 import { useDbCardStore } from '@/stores/dbCards'
+import { useSettings } from '@/stores/settings'
 import { isCthulhuBoardEnemy } from '@/arkham/components/TheDrownedCity/cthulhuBoard'
 
 export interface Props {
@@ -46,14 +46,14 @@ export interface Props {
 const { t } = useI18n()
 const explosionPNG = `url(${imgsrc('explosion.png')})`
 const frame = ref(null)
+const innerFrame = ref<HTMLElement | null>(null)
 const debugging = ref(false)
 const showAbilities = ref<boolean>(false)
 const abilitiesEl = ref<HTMLElement | null>(null)
 const highlighter = useHighlighter()
 const { isMobile } = IsMobile()
 const dbCards = useDbCardStore()
-const ai = useAi()
-const aiMenuOpen = ref(false)
+const settings = useSettings()
 
 const dragover = (e: DragEvent) => {
   e.preventDefault()
@@ -78,7 +78,6 @@ const image = computed(() => {
 const { displayedImage, flipping } = useCardFlip(image)
 
 const id = computed(() => props.location.id)
-const aiTarget = computed(() => ({ tag: 'LocationTarget', contents: id.value }))
 const isExhausted = computed(() => props.location.enemyLocation && props.location.exhausted)
 const choices = useGameChoices(
   () => props.game,
@@ -149,10 +148,6 @@ onBeforeUnmount(() => {
 })
 
 async function clicked(e: MouseEvent) {
-  if (ai.targeting) {
-    aiMenuOpen.value = true
-    return
-  }
   clickCount++
   if (clickTimeout) {
     clearTimeout(clickTimeout)
@@ -191,6 +186,14 @@ function isAbility(v: Message): v is AbilityLabel {
   }
 
   if (v.tag === MessageType.FIGHT_LABEL_WITH_SKILL && v.enemyId === id.value) {
+    return true
+  }
+
+  if (v.tag === MessageType.EVADE_LABEL && v.enemyId === id.value) {
+    return true
+  }
+
+  if (v.tag === MessageType.EVADE_LABEL_WITH_SKILL && v.enemyId === id.value) {
     return true
   }
 
@@ -355,6 +358,37 @@ const explosion = computed(() => {
     false
   )
 })
+
+// Driven by UIModifier OnFire rather than by card code, so any card can set a
+// location alight without the frontend knowing anything about it. Both Fire!
+// treacheries apply it today; up to five locations can burn at once.
+const onFire = computed(
+  () =>
+    settings.extraAnimations &&
+    (modifiers.value?.some((m) => m.type.tag === 'UIModifier' && m.type.contents === 'OnFire') ??
+      false),
+)
+
+// Tuned down hard from the library defaults, which assume a full-page card: a
+// location on the map is only ~60px wide. The rim in particular is dialled way
+// back (0.8 vs 2.5) — at this size the default molten halo bleeds over the
+// neighbouring locations and reads as a neon outline rather than fire.
+const fireOptions = computed(() => ({
+  color: [1, 0.42, 0.1] as [number, number, number],
+  intensity: 1.1,
+  height: 60,
+  spread: 8,
+  radius: 3,
+  speed: 0.5,
+  scale: 1,
+  turbulence: 0.8,
+  melt: 2,
+  rim: 0.8,
+  sparks: 2,
+  sparkSize: 0.45,
+  sparkDensity: 1.4,
+  smoke: 1.4,
+}))
 
 const keys = computed(() => props.location.keys)
 const seals = computed(() => props.location.seals)
@@ -667,6 +701,7 @@ const hasAnyLocationVehicleAssets = computed(() =>
           </span>
 
           <div
+            ref="innerFrame"
             class="card-frame-inner"
             :class="{ highlighted, blocked, exhausted: isExhausted, 'card--flipping': flipping && !locationStory }"
             :style="{ '--ui-rotation': `${uiRotation}deg` }"
@@ -689,7 +724,7 @@ const hasAnyLocationVehicleAssets = computed(() =>
                 :data-id="id"
                 class="card card--locations"
                 :src="displayedImage"
-                :class="{ 'location--can-interact': canInteract && !hasObjective, 'location--can-interact-cursor': canInteract, 'ai-target-hover': ai.targeting }"
+                :class="{ 'location--can-interact': canInteract && !hasObjective, 'location--can-interact-cursor': canInteract }"
                 draggable="false"
                 @drop="onDrop"
                 @dragover.prevent="dragover"
@@ -697,6 +732,13 @@ const hasAnyLocationVehicleAssets = computed(() =>
               />
             </template>
           </div>
+
+          <FlameWrap
+            v-if="onFire"
+            class="on-fire"
+            :target="innerFrame"
+            :options="fireOptions"
+          />
 
           <div v-if="!flipping && cluesAroundPositions.length > 0" class="clues-around">
             <img
@@ -792,16 +834,6 @@ const hasAnyLocationVehicleAssets = computed(() =>
           :game="game"
           :position="isMobile ? 'top' : 'left'"
           @choose="chooseAbility"
-        />
-
-        <AiTargetMenu
-          v-model="aiMenuOpen"
-          :frame="frame"
-          kind="location"
-          :target="aiTarget"
-          :seat="ai.selectedSeat"
-          :game-id="game.id"
-          :position="isMobile ? 'top' : 'left'"
         />
 
         <button v-if="canShowCardsUnderneath" @click="showCardsUnderneath">
@@ -914,20 +946,6 @@ const hasAnyLocationVehicleAssets = computed(() =>
   cursor: pointer;
 }
 
-/* Dev-only "AI targeting mode": class is only bound while targeting is on, so
-   normal play is untouched. Green border + pale green wash on hover. */
-.ai-target-hover {
-  cursor: pointer;
-  transition: box-shadow 120ms ease, filter 120ms ease;
-}
-
-.ai-target-hover:hover {
-  border: 2px solid var(--ai-target);
-  border-radius: 3px;
-  box-shadow: 0 0 0 2px var(--ai-target), 0 0 12px 3px rgba(74, 222, 128, 0.55);
-  filter: brightness(1.05) sepia(0.35) hue-rotate(55deg) saturate(1.3);
-}
-
 .location--can-interact-cursor {
   cursor: pointer;
 }
@@ -1005,6 +1023,14 @@ const hasAnyLocationVehicleAssets = computed(() =>
 
 .card-frame:has(.sealed-chaos-tokens--expanded) {
   z-index: var(--z-index-30000);
+}
+
+/* Flames reach well past the card, so a burning location has to sit above the
+   locations drawn after it in the grid. The canvas itself needs no z-index —
+   it follows .card-frame-inner in the DOM, and the pools and clue tokens that
+   follow it stay readable on top of the fire. */
+.card-frame:has(.on-fire) {
+  z-index: var(--z-index-4);
 }
 
 .sealed-chaos-tokens {

@@ -264,7 +264,11 @@ const onPointerMove = (e: PointerEvent) => {
   }
 }
 
-const onPointerUp = () => {
+const onPointerUp = (e: PointerEvent) => {
+  // A control layered on top of a card can change which face that card shows (the
+  // act/agenda stack popover's flip button). Clicking it must leave the overlay up,
+  // otherwise every click after the first dismisses it.
+  if ((e.target as HTMLElement | null)?.closest?.('[data-keep-card-overlay]')) return
   if (canDisablePress) {
     canDisablePress = false
   } else {
@@ -352,22 +356,53 @@ const getImage = (el: HTMLElement, depth = 0): string | null => {
   return el.dataset.image ?? null
 }
 
-const card = computed<string | null>(() => (hoveredElement.value ? getImage(hoveredElement.value) : null))
+// getImage and the class/dataset readers below pull straight off the DOM, which is
+// not a reactive source: a card that changes face under a stationary cursor (the
+// act/agenda stack popover's flip button) left the overlay on the old image. Bump a
+// counter whenever the hovered element's own attributes change and depend on it.
+const hoveredVersion = ref(0)
+let hoveredObserver: MutationObserver | null = null
+watch(hoveredElement, (el) => {
+  hoveredObserver?.disconnect()
+  hoveredObserver = null
+  hoveredVersion.value++
+  if (!el) return
+  hoveredObserver = new MutationObserver(() => { hoveredVersion.value++ })
+  hoveredObserver.observe(el, {
+    attributes: true,
+    attributeFilter: ['src', 'style', 'class', 'data-image', 'data-image-id', 'data-card-code', 'data-errata', 'data-sideways'],
+  })
+})
+onUnmounted(() => { hoveredObserver?.disconnect(); hoveredObserver = null })
+
+const card = computed<string | null>(() => {
+  void hoveredVersion.value
+  return hoveredElement.value ? getImage(hoveredElement.value) : null
+})
 const overlayCardCode = computed<string | null>(() => {
+  void hoveredVersion.value
   const el = hoveredElement.value
   if (!el) return null
   const direct = normalizedCardCode(el.dataset.cardCode ?? el.dataset.imageId)?.replace(/b$/, '')
-  if (direct) return direct
-  const match = card.value?.match(/\/cards\/c?(\d+)b?\.(?:avif|jpg|jpeg|png|webp)(?:\?.*)?$/i)
+  // Homebrew definitions are not served by the single-card endpoint.
+  if (direct) return direct.startsWith(':') ? null : direct
+
+  const image = card.value
+  // A homebrew image path ends in /cards/<local code>, which otherwise looks
+  // like an official card code to the fallback matcher below.
+  if (!image || image.includes('/homebrew/')) return null
+
+  const match = image.match(/\/cards\/c?(\d+)b?\.(?:avif|jpg|jpeg|png|webp)(?:\?.*)?$/i)
   return match?.[1] ?? null
 })
 /* Card-def errata covers a whole card, but some errata only applies to one face —
  * and the overlay resolves both faces to the same card def. A `data-errata`
  * attribute lets whichever component knows which side is showing supply the text
  * for just that side; it wins over the card def's own errata. */
-const cardErrata = computed<string | null>(
-  () => hoveredElement.value?.dataset.errata ?? overlayCardDef.value?.errata ?? null
-)
+const cardErrata = computed<string | null>(() => {
+  void hoveredVersion.value
+  return hoveredElement.value?.dataset.errata ?? overlayCardDef.value?.errata ?? null
+})
 
 watch(overlayCardCode, async (code) => {
   overlayCardDef.value = null
@@ -385,10 +420,17 @@ watch(overlayCardCode, async (code) => {
   }
 })
 
-const upsideDown = computed<boolean>(() => hoveredElement.value?.classList.contains('Reversed') ?? false)
-const reversed = computed<boolean>(() => hoveredElement.value?.classList.contains('reversed') ?? false)
+const upsideDown = computed<boolean>(() => {
+  void hoveredVersion.value
+  return hoveredElement.value?.classList.contains('Reversed') ?? false
+})
+const reversed = computed<boolean>(() => {
+  void hoveredVersion.value
+  return hoveredElement.value?.classList.contains('reversed') ?? false
+})
 
 const sideways = computed<boolean>(() => {
+  void hoveredVersion.value
   const el = hoveredElement.value
   if (!el) return false
 
@@ -942,6 +984,7 @@ const TOKEN_MAP: Record<string, string> = {
   '[bless]': '<span class="bless-icon"></span>',
   '[curse]': '<span class="curse-icon"></span>',
   '[frost]': '<span class="frost-icon"></span>',
+  '[blood]': '<span class="blood-icon"></span>',
   '[per_investigator]': '<span class="per-player"></span>',
   '[seal_a]': '<span class="seal-a-icon"></span>',
   '[seal_b]': '<span class="seal-b-icon"></span>',

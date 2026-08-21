@@ -151,7 +151,9 @@ export function pluralize(w: string, n: number) {
 export function formatContent(body: string) {
   return replaceIcons(body).
     replace(/_([^_]*)_/g, '<strong>$1</strong>').
-    replace(/\*([^\*]*)\*/g, '<i>$1</i>')
+    replace(/\*([^\*]*)\*/g, '<i>$1</i>').
+    replace(/{asterisk}/g, '*').
+    replace(/{underscore}/g, '_')
 }
 
 export function replaceIcons(body: string) {
@@ -178,6 +180,7 @@ export function replaceIcons(body: string) {
     replace(/{bless}/g, '<span class="bless-icon"></span>').
     replace(/{curse}/g, '<span class="curse-icon"></span>').
     replace(/{frost}/g, '<span class="frost-icon"></span>').
+    replace(/{blood}/g, '<span class="blood-icon"></span>').
     replace(/{sealA}/g, '<span class="seal-a-icon"></span>').
     replace(/{sealB}/g, '<span class="seal-b-icon"></span>').
     replace(/{sealC}/g, '<span class="seal-c-icon"></span>').
@@ -306,4 +309,10 @@ export function processArkhamBuildDeck<T extends { slots?: Record<string, number
   }
   const mergedSlots = { ...(data.slots ?? {}), ...(hiddenSlotCards ?? {}) }
   return { ...data, ...hiddenRest, slots: mergedSlots, url }
+}
+
+export function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
 }

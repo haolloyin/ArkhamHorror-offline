@@ -1,13 +1,13 @@
 module Arkham.Scenario.Scenarios.TheLabyrinthsOfLunacy (theLabyrinthsOfLunacy) where
 
-import Arkham.Act.Cards qualified as Acts
-import Arkham.Agenda.Cards qualified as Agendas
+import Arkham.Act.CardDefs.TheLabyrinthsOfLunacy qualified as Acts
+import Arkham.Agenda.CardDefs.TheLabyrinthsOfLunacy qualified as Agendas
 import Arkham.Agenda.Types (Field (AgendaDoom, AgendaDoomThreshold))
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Campaign.Option (CampaignOption (PlayAsMiniCampaign))
 import Arkham.Deck qualified as Deck
 import Arkham.EncounterSet qualified as Set
-import Arkham.Enemy.Cards qualified as Enemies
+import Arkham.Enemy.CardDefs.TheLabyrinthsOfLunacy qualified as Enemies
 import Arkham.Helpers.Enemy
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.GameValue (getGameValue)
@@ -17,7 +17,7 @@ import Arkham.Helpers.Scenario
 import Arkham.I18n
 import Arkham.Id (getId)
 import Arkham.Investigator.Types (Field (..))
-import Arkham.Location.Cards qualified as Locations
+import Arkham.Location.CardDefs.TheLabyrinthsOfLunacy qualified as Locations
 import Arkham.Matcher
 import Arkham.Message (CanAdvance (CanAdvance), chooseDecks)
 import Arkham.Message.Lifted.Choose
@@ -104,7 +104,7 @@ instance RunMessage TheLabyrinthsOfLunacy where
       gather Set.LabyrinthsOfLunacySingleGroup
 
       setAgendaDeck
-        [ Agendas.awakeningTheLabyrinthsOfLunacy
+        [ Agendas.awakening
         , Agendas.agonyAndDespair
         , Agendas.theMastermind
         ]
@@ -141,7 +141,7 @@ instance RunMessage TheLabyrinthsOfLunacy where
             , ".                  chamberOfSecrets   ."
             , "labyrinthineHalls2 .                  labyrinthineHalls3"
             ]
-          setActDeck [Acts.sealedInGroupA, Acts.distortionsInTimeGroupA, Acts.theEscapeTheLabyrinthsOfLunacy]
+          setActDeck [Acts.sealedInGroupA, Acts.distortionsInTimeGroupA, Acts.theEscape]
           setAside [Locations.chamberOfDecay]
           secrets <-
             sample
@@ -159,7 +159,7 @@ instance RunMessage TheLabyrinthsOfLunacy where
             , ".                  chamberOfPoison    .                  ."
             , ".                  abandonedWarehouse .                  ."
             ]
-          setActDeck [Acts.wateryGraveGroupB, Acts.seepingDeathGroupB, Acts.theEscapeTheLabyrinthsOfLunacy]
+          setActDeck [Acts.wateryGraveGroupB, Acts.seepingDeathGroupB, Acts.theEscape]
           setAside [Assets.keyOfMysteries, Locations.chamberOfRot, Locations.chamberOfPoison]
           rain <- place Locations.chamberOfRain
           sorrows <- place Locations.chamberOfSorrows
@@ -180,7 +180,7 @@ instance RunMessage TheLabyrinthsOfLunacy where
             , ".                  abandonedWarehouse ."
             , "labyrinthineHalls2 .                  labyrinthineHalls3"
             ]
-          setActDeck [Acts.theLeversGroupC, Acts.thePetGroupC, Acts.theEscapeTheLabyrinthsOfLunacy]
+          setActDeck [Acts.theLeversGroupC, Acts.thePetGroupC, Acts.theEscape]
           setAside [Assets.keyOfMysteries, Locations.chamberOfHunger]
           night <- place Locations.chamberOfNight
           place_ Locations.chamberOfRegret

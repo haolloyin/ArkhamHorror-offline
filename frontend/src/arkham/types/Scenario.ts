@@ -17,6 +17,7 @@ import { Difficulty, difficultyDecoder } from '@/arkham/types/Difficulty';
 import { Tokens, tokensDecoder } from '@/arkham/types/Token';
 import { TarotCard, tarotCardDecoder, tarotScopeDecoder } from '@/arkham/types/TarotCard';
 import { XpEntry, xpEntryDecoder} from '@/arkham/types/Xp';
+import { type TokenFace } from '@/arkham/types/ChaosToken';
 
 export type ScenarioName = {
   title: string;
@@ -40,6 +41,7 @@ export type ScenarioDetails = {
   id: string;
   difficulty: Difficulty;
   name: ScenarioName;
+  variant?: string;
 }
 
 export type Scenario = {
@@ -94,6 +96,7 @@ export const scenarioDetailsDecoder = JsonDecoder.object<ScenarioDetails>({
   id: JsonDecoder.string(),
   difficulty: difficultyDecoder,
   name: scenarioNameDecoder,
+  variant: v2Optional(JsonDecoder.string()),
 }, 'ScenarioDetails');
 
 export type Remembered=
@@ -241,11 +244,40 @@ export function campaignIdToI18n(campaignId: string): string | null {
     case "10": return "theFeastOfHemlockVale"
     case "11": return "theDrownedCity"
     case "12": return "brethrenOfAsh"
+    case "13": return "childrenOfBlood"
     case "83": return "standalone.guardiansOfTheAbyss"
     default:
       if (campaignId.startsWith(":")) return homebrewCampaignScope(campaignId)
       return null
   }
+}
+
+// The only faces with `tokens.<difficulty>.<face>` entries in the locale files.
+export const symbolChaosTokenFaces = ['Skull', 'Cultist', 'Tablet', 'ElderThing'] as const
+
+/**
+ * i18n key for a symbol token's scenario effect text, or null when the face has none
+ * or the scenario has no i18n scope (unknown homebrew).
+ */
+export function chaosTokenEffectKey(scenario: Scenario, face: TokenFace): string | null {
+  if (!(symbolChaosTokenFaces as readonly string[]).includes(face)) return null
+
+  let scope: string
+  try {
+    scope = scenarioToI18n(scenario)
+  } catch {
+    return null
+  }
+
+  const difficulty = ['Easy', 'Standard'].includes(scenario.difficulty) ? 'easyStandard' : 'hardExpert'
+  const baseRef = scenario.reference.replace(/b$/, '')
+  const tokenScope =
+    baseRef === 'c10501' || baseRef === 'c10502'
+      ? (scenario.reference.endsWith('b') ? '.act2' : '.act1')
+      : ''
+  const lowerFace = face.charAt(0).toLowerCase() + face.slice(1)
+
+  return `${scope}${tokenScope}.tokens.${difficulty}.${lowerFace}`
 }
 
 export function scenarioToI18n(scenario: Scenario): string {
@@ -403,9 +435,6 @@ export function scenarioIdToI18n(scenarioId: string): string {
     case "90054": return "standalone.laidToRest"
     case "90065": return "standalone.relicsOfThePast"
     case "90094": return "standalone.enthrallingEncore"
-    case "12105": return "brethrenOfAsh.spreadingFlames"
-    case "12133": return "brethrenOfAsh.smokeAndMirrors"
-    case "12168": return "brethrenOfAsh.queenOfAsh"
     case "11501": return "theDrownedCity.oneLastJob"
     case "11517": return "theDrownedCity.theWesternWall"
     case "11536": return "theDrownedCity.theDrownedQuarter"
@@ -416,6 +445,12 @@ export function scenarioIdToI18n(scenarioId: string): string {
     case "11673": return "theDrownedCity.sepulchreOfTheSleeper"
     case "11682": return "theDrownedCity.theDoomOfArkhamPartI"
     case "11688a": return "theDrownedCity.theDoomOfArkhamPartII"
+    case "12105": return "brethrenOfAsh.spreadingFlames"
+    case "12133": return "brethrenOfAsh.smokeAndMirrors"
+    case "12168": return "brethrenOfAsh.queenOfAsh"
+    case "13001": return "brethrenOfAsh.riverOfBlood"
+    case "13031": return "brethrenOfAsh.newHorizons"
+    case "13068": return "brethrenOfAsh.bloodMoney"
     default: throw new Error(`Unknown scenario id: ${scenarioId}`)
   }
 }

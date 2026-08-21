@@ -1,6 +1,5 @@
 import * as JsonDecoder from 'ts.data.json';
 import { v2Optional, withDefault } from '@/arkham/parser';
-import { AiFocus } from '@/arkham/types/NewGame';
 import { Investigator, InvestigatorDetails, investigatorDecoder, investigatorDetailsDecoder } from '@/arkham/types/Investigator';
 import { Modifier, modifierDecoder } from '@/arkham/types/Modifier';
 import { ConcealedCard, concealedCardDecoder } from '@/arkham/types/ConcealedCard';
@@ -32,17 +31,6 @@ type GameState = { tag: 'IsPending', contents: string[] } | { tag: 'IsActive' } 
 
 type AsIfRuling = 'chapter1' | 'chapter2'
 
-// Per-seat AI state serialized into the game blob (Arkham.Ai.State.AiPlayerState),
-// surfaced under `settings.aiPlayers` keyed by playerId so the UI can read which
-// seats are AI, their enable flag, focus override, response delay, and priorities.
-export type AiPlayerState = {
-  aiEnabled: boolean
-  aiInvestigatorCode: string
-  aiFocusOverride: AiFocus | null
-  aiPriorities: Target[]
-  aiResponseDelayMs: number
-}
-
 type GameSettings = {
   settingsAbilitiesCannotReactToThemselves: boolean
   settingsAsIfRuling: AsIfRuling
@@ -56,25 +44,7 @@ type GameSettings = {
   settingsScreamedAllies: string[]
   // Whether official campaign achievements are tracked for this game.
   settingsAchievementsEnabled: boolean
-  aiPlayers: Record<string, AiPlayerState>
 }
-
-const aiFocusDecoder = JsonDecoder.oneOf<AiFocus>([
-  JsonDecoder.literal('combat'),
-  JsonDecoder.literal('investigate'),
-  JsonDecoder.literal('evade'),
-  JsonDecoder.literal('support'),
-  JsonDecoder.literal('survival'),
-  JsonDecoder.literal('mobility'),
-], 'AiFocus')
-
-const aiPlayerStateDecoder = JsonDecoder.object<AiPlayerState>({
-  aiEnabled: withDefault(true, JsonDecoder.boolean()),
-  aiInvestigatorCode: JsonDecoder.string(),
-  aiFocusOverride: withDefault<AiFocus | null>(null, aiFocusDecoder),
-  aiPriorities: withDefault<Target[]>([], JsonDecoder.array(targetDecoder, 'Target[]')),
-  aiResponseDelayMs: withDefault(1500, JsonDecoder.number()),
-}, 'AiPlayerState')
 
 const gameSettingsDecoder = JsonDecoder.object<GameSettings>({
   settingsAbilitiesCannotReactToThemselves: JsonDecoder.boolean(),
@@ -88,7 +58,6 @@ const gameSettingsDecoder = JsonDecoder.object<GameSettings>({
   settingsRolledUltimatumOrBoon: withDefault<string | null>(null, JsonDecoder.string()),
   settingsScreamedAllies: withDefault<string[]>([], JsonDecoder.array(JsonDecoder.string(), 'string[]')),
   settingsAchievementsEnabled: withDefault(true, JsonDecoder.boolean()),
-  aiPlayers: withDefault<Record<string, AiPlayerState>>({}, JsonDecoder.record<AiPlayerState>(aiPlayerStateDecoder, 'Dict<PlayerId, AiPlayerState>')),
 }, 'GameSettings')
 
 export const gameStateDecoder = JsonDecoder.oneOf<GameState>(
@@ -140,6 +109,8 @@ export type Game = {
   enemies: Record<string, Enemy>;
   stories: Record<string, Story>;
   gameState: GameState;
+  /** False once EndSetup has run, i.e. the scenario is actually under way. */
+  inSetup: boolean;
   investigators: Record<string, Investigator>;
   otherInvestigators: Record<string, Investigator>;
   killedInvestigators: Record<string, Investigator>;
@@ -227,6 +198,8 @@ function questionChoices(question: Question): Message[] {
       return questionChoices(question.question);
     case 'Read':
       return question.readChoices.contents;
+    case 'ChooseOneWizard':
+      return question.wizardChoices.map(({ label }) => ({ tag: MessageType.LABEL, label }));
     case 'PickSupplies':
       return question.choices;
     case 'PickDestiny':
@@ -376,6 +349,7 @@ export const gameDecoder: JsonDecoder.Decoder<Game> = JsonDecoder.object(
     enemies: JsonDecoder.record<Enemy>(enemyDecoder, 'Dict<UUID, Enemy>'),
     stories: JsonDecoder.record<Story>(storyDecoder, 'Dict<UUID, Story>'),
     gameState: gameStateDecoder,
+    inSetup: withDefault(false, JsonDecoder.boolean()),
     investigators: JsonDecoder.record<Investigator>(investigatorDecoder, 'Dict<UUID, Investigator>'),
     otherInvestigators: JsonDecoder.record<Investigator>(investigatorDecoder, 'Dict<UUID, Investigator>'),
     killedInvestigators: JsonDecoder.optional(JsonDecoder.record<Investigator>(investigatorDecoder, 'Dict<UUID, Investigator>')),
@@ -432,7 +406,6 @@ export const gameDecoder: JsonDecoder.Decoder<Game> = JsonDecoder.object(
     settingsRolledUltimatumOrBoon: null,
     settingsScreamedAllies: [],
     settingsAchievementsEnabled: true,
-    aiPlayers: {},
   },
   undoActionStep: undoActionStep ?? null,
   undoTurnStep: undoTurnStep ?? null,

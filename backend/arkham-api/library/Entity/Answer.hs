@@ -43,19 +43,6 @@ data Answer
   | CampaignSettingsAnswer CampaignSettings
   | DeckAnswer {deckId :: ArkhamDeckId, playerId :: PlayerId}
   | DeckListAnswer {deckList :: ArkhamDBDecklist, playerId :: PlayerId}
-  | {- | Trigger for the server to answer this seat's parked question via the AI
-    decision engine. Wire shape: @{ "tag": "AiAnswer", "playerId": <uuid> }@.
-    Resolved in 'Api.Handler.Arkham.Games.Shared.updateGame'; see the
-    'handleAnswerPure' note below for why it is not handled here.
-    -}
-    AiAnswer {playerId :: PlayerId}
-  | {- | Trigger for the server to commit a single card from this seat's parked
-    /assist/ skill-test window (another investigator is performing the test)
-    via the AI decision engine. Wire shape:
-    @{ "tag": "AiAssist", "playerId": <uuid> }@. Resolved in
-    'Api.Handler.Arkham.Games.Shared.updateGame' (see 'handleAnswerPure').
-    -}
-    AiAssist {playerId :: PlayerId}
   | PickDestinyAnswer [DestinyDrawing]
   | CampaignSpecificAnswer Text Value
   | ScenarioSpecificAnswer Text Value
@@ -311,8 +298,6 @@ answerPlayer = \case
   ScenarioSpecificAnswer {} -> Nothing
   DeckAnswer _ pid -> Just pid
   DeckListAnswer _ pid -> Just pid
-  AiAnswer pid -> Just pid
-  AiAssist pid -> Just pid
   PickDestinyAnswer _ -> Nothing
   ExchangeAmountsAnswer {} -> Nothing
   CampaignStepAnswer _ -> Nothing
@@ -359,7 +344,10 @@ reAskOthers game playerId
   | isJust (barrierSeat playerId game) = []
   | otherwise =
       let question' = Map.delete playerId (gameQuestion game)
-       in [AskMap question' | not (Map.null question')]
+          -- keep a retained ask retained; re-parking it bare would make the flag
+          -- survive exactly one answer and then drop the remaining seats
+          retain = if gameRetainedQuestion game then Retain else id
+       in [retain (AskMap question') | not (Map.null question')]
 
 handleAnswer :: Game -> PlayerId -> Answer -> DB Reply
 handleAnswer game playerId = \case
@@ -382,15 +370,6 @@ handleAnswerPure :: Game -> PlayerId -> Answer -> IO Reply
 handleAnswerPure game@Game {..} playerId = \case
   DeckAnswer {} -> unhandled "DeckAnswer requires database access"
   DeckListAnswer {} -> unhandled "DeckListAnswer requires database access"
-  -- AiAnswer is resolved upstream in updateGame (it runs the AI decision
-  -- engine over the parked game and recurses with the concrete answer).
-  -- Keeping the call out of this module avoids an Entity.Answer <-> Ai.Decision
-  -- import cycle. Reaching here means no server-side AI resolution ran.
-  AiAnswer {} -> unhandled "AiAnswer must be resolved by the server (updateGame)"
-  -- AiAssist is likewise resolved upstream in updateGame (it runs the assist
-  -- decision engine over the parked game and recurses with the concrete commit
-  -- answer). Reaching here means no server-side AI resolution ran.
-  AiAssist {} -> unhandled "AiAssist must be resolved by the server (updateGame)"
   StandaloneSettingsAnswer settings' -> do
     let standaloneCampaignLog = makeStandaloneCampaignLog settings'
     handled [SetCampaignLog standaloneCampaignLog]
@@ -540,10 +519,30 @@ handleAnswerPure game@Game {..} playerId = \case
                   -- (Unreachable while ChooseDeck -- a barrier's only question today --
                   -- is answered via DeckAnswer; needed once phase 2/3 put
                   -- ChooseUpgradeDeck / Read, which answer through here, in a barrier.)
-                  let question'
+                  --
+                  -- A Retain-published ask is the third case: it is neither rebuilt
+                  -- by the queue nor barriered, and its seats hold baked message
+                  -- lists rather than a re-enumerable set of choices, so nothing is
+                  -- stale about re-parking them -- dropping them just destroys the
+                  -- messages (#4787). Every seat survives, this one included if it
+                  -- still has choices left.
+                  let retained = gameRetainedQuestion
+                      others
                         | isJust (barrierSeat playerId game) = mempty
+                        | retained = Map.delete playerId gameQuestion
                         | otherwise = Map.filter isDeckQuestion $ Map.delete playerId gameQuestion
-                  handled $ msgs <> [AskMap question' | not (Map.null question')]
+                  if retained
+                    then do
+                      -- Fold this seat's own re-ask into the same map. Emitting it as a
+                      -- separate `Ask` would park it ahead of the other seats, serialising
+                      -- a question whose whole point is that the table resolves it in an
+                      -- order of its choosing.
+                      let (ran, reask) = case reverse msgs of
+                            (Ask pid reasked : rest) | pid == playerId -> (reverse rest, Just reasked)
+                            _ -> (msgs, Nothing)
+                          question' = maybe others (\reasked -> Map.insert playerId reasked others) reask
+                      handled $ ran <> [Retain (AskMap question') | not (Map.null question')]
+                    else handled $ msgs <> [AskMap others | not (Map.null others)]
           )
           $ Map.lookup playerId gameQuestion
  where
@@ -589,6 +588,9 @@ handleAnswerPure game@Game {..} playerId = \case
     Read t (LeadInvestigatorMustDecide qs) mcs -> case qs !!? qrChoice response of
       Nothing -> [Ask playerId $ f $ Read t (LeadInvestigatorMustDecide qs) mcs]
       Just msg -> [uiToRun msg]
+    ChooseOneWizard flavor qs confirm back -> case qs !!? qrChoice response of
+      Nothing -> [Ask playerId $ f $ ChooseOneWizard flavor qs confirm back]
+      Just WizardChoice {messages} -> [Run messages]
     ChooseOne qs -> case qs !!? qrChoice response of
       Nothing -> [Ask playerId $ f $ ChooseOne qs]
       Just msg -> [uiToRun msg]

@@ -37,7 +37,11 @@ import Arkham.Direction
 import Arkham.Discover
 import Arkham.Enemy.Types (Field (..))
 import Arkham.Exception
-import Arkham.Helpers.Discover (resolveDiscoverCluesAt, resolveSuccessfulInvestigation)
+import Arkham.Helpers.Discover (
+  resolveDiscoverCluesAt,
+  resolveSuccessfulInvestigation,
+  withExposeInsteadOfInvestigating,
+ )
 import Arkham.Helpers.GameValue (getGameValue)
 import Arkham.Helpers.Modifiers
 import Arkham.Helpers.Window (checkAfter, checkWhen, checkWindows, windows, wouldDoEach)
@@ -70,7 +74,6 @@ import Arkham.Projection
 import Arkham.Spawn
 import Arkham.Timing qualified as Timing
 import Arkham.Token
-import Arkham.Tracing
 import Arkham.Trait
 import Arkham.Window (mkWindow)
 import Arkham.Window qualified as Window
@@ -107,7 +110,7 @@ extendUnrevealed = withUnrevealedAbilities
 extendUnrevealed1 :: LocationAttrs -> Ability -> [Ability]
 extendUnrevealed1 attrs ability = extendUnrevealed attrs [ability]
 getModifiedRevealClueCountWithMods
-  :: (HasGame m, Tracing m) => [ModifierType] -> LocationAttrs -> m Int
+  :: HasGame m => [ModifierType] -> LocationAttrs -> m Int
 getModifiedRevealClueCountWithMods mods attrs =
   if CannotPlaceClues `elem` mods
     then pure 0
@@ -164,28 +167,34 @@ instance RunMessage LocationAttrs where
         $ Investigate.resolveInvestigate a (LocationMaybeFieldCalculation a.id LocationShroud) investigation
       pure a
     PassedSkillTest iid (Just Action.Investigate) source (Initiator target) _ n | isTarget a target -> do
+      option <-
+        withExposeInsteadOfInvestigating
+          iid
+          source
+          locationId
+          [ UpdateHistory iid (HistoryItem HistorySuccessfulInvestigations 1)
+          , Successful (Action.Investigate, toTarget a) iid source (toTarget a) n
+          ]
       push
         $ SkillTestResultOption
           ( SkillTestOption
-              { option =
-                  Label
-                    ("Discover Clue at " <> display (toName a))
-                    [ UpdateHistory iid (HistoryItem HistorySuccessfulInvestigations 1)
-                    , Successful (Action.Investigate, toTarget a) iid source (toTarget a) n
-                    ]
+              { option = Label ("Discover Clue at " <> display (toName a)) option
               , kind = OriginalOptionKind
               , criteria = Nothing
               }
           )
       pure a
     PassedSkillTest iid (Just Action.Investigate) source (InitiatorProxy target actual) _ n | isTarget a target -> do
+      option <-
+        withExposeInsteadOfInvestigating
+          iid
+          source
+          locationId
+          [Successful (Action.Investigate, toTarget a) iid source actual n]
       push
         $ SkillTestResultOption
           ( SkillTestOption
-              { option =
-                  Label
-                    ("Discover Clue at " <> display (toName a))
-                    [Successful (Action.Investigate, toTarget a) iid source actual n]
+              { option = Label ("Discover Clue at " <> display (toName a)) option
               , kind = OriginalOptionKind
               , criteria = Nothing
               }
@@ -230,7 +239,12 @@ instance RunMessage LocationAttrs where
       pure $ a & beingRemovedL .~ True
     RemoveLocation lid | lid == locationId -> do
       liftRunMessage (RemovedFromPlay $ toSource a) a
-    Discard _ source target | isTarget a target -> do
+    -- A location already on its way out must not restart the removal chain: these
+    -- messages go to the FRONT of the queue, jumping ahead of rescue moves that a
+    -- leave-play interrupt (Another Dimension) has already queued for the
+    -- investigators still on it, so RemovedLocation defeats them, #5388. Mirrors the
+    -- `not_ LocationBeingRemoved` guard in Arkham.Message.Lifted.Location.removeLocation.
+    Discard _ source target | isTarget a target && not locationBeingRemoved -> do
       pushAll
         $ windows [Window.WouldBeDiscarded (toTarget a)]
         <> [Discarded (toTarget a) source (toCard a)]
@@ -488,7 +502,10 @@ instance RunMessage LocationAttrs where
       when (currentFloodLevel /= newFloodLevel) do
         before <-
           checkWhen (Window.FloodLevelChanged lid (fromMaybe Unflooded locationFloodLevel) newFloodLevel)
-        pushAll [before, Do msg]
+        -- Must defer the *clamped* level: `Do msg` would carry the original level
+        -- and write it unclamped, letting effects like The Water Rises fully flood
+        -- a location that cannot be fully flooded (e.g. Underground River).
+        pushAll [before, Do (SetFloodLevel lid newFloodLevel)]
       pure a
     Do (SetFloodLevel lid level) | lid == locationId -> do
       after <- checkAfter (Window.FloodLevelChanged lid (fromMaybe Unflooded locationFloodLevel) level)
@@ -591,11 +608,11 @@ instance RunMessage LocationAttrs where
       pure $ a & concealedCardsL %~ filter (/= card)
     _ -> pure a
 
-locationInvestigatorsWithClues :: (HasGame m, Tracing m) => LocationAttrs -> m [InvestigatorId]
+locationInvestigatorsWithClues :: HasGame m => LocationAttrs -> m [InvestigatorId]
 locationInvestigatorsWithClues attrs =
   filterM (fieldMap InvestigatorClues (> 0)) =<< select (investigatorAt $ toId attrs)
 
-getModifiedShroudValueFor :: (HasCallStack, HasGame m, Tracing m) => LocationAttrs -> m Int
+getModifiedShroudValueFor :: (HasCallStack, HasGame m) => LocationAttrs -> m Int
 getModifiedShroudValueFor attrs = do
   modifiers' <- getModifiers (toTarget attrs)
   base <- getGameValue (fromJustNote "Missing shroud" $ locationShroud attrs)
@@ -676,7 +693,7 @@ getShouldSpawnNonEliteAtConnectingInstead attrs = do
     SpawnNonEliteAtConnectingInstead {} -> True
     _ -> False
 
-locationEnemiesWithTrait :: (HasGame m, Tracing m) => LocationAttrs -> Trait -> m [EnemyId]
+locationEnemiesWithTrait :: HasGame m => LocationAttrs -> Trait -> m [EnemyId]
 locationEnemiesWithTrait attrs trait = select $ enemyAt (toId attrs) <> EnemyWithTrait trait
 
 veiled1 :: LocationAttrs -> Ability -> [Ability]

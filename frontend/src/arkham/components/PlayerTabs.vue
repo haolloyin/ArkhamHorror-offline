@@ -11,10 +11,9 @@ import type { Investigator } from '@/arkham/types/Investigator';
 import type { Question } from '@/arkham/types/Question';
 import { MessageType } from '@/arkham/types/Message';
 import type { TarotCard } from '@/arkham/types/TarotCard';
-import { imgsrc } from '@/arkham/helpers';
+import { imgsrc, isTypingTarget } from '@/arkham/helpers';
 import { gameLocalStorageKey } from '@/arkham/localStorage';
 import { IsMobile } from '@/arkham/isMobile';
-import { useSettings } from '@/stores/settings'
 import { useDbCardStore } from '@/stores/dbCards'
 
 export interface Props {
@@ -46,13 +45,6 @@ const inactiveInvestigators = computed(() => props.playerOrder.filter(iid => pro
 const lead = computed(() => `url('${imgsrc(`tokens/lead-investigator.png`)}')`)
 const { isMobile } = IsMobile();
 const store = useDbCardStore()
-
-// AI-investigator seats carry an entry in settings.aiPlayers. The seat badge is
-// only shown when the dev-only "AI Investigators" flag is enabled.
-const settings = useSettings()
-function isAiSeat(investigator: Investigator): boolean {
-  return settings.aiInvestigatorsEnabled && !!props.game.settings.aiPlayers[investigator.playerId]
-}
 
 function tabClass(investigator: Investigator) {
   const pid = investigator.playerId
@@ -144,10 +136,6 @@ const ACTIONABLE_SELECTOR = [
   '.resource--can-take',
 ].join(',')
 
-function isAiPlayer(playerId: string) {
-  return playerId in props.game.settings.aiPlayers
-}
-
 function isEnabledAction(element: Element): element is HTMLElement {
   if (!(element instanceof HTMLElement)) return false
   if (element.matches(':disabled,[aria-disabled="true"]')) return false
@@ -168,7 +156,7 @@ function actionLocations() {
       continue
     }
     const playerId = tab.dataset.playerTab
-    if (playerId && !isAiPlayer(playerId)) {
+    if (playerId) {
       tabs.add(playerId)
       if (element.matches('.forced-ability-button')) forcedTabs.add(playerId)
     }
@@ -178,7 +166,7 @@ function actionLocations() {
 }
 
 function humanQuestionPlayers() {
-  return Object.keys(props.game.question).filter(pid => !isAiPlayer(pid))
+  return Object.keys(props.game.question)
 }
 
 // An out-of-turn fast player window: a PlayerWindowChooseOne carrying that seat's own
@@ -279,6 +267,34 @@ function unwindSwitchStack(tabs: Set<string>) {
     switchStack.value.pop()
   }
   applyFrame(switchStack.value.at(-1)!)
+}
+
+const tabbableInvestigators = computed(() => [...investigators.value, ...inactiveInvestigators.value])
+
+function seatShortcutIndex(event: KeyboardEvent): number | null {
+  const code = /^(?:Digit|Numpad)([1-4])$/.exec(event.code)
+  if (code) return Number(code[1]) - 1
+  if (/^[1-4]$/.test(event.key)) return Number(event.key) - 1
+  return null
+}
+
+function handleSeatShortcut(event: KeyboardEvent) {
+  if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return
+  if (isTypingTarget(event.target)) return
+
+  const index = seatShortcutIndex(event)
+  if (index === null) return
+
+  const investigator = tabbableInvestigators.value[index]
+  if (!investigator) return
+
+  event.preventDefault()
+  const pid = investigator.playerId
+  if (event.shiftKey && solo?.value && pid !== props.playerId) {
+    selectTabExtended(pid)
+  } else {
+    selectTab(pid)
+  }
 }
 
 let actionObserver: MutationObserver | null = null
@@ -392,7 +408,20 @@ function inspectActions() {
   // on another tab. During a skill test, however, another investigator's fast
   // window does not pull focus away from the test taker unless that
   // investigator's tab is the sole place with an actionable control.
-  if (solo?.value === true && soleQuestionPlayer && (!skillTestPlayer || soleQuestionPlayer === skillTestPlayer)) {
+  //
+  // Only a *declinable* window may be held back that way. game.skillTest stays
+  // populated after the test resolves, while the consequences of the result are
+  // still resolving -- an Arcane Barrier leave cost that fails can discard the
+  // location, move everyone off it, and hand each investigator in turn a forced
+  // ability, all with the failed test still open. A forced ability or reaction
+  // cannot be declined and is the only thing that can advance the game, so it
+  // has to claim the perspective even then; otherwise the sole answerable
+  // question sits behind a tab with no control rendered anywhere on screen.
+  const skillTestHoldsFocus =
+    !!skillTestPlayer
+    && soleQuestionPlayer !== skillTestPlayer
+    && isDeclinableFastWindow(soleQuestionPlayer as string)
+  if (solo?.value === true && soleQuestionPlayer && !skillTestHoldsFocus) {
     if (selectedTab.value !== soleQuestionPlayer || props.playerId !== soleQuestionPlayer) {
       if (!automaticSwitchIsStable(`sole-question:${soleQuestionPlayer}`)) return
       pushAutomaticFrame(soleQuestionPlayer, soleQuestionPlayer, 'sole-question')
@@ -429,9 +458,11 @@ onMounted(() => {
     })
   }
   scheduleActionInspection()
+  document.addEventListener('keydown', handleSeatShortcut)
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('keydown', handleSeatShortcut)
   actionObserver?.disconnect()
   if (inspectionFrame !== null) cancelAnimationFrame(inspectionFrame)
 })
@@ -454,7 +485,6 @@ watch(
       >
         <span v-if="isMobile">{{ getInvestigatorName(investigator.name.title).split(' ')[0] }}</span>
         <span v-else>{{ getInvestigatorName(investigator.name.title) }}</span>
-        <span v-if="isAiSeat(investigator)" class="ai-badge" v-tooltip="'AI controlled'">AI</span>
         <button
           v-if="solo"
           v-tooltip="instructions(investigator)"
@@ -474,7 +504,6 @@ watch(
         :class='tabClass(investigator)'
       >
         <span>{{ investigator.name.title }}</span>
-        <span v-if="isAiSeat(investigator)" class="ai-badge" v-tooltip="'AI controlled'">AI</span>
         <button
           v-if="solo"
           v-tooltip="instructions(investigator)"
@@ -652,21 +681,6 @@ ul.tabs__header > li.tab--has-actions {
     filter: contrast(200%);
     color: black;
   }
-}
-
-.ai-badge {
-  align-self: center;
-  margin-right: 5px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  font-size: 0.65em;
-  font-weight: bold;
-  letter-spacing: 0.08em;
-  line-height: 1.4;
-  color: #d7e8b0;
-  background: rgba(110, 134, 64, 0.45);
-  border: 1px solid rgba(110, 134, 64, 0.7);
-  text-transform: uppercase;
 }
 
 .fa-icon {

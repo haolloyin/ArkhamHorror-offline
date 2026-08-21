@@ -52,6 +52,8 @@ const inSkillTest = computed(() => props.game.skillTest !== null)
 const choices = computed(() => ArkhamGame.choices(props.game, props.playerId))
 const toChoiceEntry = (c: Message, idx: number): [Message, number] => [c, idx]
 const questionChoices = computed(() => {
+  if (props.game.question[props.playerId]?.tag === QuestionType.CHOOSE_ONE_WIZARD) return []
+
   const withoutDone = choices.value.map(toChoiceEntry).filter(([choice, _]) => {
     const { tag } = choice
     if (tag === MessageType.ABILITY_LABEL) return !abilityLabelHandledElsewhere(choice)
@@ -62,6 +64,7 @@ const questionChoices = computed(() => {
     if (tag === MessageType.INVALID_LABEL) return true
     if (tag === MessageType.SKILL_LABEL) return true
     if (tag === MessageType.SKILL_LABEL_WITH_LABEL) return true
+    if (tag === MessageType.CONNECTION_LABEL) return true
     if (tag === MessageType.COST_LABEL) return true
 
     return false
@@ -79,6 +82,35 @@ const questionChoices = computed(() => {
 const choosePaymentAmounts = inject<(amounts: Record<string, number>) => Promise<void>>('choosePaymentAmounts')
 const chooseAmounts = inject<(amounts: Record<string, number>) => Promise<void>>('chooseAmounts')
 const question = computed(() => props.game.question[props.playerId])
+const wizardQuestion = computed(() =>
+  question.value?.tag === QuestionType.CHOOSE_ONE_WIZARD ? question.value : null
+)
+const wizardSelectedIndex = ref<number | null>(null)
+const wizardFlavorText = computed(() => {
+  if (!wizardQuestion.value) return null
+  if (wizardSelectedIndex.value === null) return wizardQuestion.value.flavorText
+  return wizardQuestion.value.wizardChoices[wizardSelectedIndex.value]?.flavorText ?? null
+})
+const wizardDisplayChoices = computed<[Message, number][]>(() => {
+  if (!wizardQuestion.value) return []
+  const labels = wizardSelectedIndex.value === null
+    ? wizardQuestion.value.wizardChoices.map((choice) => choice.label)
+    : [wizardQuestion.value.confirmLabel, wizardQuestion.value.backLabel]
+  return labels.map((choiceLabel, index) => [
+    { tag: MessageType.LABEL, label: choiceLabel },
+    index,
+  ])
+})
+const chooseWizard = (index: number) => {
+  if (!wizardQuestion.value) return
+  if (wizardSelectedIndex.value === null) {
+    wizardSelectedIndex.value = index
+  } else if (index === 0) {
+    emit('choose', wizardSelectedIndex.value)
+  } else if (index === 1) {
+    wizardSelectedIndex.value = null
+  }
+}
 const focusedChaosTokens = computed(() => props.game.focusedChaosTokens)
 
 // A multi-token reveal opens a separate reaction window for each token. Read the
@@ -476,14 +508,14 @@ const chooseAmountsChoices = computed<AmountChoice[]>(() => {
 const amountSelections = ref<Record<string, number>>({})
 
 const setInitialAmounts = () => {
-    const labels = question.value?.tag === QuestionType.CHOOSE_AMOUNTS
-      ? question.value.amountChoices.map((choice) => choice.choiceId)
-      : (paymentAmountsChoices.value ?? []).map((choice) => choice.choiceId)
-    amountSelections.value = labels.reduce<Record<string, number>>((previousValue, currentValue) => {
-      previousValue[currentValue] = 0
-      return previousValue
-    }, {})
-  }
+  const amountChoices = chooseAmountsChoices.value.length > 0
+    ? chooseAmountsChoices.value
+    : paymentAmountsChoices.value
+  amountSelections.value = amountChoices.reduce<Record<string, number>>((selections, choice) => {
+    selections[choice.choiceId] = 0
+    return selections
+  }, {})
+}
 
 const doneLabel = computed(() => {
   const doneIndex = choices.value.findIndex((c) => c.tag === MessageType.DONE)
@@ -544,9 +576,16 @@ onMounted(() => {
   void store.initDbCards()
 })
 
+// Polling while decks are being chosen replaces the decoded question object even
+// when the server-side question has not changed. Reset only when the question
+// version or owner changes so an in-progress amount entry is preserved.
 watch(
-  () => props.game.question[props.playerId],
-  setInitialAmounts)
+  [() => props.game.scenarioSteps, () => props.playerId],
+  () => {
+    setInitialAmounts()
+    wizardSelectedIndex.value = null
+  },
+)
 
 const unmetAmountRequirements = computed(() => {
   const q = question.value
@@ -697,6 +736,23 @@ const filteredCards = computed<{ choice: CardLabel; index: number }[]>(() => {
 
 <template>
   <div class='question-wrapper' data-game-actionable="true">
+    <template v-if="wizardFlavorText">
+      <div class="intro-text">
+        <div class="intro-text-body">
+          <FormattedEntry
+            v-for="(paragraph, index) in wizardFlavorText.body"
+            :key="index"
+            :entry="paragraph"
+          />
+        </div>
+      </div>
+      <QuestionChoices
+        :choices="wizardDisplayChoices"
+        :game="game"
+        :playerId="playerId"
+        @choose="chooseWizard"
+      />
+    </template>
     <ChaosBagChoice v-if="chaosBagChoice" :choice="chaosBagChoice" :game="game" :playerId="playerId" @choose="choose" />
     <div v-if="cardPiles.length > 0" class="cardPiles">
       <div v-for="{pile, index} in cardPiles" :key="index" class="card-pile" @click="choose(index)">

@@ -2,7 +2,7 @@
 import { ComputedRef, computed, ref, watch } from 'vue'
 import { useCardStore } from '@/stores/cards'
 import { type Game } from '@/arkham/types/Game'
-import { type Card, cardImage, asCardCode } from '@/arkham/types/Card'
+import { type Card, cardImage, asCardCode, toCardContents } from '@/arkham/types/Card'
 import AbilitiesMenu from '@/arkham/components/AbilitiesMenu.vue'
 import { useDebug } from '@/arkham/debug'
 import PoolItem from '@/arkham/components/PoolItem.vue'
@@ -16,6 +16,7 @@ import { AbilityLabel, AbilityMessage, type Message } from '@/arkham/types/Messa
 import { MessageType } from '@/arkham/types/Message'
 import { keyToId } from '@/arkham/types/Key'
 import { cardImg, imgsrc } from '@/arkham/helpers'
+import { resolvedSideArt } from '@/arkham/cardImages'
 import * as Arkham from '@/arkham/types/Act'
 import { useEventStore } from '@/arkham/stores/event'
 import { actContribution, actSpend } from '@/arkham/types/EpicEvent'
@@ -80,7 +81,7 @@ const cardCode = computed(() => {
 const image = computed(() => {
   return cardImg(cardCode.value)
 })
-const { displayedImage, flipping } = useCardFlip(image)
+const { displayedImage, flipping, flippingDiagonally } = useCardFlip(image)
 
 const choices = computed(() => ArkhamGame.choices(props.game, props.playerId))
 
@@ -158,13 +159,24 @@ const futureStack = computed(() =>
   props.remainingStack.filter((c) => asCardCode(c) !== props.act.id),
 )
 
-const cardStage = (card: Card): number | null => {
-  const code = asCardCode(card)
-  return (
-    cardStore.cards.find(
-      (cardDef) => cardDef.cardCode === code || cardDef.cardCode === code.replace(/^c/, ''),
-    )?.stage ?? null
+const cardDefFor = (code: string) =>
+  cardStore.cards.find(
+    (cardDef) => cardDef.cardCode === code || cardDef.cardCode === code.replace(/^c/, ''),
   )
+
+const cardStage = (code: string): number | null => cardDefFor(code)?.stage ?? null
+
+// Cards sharing a stage are usually branch alternatives (only one of "All In" /
+// "Fold" is ever played), so they share a pip. Same-stage cards that also share
+// a title are variant printings of that act, each of which is played in turn,
+// so those get a pip each.
+const cardTitle = (code: string): string => cardDefFor(code)?.name.title ?? code
+
+// The face a completed act/agenda was resolved on, so the popover can offer the
+// side that only ever flashed past on advance.
+const resolvedSideImage = (card: Card) => {
+  const art = toCardContents(card).art || asCardCode(card).replace(/^c/, '')
+  return cardImg(resolvedSideArt(art))
 }
 
 type StackIndicatorGroup = {
@@ -172,6 +184,7 @@ type StackIndicatorGroup = {
   state: 'completed' | 'current' | 'remaining'
   images: {
     src: string
+    back?: string
     current?: boolean
     passed?: boolean
   }[]
@@ -179,6 +192,7 @@ type StackIndicatorGroup = {
 
 type ActStackGroup = StackIndicatorGroup & {
   stage: number | null
+  titles: Set<string>
   firstIndex: number
 }
 
@@ -186,16 +200,22 @@ const groupedActStack = computed<StackIndicatorGroup[]>(() => {
   const groups: ActStackGroup[] = []
 
   const addToGroup = (
-    stage: number | null,
+    code: string,
     fallbackKey: string,
+    fallbackStage: number | null,
     image: StackIndicatorGroup['images'][number],
     preferredState: StackIndicatorGroup['state'],
     firstIndex: number,
   ) => {
-    const group = groups.find((g) => (stage !== null ? g.stage === stage : g.label === fallbackKey))
+    const stage = cardStage(code) ?? fallbackStage
+    const title = cardTitle(code)
+    const group = groups.find((g) =>
+      stage !== null ? g.stage === stage && !g.titles.has(title) : g.label === fallbackKey,
+    )
 
     if (group) {
       group.images.push(image)
+      group.titles.add(title)
       if (preferredState === 'current') group.state = 'current'
       return
     }
@@ -203,6 +223,7 @@ const groupedActStack = computed<StackIndicatorGroup[]>(() => {
     groups.push({
       label: stage === null ? fallbackKey : `Act ${stage}`,
       stage,
+      titles: new Set([title]),
       firstIndex,
       state: preferredState,
       images: [image],
@@ -210,37 +231,38 @@ const groupedActStack = computed<StackIndicatorGroup[]>(() => {
   }
 
   props.completedStack.forEach((card, i) => {
-    const stage = cardStage(card)
     addToGroup(
-      stage,
+      asCardCode(card),
       `Act ${i + 1}`,
-      { src: imgsrc(cardImage(card)), passed: true },
+      null,
+      { src: imgsrc(cardImage(card)), back: resolvedSideImage(card), passed: true },
       'completed',
       i,
     )
   })
 
   addToGroup(
-    props.act.sequence.number,
+    props.act.id,
     `Act ${props.act.sequence.number}`,
+    props.act.sequence.number,
     { src: image.value, current: true },
     'current',
     props.completedStack.length,
   )
 
   futureStack.value.forEach((card, i) => {
-    const stage = cardStage(card)
     addToGroup(
-      stage,
+      asCardCode(card),
       `Act ${props.completedStack.length + i + 2}`,
+      null,
       { src: imgsrc(cardImage(card)) },
-      stage === props.act.sequence.number ? 'current' : 'remaining',
+      'remaining',
       props.completedStack.length + i + 1,
     )
   })
 
   return groups.sort((a, b) => {
-    if (a.stage !== null && b.stage !== null) return a.stage - b.stage
+    if (a.stage !== null && b.stage !== null && a.stage !== b.stage) return a.stage - b.stage
     return a.firstIndex - b.firstIndex
   })
 })
@@ -288,8 +310,8 @@ const breaches = computed(() => {
 const clues = computed(() => props.act.tokens.Clue ?? 0)
 const resources = computed(() => props.act.tokens.Resource ?? 0)
 
-// Epic Multiplayer: shared-clue acts (The Blob's acts 1 & 3) hold ZERO real clue
-// tokens — clues are spent into the global pool — so the act looks empty. Render a
+// Epic Multiplayer: The Blob's Act 1 holds ZERO real clue tokens — clues are
+// spent into the global pool — so the act looks empty. Render a
 // PSEUDO clue-token pool equal to THIS group's clues still on the act for the current
 // stage = its contribution minus what the organizer allocated it to spend
 // (`act-contribution:<stage>:<ordinal>` − `act-spend:<stage>:<ordinal>`). So the spent
@@ -310,6 +332,7 @@ const sharedContribution = computed(() => {
   const ordinal = thisGroupOrdinal.value
   if (ordinal === null) return 0
   const stage = props.act.sequence.number
+  if (stage !== 1) return 0
   const contributed = actContribution(eventStore.sharedState, stage, ordinal)
   const spent = actSpend(eventStore.sharedState, stage, ordinal)
   return Math.max(0, contributed - spent)
@@ -335,6 +358,7 @@ const nextToScarletKeys = computed(() =>
             'act--can-interact': canInteract,
             'card--sideways': !isVertical,
             'card--flipping': flipping,
+            'card--flipping-diagonal': flippingDiagonally,
           }"
           class="card"
           @click="clicked"

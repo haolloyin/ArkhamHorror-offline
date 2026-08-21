@@ -4,13 +4,9 @@ import Arkham.Card.CardCode
 import Arkham.Card.CardDef
 import Arkham.Card.CardType
 import Arkham.EncounterSet
-import Arkham.LocationSymbol qualified as LS
 import Arkham.Name
-import Arkham.Trait
 import Arkham.Prelude
-
-withScanIcons :: [LS.LocationSymbol] -> CardDef -> CardDef
-withScanIcons icons def = def {cdMeta = insertMap "scanIcons" (toJSON icons) def.meta}
+import Arkham.Trait
 
 addTrait :: Trait -> CardDef -> CardDef
 addTrait trait def =
@@ -40,3 +36,14 @@ story cardCode name encounterSet =
     , cdDoubleSided = False
     , cdLevel = Nothing
     }
+
+victory :: Int -> CardDef -> CardDef
+victory n def = def {cdVictoryPoints = Just n}
+
+cthulhuDeckBack :: Map Text Value
+cthulhuDeckBack = mapFromList [("customBack", String "back_cthulhu_deck.jpg")]
+
+-- | The quantity is the number of copies in the 18-card Cthulhu deck.
+cthulhuDeckCard :: CardCode -> Name -> Int -> EncounterSet -> CardDef
+cthulhuDeckCard cCode name quantity encounterSet =
+  (story cCode name encounterSet) {cdMeta = cthulhuDeckBack, cdEncounterSetQuantity = Just quantity}

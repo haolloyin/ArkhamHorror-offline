@@ -86,6 +86,7 @@ data InvestigatorMatcher
   | InvestigatorCanMoveTo Source LocationMatcher
   | InvestigatorWithToken Token
   | InvestigatorWithSealedChaosToken ChaosTokenMatcher
+  | InvestigatorWithMostSealedChaosToken ChaosTokenMatcher
   | You
   | ThatInvestigator
   | UnengagedInvestigator
@@ -180,6 +181,12 @@ data InvestigatorMatcher
   | InvestigatorIfThen InvestigatorMatcher InvestigatorMatcher InvestigatorMatcher
   | InvestigatorCanTarget Target
   | InvestigatorWithRecord CampaignLogKey
+  | -- | Compare a per-investigator record count (Dark Matter's "Memories")
+    InvestigatorWithRecordCount CampaignLogKey ValueMatcher
+  | -- | Highest tally under a per-investigator record count (Dark Matter's "Memories")
+    InvestigatorWithMostRecordCount CampaignLogKey
+  | -- | Lowest tally under a per-investigator record count
+    InvestigatorWithLeastRecordCount CampaignLogKey
   | CanBeHuntedBy EnemyId
   | DistanceFromRoundStart ValueMatcher
   | InvestigatorWithMetaKey Text
@@ -197,6 +204,15 @@ data InvestigatorMatcher
 
 investigatorWithRecord :: IsCampaignLogKey k => k -> InvestigatorMatcher
 investigatorWithRecord = InvestigatorWithRecord . toCampaignLogKey
+
+investigatorWithRecordCount :: IsCampaignLogKey k => k -> ValueMatcher -> InvestigatorMatcher
+investigatorWithRecordCount = InvestigatorWithRecordCount . toCampaignLogKey
+
+investigatorWithMostRecordCount :: IsCampaignLogKey k => k -> InvestigatorMatcher
+investigatorWithMostRecordCount = InvestigatorWithMostRecordCount . toCampaignLogKey
+
+investigatorWithLeastRecordCount :: IsCampaignLogKey k => k -> InvestigatorMatcher
+investigatorWithLeastRecordCount = InvestigatorWithLeastRecordCount . toCampaignLogKey
 
 instance Plated InvestigatorMatcher
 

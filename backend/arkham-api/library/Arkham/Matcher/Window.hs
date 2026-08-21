@@ -186,11 +186,13 @@ data WindowMatcher
   | EnemyAttacked Timing Who SourceMatcher EnemyMatcher
   | EnemyAttackedSuccessfully Timing Who SourceMatcher EnemyMatcher
   | EnemyEvadedSuccessfully Timing Who SourceMatcher EnemyMatcher
+  | EnemyWouldBeEvaded Timing Who EnemyMatcher
   | RevealChaosToken Timing Who ChaosTokenMatcher
   | RevealChaosTokensDuringSkillTest Timing Who SkillTestMatcher ChaosTokenMatcher
   | TokensWouldBeRemovedFromChaosBag Timing ChaosTokenMatcher
   | ResolvesChaosToken Timing Who ChaosTokenMatcher
   | ChaosTokenSealed Timing Who ChaosTokenMatcher
+  | ChaosTokenReleased Timing Who ChaosTokenMatcher
   | CancelChaosToken Timing Who ChaosTokenMatcher
   | IgnoreChaosToken Timing Who ChaosTokenMatcher
   | WouldRevealChaosToken Timing Who
@@ -263,6 +265,7 @@ data WindowMatcher
   | DealtHorror Timing SourceMatcher Who
   | AssignedHorror Timing Who TargetListMatcher
   | DealtDamageOrHorror Timing SourceMatcher Who
+  | InvestigatorDealtDamageOrHorror Timing SourceMatcher Who
   | WouldDrawEncounterCard Timing Who PhaseMatcher
   | WouldDrawCard Timing Who DeckMatcher
   | WouldDrawExactlyOneCard Timing Who DeckMatcher

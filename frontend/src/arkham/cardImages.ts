@@ -1,4 +1,5 @@
 import { cardImg, imgsrc } from '@/arkham/helpers'
+import type { CardDef } from '@/arkham/types/CardDef'
 import type { Game } from '@/arkham/types/Game'
 import type { Source } from '@/arkham/types/Source'
 
@@ -8,6 +9,56 @@ export function cardArt(cardCode: string, suffix: string = ''): string {
 
 export function cardImage(cardCode: string, suffix: string = ''): string {
   return cardImg(cardArt(cardCode, suffix))
+}
+
+// A handful of acts and agendas end their id in a letter that disambiguates two
+// printings rather than naming a side, so the generic strip-the-side rule below
+// would resolve them onto a different card's front.
+const RESOLVED_SIDE_OVERRIDES: Record<string, string> = {
+  '03276a': '03276ab',
+  '03276b': '03276bb',
+  '03279a': '03279ab',
+  '03279b': '03279bb',
+}
+
+// The side an act or agenda was resolved on as it advanced past. Ids carry the
+// side as a trailing letter (a/c/e/g are fronts) and every printed back shares
+// the same `…b` art — including the four-sided Threads of Fate acts, where side
+// d reuses side b's image.
+export function resolvedSideArt(art: string): string {
+  const base = art.replace(/^c/, '')
+  return RESOLVED_SIDE_OVERRIDES[base] ?? `${base.replace(/[aceg]$/, '')}b`
+}
+
+export function cardHasDistinctBack(card: CardDef): boolean {
+  return !!(
+    card.doubleSided
+    || card.otherSide
+    || ['ActType', 'AgendaType', 'ScenarioType', 'InvestigatorType'].includes(card.cardType)
+  )
+}
+
+export function cardFaceImages(card: CardDef): { front: string; back: string | null } {
+  const backPrimary = !!(
+    card.doubleSided
+    && card.otherSide
+    && /b$/.test(card.art)
+    && card.otherSide.replace(/^c/, '') === card.art.replace(/b$/, '')
+  )
+
+  const front = card.cardType === 'LocationType' && card.doubleSided
+    ? cardImg(`${card.art}b`)
+    : cardImg(backPrimary ? card.otherSide!.replace(/^c/, '') : card.art)
+
+  let back: string | null = null
+  if (backPrimary) back = cardImg(card.art)
+  else if (card.otherSide) back = cardImg(card.otherSide.replace(/^c/, ''))
+  else if (['ActType', 'AgendaType', 'ScenarioType', 'InvestigatorType'].includes(card.cardType)) {
+    back = cardImg(`${card.art.replace(/a$/, '')}b`)
+  } else if (card.cardType === 'LocationType' && card.doubleSided) back = cardImg(card.art)
+  else if (card.doubleSided) back = cardImg(`${card.art.replace(/a$/, '')}b`)
+
+  return { front, back }
 }
 
 export function portraitImage(cardCode: string, suffix: string = ''): string {

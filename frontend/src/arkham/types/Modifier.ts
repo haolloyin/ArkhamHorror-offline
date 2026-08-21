@@ -64,6 +64,7 @@ export type ModifierType
   | UseEncounterDeck
   | CannotCommitCards
   | DoNotDrawConnection
+  | FewerSlots
   | Difficulty
   | ScenarioModifier
   | RevealAnotherChaosToken
@@ -142,6 +143,11 @@ export type BaseSkill = {
 export type DoNotDrawConnection = {
   tag: "DoNotDrawConnection"
   contents: [string, string]
+}
+
+export type FewerSlots = {
+  tag: "FewerSlots"
+  contents: [string, number]
 }
 
 export type DiscoveredClues = {
@@ -261,6 +267,7 @@ type UIModifierType =
   | 'Locus'
   | 'Ethereal'
   | 'Explosion'
+  | 'OnFire'
   | 'Oversized'
   | { tag: 'ImportantToScenario', contents: string }
   | { tag: 'OverlayCheckmark', top: number, left: number }
@@ -444,6 +451,11 @@ const modifierTypeDecoder = JsonDecoder.oneOf<ModifierType>([
       tag: JsonDecoder.literal('DoNotDrawConnection'),
       contents: JsonDecoder.tuple([JsonDecoder.string(), JsonDecoder.string()], 'DoNotDrawConnection')
     }, 'DoNotDrawConnection'),
+  JsonDecoder.object<FewerSlots>(
+    {
+      tag: JsonDecoder.literal('FewerSlots'),
+      contents: JsonDecoder.tuple([JsonDecoder.string(), JsonDecoder.number()], 'FewerSlots')
+    }, 'FewerSlots'),
   JsonDecoder.object<AsIfInHand>(
     {
       tag: JsonDecoder.literal('AsIfInHand'),
@@ -472,6 +484,7 @@ const modifierTypeDecoder = JsonDecoder.oneOf<ModifierType>([
         JsonDecoder.object({ tag: JsonDecoder.literal('Locus') }, 'Locus').map(() => "Locus"),
         JsonDecoder.object({ tag: JsonDecoder.literal('Ethereal') }, 'Ethereal').map(() => "Ethereal"),
         JsonDecoder.object({ tag: JsonDecoder.literal('Explosion') }, 'Explosion').map(() => "Explosion"),
+        JsonDecoder.object({ tag: JsonDecoder.literal('OnFire') }, 'OnFire').map(() => "OnFire"),
         JsonDecoder.object({ tag: JsonDecoder.literal('Oversized') }, 'Oversized').map(() => "Oversized"),
         JsonDecoder.object({ tag: JsonDecoder.literal('ImportantToScenario'), contents: JsonDecoder.string() }, 'ImportantToScenario'),
         JsonDecoder.object({

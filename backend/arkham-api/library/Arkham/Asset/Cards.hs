@@ -2,6 +2,7 @@ module Arkham.Asset.Cards (module Arkham.Asset.Cards, module X) where
 
 import Arkham.Asset.Cards.AndrePatel as X
 import Arkham.Asset.Cards.CarolynFern2 as X
+import Arkham.Asset.Cards.ChildrenOfBlood as X
 import Arkham.Asset.Cards.Core2026 as X
 import Arkham.Asset.Cards.EdgeOfTheEarth as X
 import Arkham.Asset.Cards.MarieLambeau2 as X
@@ -31,7 +32,8 @@ import Arkham.Prelude
 
 allPlayerAssetCards :: Map CardCode CardDef
 allPlayerAssetCards =
-  mapFromList
+  (Homebrew.playerAssetsMap <>)
+    $ mapFromList
     $ concatMap
       toCardCodePairs
       [ abbessAllegriaDiBiase
@@ -1085,6 +1087,10 @@ allPlayerAssetCards =
       , petOozeling
       , miGoWeapon
       , ltWilsonStewart
+      , --- Mi-Go Incursion II
+        gMen
+      , corrosiveCloud
+      , alienInstruments
       ]
 
 -- with encounter backs
@@ -1177,7 +1183,11 @@ allEncounterAssetCards =
         universityChemist
       , meteoriteSample
       , theMilitarysPlan
-      , mysteriousPhoto
+      , --- Mi-Go Incursion II
+        armoredCar
+      , brainCase
+      , --- Red Tide Rising
+        mysteriousPhoto
       , mysteriousPhotoBack
       , --- Relics of the Past
         jadeCrocodile

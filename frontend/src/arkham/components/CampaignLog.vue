@@ -17,6 +17,7 @@ import Supplies from '@/arkham/components/Supplies.vue'
 import XpBreakdown from '@/arkham/components/XpBreakdown.vue'
 import { type XpBreakdown as XpBreakdownType, type XpBreakdownStep, xpBreakdownDecoder } from '@/arkham/types/Xp'
 import { type TokenFace, tokenFaceDecoder } from '@/arkham/types/ChaosToken'
+import { type ChaosBagChange, chaosBagChangeDecoder } from '@/arkham/types/Campaign'
 import * as JsonDecoder from 'ts.data.json'
 import InvestigatorRow from '@/arkham/components/InvestigatorRow.vue'
 import CampaignLogSection from '@/arkham/components/CampaignLogSection.vue'
@@ -24,7 +25,7 @@ import CampaignLogSpecialRules from '@/arkham/components/CampaignLogSpecialRules
 import CampaignLogRecordedSets from '@/arkham/components/CampaignLogRecordedSets.vue'
 import CampaignLogInvestigatorSection from '@/arkham/components/CampaignLogInvestigatorSection.vue'
 import CampaignLogPartners from '@/arkham/components/CampaignLogPartners.vue'
-import { achievementCatalog } from '@/arkham/achievements'
+import { achievementCatalog, activeAchievementPart, type AchievementPart } from '@/arkham/achievements'
 import CampaignLogChaosBag from '@/arkham/components/CampaignLogChaosBag.vue'
 import CampaignLogUltimatumsAndBoons from '@/arkham/components/CampaignLogUltimatumsAndBoons.vue'
 import CampaignLogAchievements from '@/arkham/components/CampaignLogAchievements.vue'
@@ -149,6 +150,11 @@ const otherModeTitle = computed(() => {
   return title === 'The Dream-Quest' ? 'The Web of Dreams' : 'The Dream-Quest'
 })
 
+// The mini-campaign being played, when only one half is in play (null = show all).
+const activeCampaignPart = computed<AchievementPart | null>(() =>
+  activeAchievementPart(props.game.campaign?.meta?.campaignMode)
+)
+
 // The whole inactive campaign rides along in the meta for the Dream Eaters A/B split
 const otherCampaignAttrs = computed(() => props.game.campaign?.meta?.otherCampaignAttrs ?? null)
 
@@ -175,6 +181,14 @@ if (otherCampaignAttrs.value?.chaosBag) {
     .decodePromise(otherCampaignAttrs.value.chaosBag)
     .then(res => { otherChaosBag.value = res })
     .catch(() => { otherChaosBag.value = null })
+}
+
+const otherChaosBagHistory = ref<ChaosBagChange[] | null>(null)
+if (otherCampaignAttrs.value?.chaosBagHistory) {
+  JsonDecoder.array(chaosBagChangeDecoder, 'ChaosBagChange[]')
+    .decodePromise(otherCampaignAttrs.value.chaosBagHistory)
+    .then(res => { otherChaosBagHistory.value = res })
+    .catch(() => { otherChaosBagHistory.value = null })
 }
 
 // A mapping of title → LogContents. When there is no split, we expose just the main one.
@@ -540,6 +554,10 @@ const partners = computed(() => (selectedLog.value as any).partners ?? {})
 const chaosBag = computed(() =>
   showingMain.value ? (props.game.campaign?.chaosBag ?? []) : (otherChaosBag.value ?? [])
 )
+
+const chaosBagHistory = computed<ChaosBagChange[]>(() =>
+  showingMain.value ? (props.game.campaign?.chaosBagHistory ?? []) : (otherChaosBagHistory.value ?? [])
+)
 const hasSupplies = computed(() => Object.values(investigators.value).some(i => i.supplies.length > 0))
 
 // --- Investigator log sections --------------------------------------------------
@@ -873,6 +891,7 @@ onUnmounted(() => {
           :achievements="achievements"
           :user-achievements="userAchievements"
           :campaign-id="game.campaign?.id"
+          :part="activeCampaignPart"
         />
 
         <template v-for="(section, index) in additionalLogSections" :key="section.title">
@@ -939,7 +958,9 @@ onUnmounted(() => {
 
           <CampaignLogChaosBag
             v-if="chaosBag.length > 0"
+            :game="game"
             :chaosBag="chaosBag"
+            :history="chaosBagHistory"
           />
 
           <CampaignLogUltimatumsAndBoons

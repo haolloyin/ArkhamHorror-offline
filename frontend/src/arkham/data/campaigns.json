@@ -1005,8 +1005,7 @@
       ]
     },
     "returnTo": {
-      "id": "53",
-      "beta": true
+      "id": "53"
     }
   },
   {
@@ -1075,8 +1074,7 @@
       ]
     },
     "returnTo": {
-      "id": "54",
-      "beta": true
+      "id": "54"
     },
     "settings": [
       {
@@ -2604,7 +2602,6 @@
   {
     "id": "10",
     "name": "The Feast of Hemlock Vale",
-    "beta": true,
     "additional": [
       {
         "title": "theFeastOfHemlockVale.campaignLog.map.title",
@@ -2695,7 +2692,7 @@
   {
     "id": "11",
     "name": "The Drowned City",
-    "alpha": true,
+    "beta": true,
     "difficultyLevels": {
       "Easy": [
         "PlusOne",
@@ -2852,6 +2849,92 @@
         "Tablet",
         "AutoFail",
         "ElderSign"
+      ]
+    }
+  },
+  {
+    "id": "13",
+    "name": "Children of Blood",
+    "dev": true,
+    "alpha": true,
+    "difficultyLevels": {
+      "Easy": [
+        "PlusOne",
+        "PlusOne",
+        "Zero",
+        "Zero",
+        "Zero",
+        "MinusOne",
+        "MinusOne",
+        "MinusOne",
+        "MinusTwo",
+        "MinusTwo",
+        "Skull",
+        "Skull",
+        "Tablet",
+        "ElderThing",
+        "AutoFail",
+        "ElderSign"
+      ],
+      "Standard": [
+        "PlusOne",
+        "Zero",
+        "Zero",
+        "MinusOne",
+        "MinusOne",
+        "MinusOne",
+        "MinusTwo",
+        "MinusTwo",
+        "MinusThree",
+        "MinusFour",
+        "Skull",
+        "Skull",
+        "Tablet",
+        "ElderThing",
+        "AutoFail",
+        "ElderSign"
+      ],
+      "Hard": [
+        "Zero",
+        "Zero",
+        "Zero",
+        "MinusOne",
+        "MinusOne",
+        "MinusTwo",
+        "MinusTwo",
+        "MinusThree",
+        "MinusThree",
+        "MinusFour",
+        "MinusFive",
+        "Skull",
+        "Skull",
+        "Tablet",
+        "ElderThing",
+        "AutoFail",
+        "ElderSign",
+        "BloodToken"
+      ],
+      "Expert": [
+        "Zero",
+        "MinusOne",
+        "MinusOne",
+        "MinusTwo",
+        "MinusTwo",
+        "MinusThree",
+        "MinusThree",
+        "MinusFour",
+        "MinusFour",
+        "MinusFive",
+        "MinusSix",
+        "MinusEight",
+        "Skull",
+        "Skull",
+        "Tablet",
+        "ElderThing",
+        "AutoFail",
+        "ElderSign",
+        "BloodToken",
+        "BloodToken"
       ]
     }
   }

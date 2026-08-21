@@ -31,10 +31,15 @@ data DarkMatterKey
   | TheNostalgiaIIHasBeenSaved
   | YouCouldntSaveTheCrewOfTheNostalgiaII
   | AllInvestigatorsHaveBeenCorruptedByTheEarth
+  | -- | recorded per investigator, by agenda 2b
+    HasBeenCorruptedByTheEarth
   | -- | Scenario IIIc: Strange Moons
     YouAreNotInGoodStandingWithTheMiGo
   | YouAreAlliedWithTheMiGo
   | YouHaveUncoveredTheCultistsInhumanMethods
+  | YouHaveWitnessedTheUnconsciousPandemonium
+  | -- | Scenario VI: The Machine in Yellow
+    YouHaveWitnessedTheManifestedMadness
   | -- | Scenario V: Fragment of Carcosa
     TheInvestigatorsAreTrappedWithinCarcosa
   | TheInvestigatorsKnowOfTheAbjurationOfTheThrone
@@ -62,7 +67,8 @@ data DarkMatterKey
   deriving anyclass (ToJSON, FromJSON)
 
 instance IsCampaignLogKey DarkMatterKey where
-  toCampaignLogKey = HomebrewCampaignLogKey . tshow
+  toCampaignLogKey = HomebrewCampaignLogKey . ("darkMatter." <>) . tshow
   fromCampaignLogKey = \case
-    HomebrewCampaignLogKey t -> readMay (unpack t)
+    HomebrewCampaignLogKey t ->
+      readMay . unpack $ fromMaybe t (stripPrefix "darkMatter." t)
     _ -> Nothing

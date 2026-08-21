@@ -37,9 +37,6 @@ import Arkham.Action hiding (Explore)
 import Arkham.Action qualified as Action
 import Arkham.Action.Additional
 import Arkham.Agenda.Sequence
-import Arkham.Ai.Focus (Focus)
-import Arkham.Ai.Orphans ()
-import Arkham.Ai.State (AiPlayerState)
 import Arkham.Asset.Uses
 import Arkham.Attack.Types
 import Arkham.Campaign.Option
@@ -57,6 +54,7 @@ import Arkham.ChaosBagStepState
 import Arkham.ChaosToken.Types
 import Arkham.Choose
 import Arkham.ClassSymbol
+import Arkham.Classes.HasQueue (QueueWrapper (..))
 import Arkham.Cost
 import Arkham.Customization
 import Arkham.DamageEffect
@@ -112,7 +110,7 @@ import Arkham.Resolution
 import Arkham.Scenario.Deck
 import Arkham.Scenario.Options
 import Arkham.ScenarioLogKey
-import Arkham.Scenarios.BeforeTheBlackThrone.Cosmos.Types
+import Arkham.Scenarios.TheCircleUndone.BeforeTheBlackThrone.Cosmos.Types
 import Arkham.Search
 import {-# SOURCE #-} Arkham.SkillTest.Base
 import Arkham.SkillTest.Type
@@ -167,7 +165,24 @@ messageType (MovedWithSkillTest _ msg) = messageType msg
 messageType (Do msg) = messageType msg
 messageType (When msg) = messageType msg
 messageType (After msg) = messageType msg
+messageType (Retain msg) = messageType msg
 messageType _ = Nothing
+
+{- | 'Priority' and 'Retain' say /when/ and /how/ a message is delivered; they
+never change what it means, so every queue predicate should see through them.
+
+Deliberately narrow. Every other wrapper /is/ meaningful: ~40 queue predicates
+treat @Do x@ and @x@ as different messages (see
+'Arkham.Enemy.Helpers.cancelEnemyDefeat', 'cancelEndTurn',
+'Arkham.Helpers.Window.replaceWindow'), and unwrapping 'MoveWithSkillTest' is
+load-bearing in 'handleSkillTestNesting'. Widening this silently rewrites the
+semantics of ~150 call sites.
+-}
+instance QueueWrapper Message where
+  stripQueueWrappers (Priority msg) = stripQueueWrappers msg
+  stripQueueWrappers (Retain msg) = stripQueueWrappers msg
+  stripQueueWrappers msg = msg
+
 resolve :: Message -> [Message]
 resolve msg = [When msg, msg, After msg]
 
@@ -494,13 +509,6 @@ data Message
     per-user progress row and awards the earn when the list is complete.
     -}
     AchievementProgress Achievement [Text]
-  | -- AI seat configuration (mutates Settings.settingsAiPlayers)
-    RegisterAiPlayer PlayerId AiPlayerState
-  | SetAiFocusOverride PlayerId (Maybe Focus)
-  | AddAiPriority PlayerId Target
-  | RemoveAiPriority PlayerId Target
-  | SetAiEnabled PlayerId Bool
-  | SetAiResponseDelay PlayerId Int
   | SetLocationOffset LocationId Double Double
   | ResetLocationOffsets
   | SetAsIfAtIgnored InvestigatorId Bool
@@ -1168,6 +1176,14 @@ data Message
   | -- UI
     ClearUI
   | Priority Message
+  | {- | Wraps the 'Ask' / 'AskMap' publishing a question whose seats must survive
+    another seat's answer. Every accepted answer pushes 'ClearUI', which wipes
+    the whole published question map, and 'Entity.Answer' only re-parks the
+    seats it knows are durable. A multi-seat ask that is neither rebuilt by the
+    queue nor barriered has to say so, or its other seats are silently dropped
+    along with their baked messages (#4787).
+    -}
+    Retain Message
   | Simultaneously [Message]
   | -- Debug
     ClearQueue
@@ -2672,6 +2688,7 @@ uiToRun = \case
   KeyLabel _ msgs -> Run msgs
   TargetLabel _ msgs -> Run msgs
   GridLabel _ msgs -> Run msgs
+  ConnectionLabel _ msgs -> Run msgs
   TarotLabel _ msgs -> Run msgs
   SkillLabel _ msgs -> Run msgs
   SkillLabelWithLabel _ _ msgs -> Run msgs
@@ -2832,36 +2849,15 @@ continuation, so the state flip is likewise driven by the barrier releasing rath
 than by the queue draining to the right position.
 -}
 chooseDecks :: BatchId -> [PlayerId] -> [Message] -> Message
-chooseDecks batchId pids = chooseDecksWithAi batchId pids []
-
-{- | Like 'chooseDecks' but for AI-assisted games. Each AI seat in @aiSeats@ is
-loaded from its bundled decklist in-place and is NOT prompted; only the
-remaining (human) seats receive a 'ChooseDeck' question.
-
-The ordering invariants this preserves:
-
-  * The @LoadDecklist@s run /after/ 'ChoosingDecks' (which wipes investigators)
-    and /before/ the barrier opens, so the loaded AI investigators survive the
-    wipe and are present the instant the game parks on the human deck prompt.
-  * Only human seats enter the barrier, so it never waits on an AI seat. When
-    every seat is AI the barrier has no seats, its join condition holds on
-    creation, and @continuation@ runs immediately.
-
-With @aiSeats == []@ this is exactly @chooseDecks@, so non-AI games are unaffected.
--}
-chooseDecksWithAi :: BatchId -> [PlayerId] -> [(PlayerId, ArkhamDBDecklist)] -> [Message] -> Message
-chooseDecksWithAi batchId pids aiSeats continuation =
+chooseDecks batchId pids continuation =
   Run
-    $ [SetGameState (IsChooseDecks pids), ChoosingDecks]
-    <> [LoadDecklist pid decklist | (pid, decklist) <- aiSeats]
-    <> [ BeginSimultaneousAsk
-           batchId
-           JoinAll
-           (mapFromList (map (,ChooseDeck) humanPids))
-           (DoneChoosingDecks : continuation)
-       ]
- where
-  aiPids = map fst aiSeats
-  humanPids = filter (`notElem` aiPids) pids
+    [ SetGameState (IsChooseDecks pids)
+    , ChoosingDecks
+    , BeginSimultaneousAsk
+        batchId
+        JoinAll
+        (mapFromList (map (,ChooseDeck) pids))
+        (DoneChoosingDecks : continuation)
+    ]
 
 --

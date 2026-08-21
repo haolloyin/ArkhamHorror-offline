@@ -49,7 +49,11 @@ Homebrew uses its own id namespace so it never collides with official content.
 - **Card code**: `:<campaign-id>:<number>` — `:dark-matter:001`,
   `:circus-ex-mortis:042`. Numbers are assigned in pack order and are **stable —
   never renumber**. Double-sided cards use a `b` suffix on the back
-  (`:dark-matter:057b`), same as official cards.
+  (`:dark-matter:057b`), same as official cards. When the back is a card def of
+  its own — an agenda that flips to an enemy, a location whose two faces are
+  different places — point the back's `cdOtherSide` at the front. The card
+  browser lists only the earlier side of a linked pair (unsuffixed before `a`
+  before `b`), so without the link the same card shows up twice.
 - **Scenario id**: the card code of the scenario reference card.
 
 Card art lives under your frontend folder and is served at
@@ -65,8 +69,9 @@ it. A minimal campaign is really just cards plus a couple of list files.
 | File | What it's for |
 |------|---------------|
 | `CardDefs/`, `Locations/`, `Enemies/`, `Assets/`, … | your cards: the printed stats (`CardDefs/`) and the behavior (`Locations/`, `Enemies/`, …) |
-| `Defs.hs` | the list of your cards' printed definitions, plus your traits & actions |
-| `Content.hs` | the list of your cards' behaviors, plus your scenarios & campaign |
+| `Defs.hs` | your campaign's printed-card manifest, plus your traits & actions |
+| `Content.hs` | your campaign's in-play manifest, plus your scenarios & campaign |
+| `CardDefEntries.hs`, `CardEntries.hs` | one-line generated files that find your cards for those two manifests |
 | `Campaign.hs`, `CampaignSteps.hs` | your campaign log, interludes, and how scenarios branch |
 | `Key.hs` | your campaign-log keys (the flags/tallies your campaign records) |
 | `Traits.hs` | new traits your cards use |
@@ -77,11 +82,53 @@ it. A minimal campaign is really just cards plus a couple of list files.
 | `Helpers.hs`, `Import.hs`, `ChaosBag.hs` | campaign-specific helpers, shared import surface, chaos bag |
 | `Scenarios/<Name>.hs` | your scenario runners |
 
-`Defs.hs` and `Content.hs` are the two "manifest" files. `Defs.hs` lists the
-*cards on paper*; `Content.hs` lists the *cards in play*. Keep them apart and
+`Defs.hs` and `Content.hs` are the two "manifest" files. `Defs.hs` covers the
+*cards on paper*; `Content.hs` covers the *cards in play*. Keep them apart and
 never import your card behaviors into `Defs.hs` — that's the only structural rule,
 and following it keeps the build healthy. A homebrew *standalone* (a one-off
 scenario with no campaign) uses the same folder shape, minus `Campaign.hs`.
+
+Neither manifest lists your cards by hand. `CardDefEntries.hs` and
+`CardEntries.hs` are one-line files (copy them from Dark Matter) whose pragma
+scans your folder: every `name :: CardDef` under `CardDefs/` and every
+`name :: EnemyCard Foo`-style builder in your behavior modules is registered
+automatically, and each definition is sorted by its card type. So adding a card
+means adding a card — nothing to register.
+
+Because sorting goes by card type, the **card back matters** when you define a
+story asset. Encounter back → `encounterAsset` / `encounterAsset_`; player back
+(it goes in a deck or a hand) → `storyAsset` / `storyAsset_`. Get it wrong and
+the card is dealt from the wrong side of the table — it shows the wrong back and
+generates as the wrong kind of card.
+
+```haskell
+sophie :: CardDef            -- encounter back
+sophie = encounterAsset_ ":dark-matter:135" "Sophie" Set.InTheShadowOfEarth
+
+spaceArtillery :: CardDef    -- player back
+spaceArtillery = storyAsset ":dark-matter:120" "Space Artillery" 4 Set.InTheShadowOfEarth
+```
+
+A card whose back is its own `b` side rather than a stock back — Dark Matter's
+scanning backs, with their icons printed at the bottom — says so with
+`cdOtherSide = Just (flippedCardCode def.cardCode)` (locations have
+`singleSidedWithFlippedBack` for this). Without it the card falls back to the
+generic encounter back and the icons never show.
+
+An encounter-backed card can still be *earned*: `addCampaignCardToDeck` records
+it in the campaign's story cards for its owner whichever side it is printed on.
+It will not come back with the deck, though — deck loading keeps only player
+cards — so only a `permanent` one survives the scenario it was earned in.
+`SetupInvestigator` puts those into play from the campaign story cards in the
+same step it plays the deck's own permanents (Dark Matter's Heir to Carcosa).
+Non-permanent encounter-backed earned cards have nowhere to live; give those a
+player back.
+
+Story cards are the one case where card type can't record this (there is no
+player-back story type), so a story printed on a player back — Dark Matter's
+"Delights" — declares `delights :: PlayerCardDef` instead, importing
+`PlayerCardDef` from `Arkham.Homebrew.DefsBase`. It's the same type; the
+signature is what discovery reads.
 
 ## Adding things
 
@@ -236,7 +283,7 @@ leading colon), discovered the same hands-off way — no registration anywhere:
 
 | File | What it's for |
 |------|---------------|
-| `campaign.json` | your campaign's new-game entry — name, `designer`, difficulty chaos bags. Appears in a dedicated **Homebrew** section of the new-game screen with a "designed by …" credit. |
+| `campaign.json` | your campaign's new-game entry — name, `designer`, `chapter`, difficulty chaos bags. Appears in a dedicated **Homebrew** section of the new-game screen with a "designed by …" credit. |
 | `scenarios.json` | the scenario list; each entry's `i18n` key names its locale scope |
 | `icons.json` | custom icon names, e.g. `{"moon": "moon-icon"}` — hooks `{moon}` into flavor text and `[moon]` into card text |
 | `tokens.json` | custom tokens to show in the scenario **totals bar**, e.g. `[{ "face": ":your-campaign:moon", "tooltip": "Moon Tokens" }]` (counted across the chaos bag and players' sealed tokens) |
@@ -247,16 +294,23 @@ leading colon), discovered the same hands-off way — no registration anywhere:
 The directory name camelCases to the i18n message scope (`circus-ex-mortis` →
 `circusExMortis`), which matches the backend's campaign i18n scope.
 
+`campaign.json` also declares which rules chapter your campaign is written
+against: `"chapter": 1` or `"chapter": 2`. Official campaigns derive this from
+their id (`11` and up are Chapter 2), but homebrew ids don't order that way, so
+say it outright. It preselects the Chapter 1/Chapter 2 rules toggle (currently
+the "as if" ruling) on the new-game screen; players can still override it there
+and in game settings. Omit it and you get Chapter 1.
+
 `tokens.json` is a nice small example of a self-configuring feature: list a token
 face there and it appears in the on-screen totals with no code changes.
 
 ## Getting started
 
-1. Make `Arkham/Homebrew/YourCampaign/` with a `Defs.hs` and `Content.hs`. Copy
-   the shape from an existing campaign — they're a lightweight list of everything
-   your campaign contributes.
+1. Make `Arkham/Homebrew/YourCampaign/` with a `Defs.hs`, `Content.hs`,
+   `CardDefEntries.hs`, and `CardEntries.hs`. Copy the shape from an existing
+   campaign — the manifests are short, and the two entry files are one line each.
 2. Add cards under `CardDefs/` (the printed side) and the matching behavior
-   modules; list them in `Defs.hs` / `Content.hs`.
+   modules. They're discovered; there's no list to update.
 3. Add `Key.hs`, `Sets.hs`, and any of `Traits.hs` / `Actions.hs` /
    `ScenarioDeckKeys.hs` / `Tokens.hs` you need. Wire the trait/action lists into
    `Defs.hs`.
@@ -267,7 +321,8 @@ face there and it appears in the on-screen totals with no code changes.
 6. Build. Your content shows up on its own.
 
 If something you added doesn't appear, it's almost always because a manifest file
-(`Defs.hs`, `Content.hs`, `Tokens.hs`) is missing its instance or is misnamed —
+(`Defs.hs`, `Content.hs`, `Tokens.hs`) is missing its instance or is misnamed, or
+because a card's signature isn't the one-line `name :: CardDef` the scan reads —
 the game finds your content by those files, so the names have to match. When in
 doubt, diff your folder against Dark Matter or Circus Ex Mortis.
 

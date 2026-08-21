@@ -57,11 +57,25 @@ class
   ) =>
   IsScenario a
 
+{- | A scenario builder with its concrete type hidden.  Lives here rather than
+in "Arkham.Scenario" so the generated registry can name it without importing
+the module that consumes the registry.
+-}
+data SomeScenario = forall a. IsScenario a => SomeScenario (Difficulty -> a)
+
+{- | Scenarios carry their card code in their attrs, so the registry key is
+recoverable from the builder itself.
+-}
+someScenarioCardCode :: SomeScenario -> CardCode
+someScenarioCardCode (SomeScenario s) = unScenarioId $ scenarioId $ toAttrs $ Scenario (s Easy)
+
 data instance Field Scenario :: Type -> Type where
   ScenarioCardsUnderActDeck :: Field Scenario [Card]
   ScenarioCardsNextToActDeck :: Field Scenario [Card]
   ScenarioCardsUnderAgendaDeck :: Field Scenario [Card]
   ScenarioCardsUnderScenarioReference :: Field Scenario [Card]
+  ScenarioActStack :: Field Scenario (IntMap [Card])
+  ScenarioAgendaStack :: Field Scenario (IntMap [Card])
   ScenarioDiscard :: Field Scenario [EncounterCard]
   ScenarioEncounterDeck :: Field Scenario (Deck EncounterCard)
   ScenarioHasEncounterDeck :: Field Scenario Bool

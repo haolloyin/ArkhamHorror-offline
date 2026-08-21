@@ -4,19 +4,19 @@ import Arkham.CampaignStep
 import Arkham.Prelude
 
 pattern TheTatterdemalion :: CampaignStep
-pattern TheTatterdemalion <- ScenarioStep ":dark-matter:013"
+pattern TheTatterdemalion <- ScenarioStep ":dark-matter:014"
   where
-    TheTatterdemalion = ScenarioStep ":dark-matter:013"
+    TheTatterdemalion = ScenarioStep ":dark-matter:014"
 
 pattern ElectricNightmare :: CampaignStep
-pattern ElectricNightmare <- ScenarioStep ":dark-matter:053"
+pattern ElectricNightmare <- ScenarioStep ":dark-matter:054"
   where
-    ElectricNightmare = ScenarioStep ":dark-matter:053"
+    ElectricNightmare = ScenarioStep ":dark-matter:054"
 
 pattern LostQuantum :: CampaignStep
-pattern LostQuantum <- ScenarioStep ":dark-matter:087"
+pattern LostQuantum <- ScenarioStep ":dark-matter:089"
   where
-    LostQuantum = ScenarioStep ":dark-matter:087"
+    LostQuantum = ScenarioStep ":dark-matter:089"
 
 pattern InTheShadowOfEarth :: CampaignStep
 pattern InTheShadowOfEarth <- ScenarioStep ":dark-matter:112"
@@ -47,8 +47,9 @@ pattern Starfall <- ScenarioStep ":dark-matter:243"
 pattern MissionBriefing :: CampaignStep
 pattern MissionBriefing = InterludeStep 1 Nothing
 
--- | The recurring "The Search for Fragment" choice (guide p10). Reached after
--- each Scenario III until all three traces are done.
+{- | The recurring "The Search for Fragment" choice (guide p10). Reached after
+each Scenario III until all three traces are done.
+-}
 pattern TheSearchForFragment :: CampaignStep
 pattern TheSearchForFragment = InterludeStep 2 Nothing
 

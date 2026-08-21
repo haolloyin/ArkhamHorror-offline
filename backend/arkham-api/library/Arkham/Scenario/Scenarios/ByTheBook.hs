@@ -1,18 +1,19 @@
 module Arkham.Scenario.Scenarios.ByTheBook (byTheBook, ByTheBook (..)) where
 
-import Arkham.Act.Cards qualified as Acts
-import Arkham.Agenda.Cards qualified as Agendas
+import Arkham.Act.CardDefs.ByTheBook qualified as Acts
+import Arkham.Agenda.CardDefs.ByTheBook qualified as Agendas
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Card
 import Arkham.ChaosToken
 import Arkham.Classes
 import Arkham.Difficulty
 import Arkham.EncounterSet qualified as Set
-import Arkham.Enemy.Cards qualified as Enemies
+import Arkham.Enemy.CardDefs.ByTheBook qualified as Enemies
 import Arkham.Helpers.ChaosBag (getBagChaosTokens)
 import Arkham.Helpers.EncounterSet
 import Arkham.Helpers.FlavorText
-import Arkham.Location.Cards qualified as Locations
+import Arkham.Location.CardDefs.ByTheBook qualified as Locations
+import Arkham.Location.CardDefs.NightOfTheZealot.TheMidnightMasks qualified as Locations
 import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Modifier (ModifierType (StartingHand))
@@ -20,7 +21,8 @@ import Arkham.Resolution
 import Arkham.Scenario.Import.Lifted
 import Arkham.Scenarios.ByTheBook.Helpers
 import Arkham.Trait qualified as Trait
-import Arkham.Treachery.Cards qualified as Treacheries
+import Arkham.Treachery.CardDefs.NightOfTheZealot qualified as Treacheries
+import Arkham.Treachery.CardDefs.Standalone qualified as Treacheries
 
 {- FOURMOLU_DISABLE -}
 easyTokens, standardTokens, hardTokens, expertTokens :: [ChaosTokenFace]

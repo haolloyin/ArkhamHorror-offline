@@ -14,7 +14,16 @@ import Arkham.Classes.Entity
 import Arkham.Classes.HasGame
 import Arkham.Classes.HasQueue
 import Arkham.Classes.Query
-import Arkham.Enemy.Cards qualified as Cards
+import Arkham.Enemy.CardDefs.NightOfTheZealot.DarkCult qualified as Cards
+import Arkham.Enemy.CardDefs.TheScarletKeys.AgentsOfYuggoth qualified as Cards
+import Arkham.Enemy.CardDefs.TheScarletKeys.CleanupCrew qualified as Cards
+import Arkham.Enemy.CardDefs.TheScarletKeys.CrimsonConspiracy qualified as Cards
+import Arkham.Enemy.CardDefs.TheScarletKeys.DancingMad qualified as Cards
+import Arkham.Enemy.CardDefs.TheScarletKeys.DealingsInTheDark qualified as Cards
+import Arkham.Enemy.CardDefs.TheScarletKeys.OnThinIce qualified as Cards
+import Arkham.Enemy.CardDefs.TheScarletKeys.RiddlesAndRain qualified as Cards
+import Arkham.Enemy.CardDefs.TheScarletKeys.SanguineShadows qualified as Cards
+import Arkham.Enemy.CardDefs.TheScarletKeys.ShadesOfSuffering qualified as Cards
 import Arkham.Helpers.Enemy
 import Arkham.Helpers.GameValue
 import Arkham.Helpers.Location
@@ -34,13 +43,12 @@ import Arkham.Prelude
 import Arkham.Queue
 import Arkham.Source
 import Arkham.Target
-import Arkham.Tracing
 import Data.Monoid (First (..))
 
-getConcealedIds :: (HasGame m, Tracing m) => ForExpose -> InvestigatorId -> m [ConcealedCardId]
+getConcealedIds :: HasGame m => ForExpose -> InvestigatorId -> m [ConcealedCardId]
 getConcealedIds fe iid = map toId <$> getConcealed fe iid
 
-getConcealed :: (HasGame m, Tracing m) => ForExpose -> InvestigatorId -> m [ConcealedCard]
+getConcealed :: HasGame m => ForExpose -> InvestigatorId -> m [ConcealedCard]
 getConcealed fe iid = getLocationOf iid >>= maybe (pure []) (getConcealedAt fe)
 
 exposeConcealed
@@ -90,7 +98,7 @@ chooseRevealConcealedAt iid source lmatcher = do
     campaignI18n $ labeled' "doNotRevealConcealed" nothing
 
 gatherConcealedCards
-  :: (MonadRandom m, HasGame m, Tracing m) => EnemyId -> m (Maybe (ConcealedCardKind, [ConcealedCard]))
+  :: (MonadRandom m, HasGame m) => EnemyId -> m (Maybe (ConcealedCardKind, [ConcealedCard]))
 gatherConcealedCards a = do
   mconcealed <-
     getModifiedKeywords a <&> foldMap \case

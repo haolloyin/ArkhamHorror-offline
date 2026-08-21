@@ -311,6 +311,16 @@
     "chapter1": "Chapter 1",
     "chapter2": "Chapter 2"
   },
+  "cardDetails": {
+    "close": "Close",
+    "back": "Back",
+    "code": "Code",
+    "notImplemented": "Not yet implemented",
+    "previous": "Previous card",
+    "next": "Next card",
+    "openInArkhamDB": "ArkhamDB",
+    "openInArkhamBuild": "arkham.build"
+  },
   "cardsList": {
     "name": "Name",
     "class": "Class",
@@ -346,6 +356,10 @@
   },
   "campaignLog": {
     "chaosBag": "Chaos Bag",
+    "viewHistory": "View History",
+    "hideHistory": "Hide History",
+    "bagBefore": "Before",
+    "bagAfter": "After",
     "remembered": "Remembered",
     "specialRules": "Special Rules",
     "campaignRules": "Campaign Rules",
@@ -484,8 +498,6 @@
     "betaWarning": "Beta features are likely very broken and games may be unrecoverable, please only enable this if you are willing to provide feedback.",
     "epicMultiplayer": "Epic Multiplayer (dev)",
     "epicMultiplayerWarning": "Epic Multiplayer is under active development — it does not work yet. Enable only for testing.",
-    "aiInvestigators": "AI Investigators (dev)",
-    "aiInvestigatorsWarning": "Experimental and does not work yet — actively being worked on. Enabling it may break games or behave unexpectedly.",
     "dangerZone": "Danger Zone",
     "dangerZoneDescription": "Permanently delete your account and all associated data, including games and decks.",
     "cannotBeUndone": "This cannot be undone.",
