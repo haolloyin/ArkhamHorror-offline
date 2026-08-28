@@ -256,6 +256,7 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
       AddFrostTokenCost n -> do
         x <- getRemainingFrostTokens
         pure $ x >= n
+      AddTokenCost n face -> canAddChaosTokenFaces n face
       AddCurseTokenCost n -> do
         x <- getRemainingCurseTokens
         if x >= n
@@ -395,6 +396,8 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
           elem aid <$> select Matcher.AssetReady
         EventTarget eid ->
           elem eid <$> select Matcher.EventReady
+        EnemyTarget eid ->
+          elem eid <$> select Matcher.ReadyEnemy
         _ -> error $ "Not handled " <> show target
       ExhaustAssetCost matcher ->
         selectAny $ Matcher.replaceYouMatcher iid matcher <> Matcher.AssetReady
@@ -654,6 +657,12 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
         tokens <- scenarioFieldMap ScenarioChaosBag chaosBagChaosTokens
         (>= n) <$> countM (\token -> matchChaosToken iid token tokenMatcher) tokens
       SealChaosTokenCost _ -> pure True
+      SealOnInvestigatorCost tokenMatcher -> do
+        tokens <- scenarioFieldMap ScenarioChaosBag chaosBagChaosTokens
+        anyM (\token -> matchChaosToken iid token tokenMatcher) tokens
+      SealChaosTokenOnInvestigatorCost _ -> pure True
+      RevealChaosTokensCost _ _ -> pure True
+      FindEncounterCardCost {} -> can.target.encounterDeck iid
       ReleaseChaosTokensCost n tokenMatcher -> do
         case tokenMatcher of
           Matcher.SealedOnAsset assetMatcher tokenMatcher' -> do

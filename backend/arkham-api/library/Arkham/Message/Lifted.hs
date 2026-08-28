@@ -32,7 +32,10 @@ import Arkham.Discover as X (IsInvestigate (..))
 import Arkham.Discover qualified as Msg
 import Arkham.Draw.Types
 import Arkham.Effect.Builder
-import Arkham.Effect.Types (EffectBuilder (effectBuilderEffectId), Field (..))
+import Arkham.Effect.Types (
+  EffectBuilder (effectBuilderEffectId, effectBuilderSkillTest, effectBuilderWindow),
+  Field (..),
+ )
 import Arkham.Effect.Window
 import Arkham.EffectMetadata (EffectMetadata)
 import Arkham.Enemy.Creation
@@ -1181,6 +1184,26 @@ createCardEffect
   -> m ()
 createCardEffect def mMeta source target = push =<< Msg.createCardEffect def mMeta source target
 
+-- A card effect that lives exactly as long as one skill test. The skill test
+-- window lets Effect.Runner disable it at ST.8 (SkillTestEnded, *after* the
+-- "skill test ended" window) rather than at SkillTestEnds, which fires before
+-- that window and so before a repeat can be declared, and re-point it when the
+-- test is repeated. The re-point is gated on the effect's source matching the
+-- test's source, so only what is inherent to the test carries over.
+createSkillTestCardEffect
+  :: (ReverseQueue m, Sourceable source, Targetable target)
+  => SkillTestId
+  -> CardDef
+  -> Maybe (EffectMetadata Message)
+  -> source
+  -> target
+  -> m ()
+createSkillTestCardEffect sid def mMeta source target = do
+  builder <- Msg.makeEffectBuilder def.cardCode mMeta source target
+  push
+    $ Msg.CreateEffect
+      builder {effectBuilderSkillTest = Just sid, effectBuilderWindow = Just (EffectSkillTestWindow sid)}
+
 createCardEffectCapture
   :: (ReverseQueue m, Sourceable source, Targetable target)
   => CardDef
@@ -1816,6 +1839,24 @@ drawCardsEdit
   -> (CardDraw Message -> CardDraw Message)
   -> m ()
 drawCardsEdit = drawCardsIfCanWith
+
+{- | "Draw the bottom card of your deck": an ordinary draw taken off the bottom
+of the deck. It does not search and does not shuffle.
+-}
+drawCardsFromBottom
+  :: (ReverseQueue m, Sourceable source, AsId investigator, IdOf investigator ~ InvestigatorId)
+  => investigator
+  -> source
+  -> Int
+  -> m ()
+drawCardsFromBottom iid source n = drawCardsEdit iid source n drawFromBottom
+
+drawCardFromBottom
+  :: (ReverseQueue m, Sourceable source, AsId investigator, IdOf investigator ~ InvestigatorId)
+  => investigator
+  -> source
+  -> m ()
+drawCardFromBottom iid source = drawCardsFromBottom iid source 1
 
 forcedDrawCards
   :: (ReverseQueue m, Sourceable source, AsId investigator, IdOf investigator ~ InvestigatorId)
@@ -2491,6 +2532,19 @@ placeUnderneath
   -> cards
   -> m ()
 placeUnderneath (toTarget -> target) cards = push $ Msg.PlaceUnderneath target $ map toCard (toList cards)
+
+removeFromUnderneath
+  :: ( ReverseQueue m
+     , Targetable target
+     , Element cards ~ card
+     , MonoFoldable cards
+     , IsCard card
+     )
+  => target
+  -> cards
+  -> m ()
+removeFromUnderneath (toTarget -> target) cards =
+  push $ Msg.RemoveFromUnderneath target $ map toCard (toList cards)
 
 gainActions
   :: (ReverseQueue m, Sourceable source, AsId investigator, IdOf investigator ~ InvestigatorId)

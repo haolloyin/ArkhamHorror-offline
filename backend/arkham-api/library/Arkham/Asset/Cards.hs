@@ -199,11 +199,14 @@ allPlayerAssetCards =
       , chainsaw4
       , charisma3
       , charlesRossEsq
+      , charlieKaneKnowsAGuy
       , charonsObol1
       , chemistrySet
       , cherishedKeepsake
       , cherishedKeepsake1
       , chicagoTypewriter4
+      , chosenOfZburamoarteCompelledToFeed
+      , chosenOfZburamoarteFightingTheHunger
       , chuckFergus2
       , chuckFergus5
       , claireWilson
@@ -265,6 +268,7 @@ allPlayerAssetCards =
       , delilahORourke3
       , deloresGadling
       , dendromorphosis
+      , detectiveReynoldsInOverHisHead
       , detectivesColt1911s
       , detectiveSherman3
       , deVermisMysteriis2
@@ -385,6 +389,7 @@ allPlayerAssetCards =
       , falseCovenant2
       , familiarSpirit
       , familyInheritance
+      , fangOfZburamoarte
       , farsight4
       , favorOfTheMoon1
       , favorOfTheSun1
@@ -420,6 +425,7 @@ allPlayerAssetCards =
       , forbiddenTomeSecretsRevealed3
       , forcedLearning
       , forensicKit
+      , forgedPermit
       , fortyFiveAutomatic
       , fortyFiveAutomatic2
       , fortyFiveThompson
@@ -826,6 +832,7 @@ allPlayerAssetCards =
       , safeguard
       , safeguard2
       , samuelBlakeObsessiveProducer
+      , sanguineSong
       , sarahVanShaw
       , sawedOffShotgun5
       , scavenging

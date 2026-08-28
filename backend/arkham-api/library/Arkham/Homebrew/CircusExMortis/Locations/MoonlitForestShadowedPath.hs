@@ -3,8 +3,8 @@ module Arkham.Homebrew.CircusExMortis.Locations.MoonlitForestShadowedPath (
 ) where
 
 import Arkham.Ability
-import Arkham.Homebrew.CircusExMortis.Helpers (getSealedMoonTokens)
 import Arkham.Homebrew.CircusExMortis.CardDefs.Locations qualified as Cards
+import Arkham.Homebrew.CircusExMortis.Helpers (getSealedMoonTokens)
 import Arkham.Location.Import.Lifted
 import Arkham.Matcher
 
@@ -14,12 +14,11 @@ newtype MoonlitForestShadowedPath = MoonlitForestShadowedPath LocationAttrs
 
 moonlitForestShadowedPath :: LocationCard MoonlitForestShadowedPath
 moonlitForestShadowedPath =
-  locationWith
+  location
     MoonlitForestShadowedPath
     Cards.moonlitForestShadowedPath
     3
     (Static 2)
-    connectsToAdjacent
 
 instance HasAbilities MoonlitForestShadowedPath where
   getAbilities (MoonlitForestShadowedPath a) =

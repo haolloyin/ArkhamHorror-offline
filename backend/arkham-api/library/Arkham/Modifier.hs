@@ -24,6 +24,7 @@ import Arkham.Field
 import Arkham.Id
 import Arkham.Json
 import Arkham.Keyword
+import Arkham.LocationSymbol (LocationSymbol)
 import Arkham.Matcher.Types
 import Arkham.Phase
 import {-# SOURCE #-} Arkham.Placement
@@ -118,6 +119,7 @@ data ModifierType
   | AttackDealsEitherDamageOrHorror
   | AttacksCannotBeCancelled
   | Barricades [LocationId]
+  | BaseShroud Int
   | BaseSkill Int
   | BaseSkillOf {skillType :: SkillType, value :: Int}
   | BaseSkillOfCalculated {skillType :: SkillType, calculation :: GameCalculation}
@@ -307,6 +309,10 @@ data ModifierType
   | DoubleNegativeModifiersOnChaosTokens
   | DoubleModifiersOnChaosTokens
   | DoubleSkillIcons
+  | {- | Double only the listed icons on a committed card, leaving the rest
+    (notably @WildIcon@) counted once.
+    -}
+    DoubleSkillIconsOf [SkillIcon]
   | DoubleSuccess
   | DuringEnemyPhaseMustMoveToward Target
   | EffectsCannotBeCanceled
@@ -386,6 +392,7 @@ data ModifierType
   | LeaveCardWhereItIs
   | LookAtDepth Int
   | LosePatrol
+  | LosesConnectionSymbol LocationSymbol
   | ForcePatrol LocationMatcher
   | LoseVictory
   | MaxCluesDiscovered Int

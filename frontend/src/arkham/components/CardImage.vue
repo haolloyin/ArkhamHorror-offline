@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { useAttrs, inject, ref, computed, watch, type Ref } from 'vue'
-import { altFrontImage, cardBackImage, cardFrontImage, hasCardBackArt } from '@/arkham/cardArt'
+import { altFrontImage, cardBackImage, cardFrontImage } from '@/arkham/cardArt'
 import { CardDef } from '@/arkham/types/CardDef'
 import { ArrowPathIcon } from '@heroicons/vue/20/solid'
 
@@ -25,12 +25,12 @@ if (flipAll) watch(flipAll, (value) => { wantsFlip.value = value })
 const image = computed(() => cardFrontImage(props.card))
 const backImage = computed(() => cardBackImage(props.card))
 
-// Only offer the flip when the back is art of its own rather than a generic
-// card back, and drop it again if that art turns out not to exist.
+// Every card can be turned over, generic backs included; only a back whose art
+// turns out not to exist (an unimplemented placeholder) loses the flip.
 const backMissing = ref(false)
 watch(backImage, () => { backMissing.value = false })
 
-const flippable = computed(() => hasCardBackArt(props.card) && !backMissing.value)
+const flippable = computed(() => !backMissing.value)
 const flipped = computed(() => wantsFlip.value && flippable.value)
 
 // Some cards store their front art as an 'a' side; retry there once.
@@ -66,7 +66,7 @@ const vertical = computed(() => flipped.value && backVertical.value)
         @error="onFrontError"
         v-bind="attrs"
       />
-      <button v-if="flippable" @click.prevent="wantsFlip = !wantsFlip"><ArrowPathIcon aria-hidden="true" /></button>
+      <button v-if="flippable" @click.prevent.stop="wantsFlip = !wantsFlip"><ArrowPathIcon aria-hidden="true" /></button>
     </div>
     <div v-if="flippable" class="back" :class="{flipped}">
       <img
@@ -77,7 +77,7 @@ const vertical = computed(() => flipped.value && backVertical.value)
         @error="backMissing = true"
         v-bind="attrs"
       />
-      <button @click.prevent="wantsFlip = !wantsFlip"><ArrowPathIcon aria-hidden="true" /></button>
+      <button @click.prevent.stop="wantsFlip = !wantsFlip"><ArrowPathIcon aria-hidden="true" /></button>
     </div>
   </div>
 </template>

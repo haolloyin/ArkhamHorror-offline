@@ -504,11 +504,20 @@ data Message
     toasted by the API layer (the engine only announces it).
     -}
     EarnAchievement Achievement
+  | {- | Like 'EarnAchievement', but credited to a single investigator's player
+    rather than the whole table -- for achievements whose text is about one
+    investigator ("Seal 3 {blood} tokens on your investigator...").
+    -}
+    EarnAchievementBy InvestigatorId Achievement
   | {- | Checklist items completed toward a cross-playthrough achievement
     (see 'achievementChecklist'); the API layer merges them into the
     per-user progress row and awards the earn when the list is complete.
     -}
     AchievementProgress Achievement [Text]
+  | {- | Like 'AchievementProgress', but credited to a single investigator's
+    player -- for checklists whose items are about who was played.
+    -}
+    AchievementProgressBy InvestigatorId Achievement [Text]
   | SetLocationOffset LocationId Double Double
   | ResetLocationOffsets
   | SetAsIfAtIgnored InvestigatorId Bool
@@ -687,6 +696,8 @@ data Message
   | EngageMessage EngageMessage
   | SpawnMessage SpawnMessage
   | HuntMessage HuntMessage
+  | -- | Enemy phase 3.2b: each predator enemy damages weaker prey at its location
+    PredatorsAttack
   | ClueMessage ClueMessage
   | DoomMessage DoomMessage
   | TokenMessage TokenMessage
@@ -918,6 +929,7 @@ data Message
   | RemoveEnemyLocation LocationId
   | PlaceUnderneath Target [Card]
   | PlacedUnderneath Target Card
+  | RemoveFromUnderneath Target [Card]
   | PlaceNextTo Target [Card]
   | PlacedLocation Name CardCode LocationId
   | PlacedLocationDirection LocationId Direction LocationId
@@ -1373,6 +1385,9 @@ pattern RecalculateSkillTestResultsCanChangeAutomatic :: Bool -> Message
 pattern RecalculateSkillTestResultsCanChangeAutomatic b =
   SkillTestMessage (RecalculateSkillTestResultsCanChangeAutomatic_ b)
 
+pattern ResolveHauntedAbilities :: InvestigatorId -> LocationId -> Message
+pattern ResolveHauntedAbilities iid lid = SkillTestMessage (ResolveHauntedAbilities_ iid lid)
+
 pattern SkillTestApplyResults :: Message
 pattern SkillTestApplyResults = SkillTestMessage SkillTestApplyResults_
 
@@ -1580,6 +1595,13 @@ pattern InvestigatorDefeated src iid = InvestigatorMessage (InvestigatorDefeated
 
 pattern InvestigatorIsDefeated :: Source -> InvestigatorId -> Message
 pattern InvestigatorIsDefeated src iid = InvestigatorMessage (InvestigatorIsDefeated_ src iid)
+
+{- | Clear an investigator's defeated state without undoing the defeat itself:
+they keep the trauma they suffered, but resume playing. Circus Ex Mortis' Blood
+on the Line revives investigators frozen beneath it when the act advances.
+-}
+pattern InvestigatorNoLongerDefeated :: InvestigatorId -> Message
+pattern InvestigatorNoLongerDefeated iid = InvestigatorMessage (InvestigatorNoLongerDefeated_ iid)
 
 pattern InvestigatorDirectDamage :: InvestigatorId -> Source -> Int -> Int -> Message
 pattern InvestigatorDirectDamage iid src d h = InvestigatorMessage (InvestigatorDirectDamage_ iid src d h)

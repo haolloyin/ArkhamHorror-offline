@@ -50,7 +50,6 @@ import Arkham.Matcher
 import Arkham.Matcher qualified as Matcher
 import Arkham.Message
 import Arkham.Prelude
-import Data.Data (cast, gmapQ)
 import Arkham.Projection
 import Arkham.Search (searchSource)
 import Arkham.Skill.Types qualified as Field
@@ -66,6 +65,7 @@ import Arkham.Window
 import Arkham.Window qualified as Window
 import Control.Lens (over, transform)
 import Control.Monad.Trans.Class
+import Data.Data (cast, gmapQ)
 import Data.Data.Lens (biplate)
 
 checkWindow :: HasGame m => Window -> m Message
@@ -1655,9 +1655,10 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
     Matcher.EnemyEvadedSuccessfully timing whoMatcher sourceMatcher enemyMatcher ->
       guardTiming timing $ \case
         Window.SuccessfulEvadeEnemy who source' enemyId _ -> do
+          -- tolerate removed enemies, Kymani's ability discards them mid-evade
           andM
             [ matchWho iid who whoMatcher
-            , matches enemyId enemyMatcher
+            , enemyMatches enemyId enemyMatcher
             , sourceMatches source' sourceMatcher
             ]
         _ -> noMatch
@@ -1753,6 +1754,11 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
     Matcher.IgnoreChaosToken timing whoMatcher tokenMatcher ->
       guardTiming timing $ \case
         Window.IgnoreChaosToken who token ->
+          andM [matchWho iid who whoMatcher, matchChaosToken who token tokenMatcher]
+        _ -> noMatch
+    Matcher.ChaosTokenSealedOn timing whoMatcher tokenMatcher ->
+      guardTiming timing $ \case
+        Window.ChaosTokenSealedOn who token ->
           andM [matchWho iid who whoMatcher, matchChaosToken who token tokenMatcher]
         _ -> noMatch
     Matcher.ChaosTokenSealed timing whoMatcher tokenMatcher ->
@@ -1955,9 +1961,10 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
     -- FAQ (2.12): "you" being dealt damage/horror also covers assets you control, so
     -- an attack soaked entirely by an ally still counts. TakeDamage/TakeHorror carry
     -- the total dealt to the investigator however it was assigned, and are raised
-    -- alongside the per-target DealtDamage/DealtHorror windows. Damage dealt straight
-    -- to an asset (Guard Dog) raises no investigator TakeDamage, so it stays unmatched
-    -- and self-damaging assets (Ancient Relic) cannot retrigger themselves.
+    -- alongside the per-target DealtDamage/DealtHorror windows -- including for damage
+    -- dealt straight to an asset (Field Agent's horror cost, #5496), which Asset.Runner
+    -- raises for the controller. Assets that damage themselves in response to "you"
+    -- being dealt damage (Ancient Relic) must exclude their own source.
     Matcher.DealtDamage timing sourceMatcher whoMatcher -> guardTiming timing $ \case
       Window.DealtDamage source' _ (InvestigatorTarget iid') _ ->
         andM [matchWho iid iid' whoMatcher, sourceMatches source' sourceMatcher]
@@ -1999,6 +2006,9 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
             , sourceMatches source' sourceMatcher
             ]
         _ -> noMatch
+    Matcher.EnemyDealsDamage timing enemyMatcher -> guardTiming timing $ \case
+      Window.DealtDamage source' _ _ _ -> sourceMatches source' (Matcher.SourceIsEnemy enemyMatcher)
+      _ -> noMatch
     Matcher.EnemyDealtDamage timing damageEffectMatcher enemyMatcher sourceMatcher ->
       guardTiming timing $ \case
         Window.DealtDamage source' damageEffect (EnemyTarget eid) _ ->
@@ -2207,7 +2217,11 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
               useLastKnownLocation (EnemyAt inner) = EnemyWasAt inner
               useLastKnownLocation other = other
              in
-              elem eid <$> select (over biplate (transform useLastKnownLocation) enemyMatcher)
+              -- The enemy has already left play by the time this fires, so the
+              -- default in-play zone filter would drop it
+              elem eid
+                <$> select
+                  (IncludeOutOfPlayEnemy $ over biplate (transform useLastKnownLocation) enemyMatcher)
       Window.LeavePlay (EnemyTarget eid) -> elem eid <$> select enemyMatcher
       _ -> noMatch
     Matcher.Explored timing whoMatcher fromLocationMatcher resultMatcher -> guardTiming timing $ \case

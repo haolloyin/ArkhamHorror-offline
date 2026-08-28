@@ -97,7 +97,8 @@ import Arkham.Skill.Types qualified as Field
 import Arkham.Story.Types (Field (..))
 import Arkham.Tarot
 import Arkham.Token
-import Arkham.Treachery.CardDefs.TheDreamEaters.PointOfNoReturn qualified as Treacheries
+import Arkham.Treachery.CardDefs.TheDreamEaters.DarkSideOfTheMoon qualified as DarkSideOfTheMoon
+import Arkham.Treachery.CardDefs.TheDreamEaters.PointOfNoReturn qualified as PointOfNoReturn
 import Arkham.Treachery.Types (Field (..))
 import Arkham.UltimatumsAndBoons (
   Boon (..),
@@ -186,22 +187,15 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
         push $ LoadDeck iid (Deck $ unDeck deck <> mapMaybe (preview _PlayerCard) investigatorStoryCards)
     pure $ overAttrs (inResolutionL .~ False) a
   BeginGame -> do
-    mFalseAwakeningPointOfNoReturn <-
-      getMaybeCampaignStoryCard Treacheries.falseAwakening
-    for_ mFalseAwakeningPointOfNoReturn \falseAwakening -> do
-      tid <- getRandom
-      pushAll
-        [ AttachStoryTreacheryTo tid (toCard falseAwakening) AgendaDeckTarget
-        , PlaceDoom (toSource tid) (toTarget tid) 1
-        ]
-
-    mFalseAwakening <- getMaybeCampaignStoryCard Treacheries.falseAwakening
-    for_ mFalseAwakening \falseAwakening -> do
-      tid <- getRandom
-      pushAll
-        [ AttachStoryTreacheryTo tid (toCard falseAwakening) AgendaDeckTarget
-        , PlaceDoom (toSource tid) (toTarget tid) 1
-        ]
+    -- both Dream-Eaters printings of False Awakening begin next to the agenda deck
+    for_ [DarkSideOfTheMoon.falseAwakening, PointOfNoReturn.falseAwakening] \def -> do
+      mFalseAwakening <- getMaybeCampaignStoryCard def
+      for_ mFalseAwakening \falseAwakening -> do
+        tid <- getRandom
+        pushAll
+          [ AttachStoryTreacheryTo tid (toCard falseAwakening) AgendaDeckTarget
+          , PlaceDoom (toSource tid) (toTarget tid) 1
+          ]
 
     pure a
   BeginRound -> do
@@ -522,6 +516,11 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
     pure $ a & noRemainingInvestigatorsHandlerL .~ target
   HandleNoRemainingInvestigators target | isTarget a target -> do
     clearQueue
+    -- inResolution is set below so a resolution that kills an investigator does
+    -- not re-enter here. That also makes the ScenarioResolution wrapper take its
+    -- already-resolving branch, which never opens the end-of-game window, so
+    -- open it here instead.
+    checkWhen Window.EndOfGame
     push (ScenarioResolution NoResolution)
     pure $ a & inResolutionL .~ True -- must set to avoid redundancy when scenario kills investigator
   InvestigatorWhenEliminated _ iid mmsg -> do
@@ -561,7 +560,7 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
         then push FailSkillTest
         else do
           let shouldRevealAnother = DoNotRevealAnotherChaosToken `notElem` mods
-          when (token `elem` [#curse, #bless, #frost]) do
+          when (token `elem` [#curse, #bless, #frost, #blood]) do
             pushWhen shouldRevealAnother (DrawAnotherChaosToken iid)
           -- Homebrew custom tokens: engine-level reveal behavior comes from the
           -- token's registered 'CustomTokenReveal'. ResolveChaosToken only
@@ -741,7 +740,7 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
       & (encounterDeckL %~ withDeck (filter (/= ec)))
       & (victoryDisplayL %~ filter (/= EncounterCard ec))
       & (setAsideCardsL %~ filter (/= EncounterCard ec))
-  AddToVictory _ (SkillTarget sid) -> do
+  Do (AddToVictory _ (SkillTarget sid)) -> do
     card <- field Field.SkillCard sid
     pure $ a & (victoryDisplayL %~ (card :))
   AddToVictory _ (EventTarget eid) -> do
@@ -756,8 +755,11 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
     card <- field AssetCard tid
     pure $ a & (victoryDisplayL %~ nub . (card :))
   AddToVictory _ (TreacheryTarget tid) -> do
-    card <- field TreacheryCard tid
-    pure $ a & (victoryDisplayL %~ nub . (card :))
+    selectAny (Matcher.TreacheryWithId tid) >>= \case
+      False -> pure a
+      True -> do
+        card <- field TreacheryCard tid
+        pure $ a & (victoryDisplayL %~ nub . (card :))
   AddToVictory _ (ActTarget aid) -> do
     flipped <- field ActFlipped aid
     card <- field ActCard aid
@@ -1942,6 +1944,7 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
     pure $ a & setAsideKeysL %~ insertSet k & keysL %~ deleteSet k
   PlaceKey target k | not (isTarget a target) -> do
     pure $ a & (setAsideKeysL %~ deleteSet k)
+  MoveTokens s source _ tType n | isSource a source -> liftRunMessage (RemoveTokens s ScenarioTarget tType n) a
   MoveTokens s _ target tType n | isTarget a target -> liftRunMessage (PlaceTokens s target tType n) a
   PlaceTokens _ ScenarioTarget token amount -> do
     pure $ a & tokensL %~ addTokens token amount

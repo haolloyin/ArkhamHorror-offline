@@ -577,6 +577,7 @@ runGameMessage msg g = case msg of
           & (activeCardL .~ Nothing)
           & (activeAbilitiesL .~ mempty)
           & (actionRemovedEntitiesL .~ mempty)
+          & (tombstonesL .~ mempty)
           & (activeAbilitiesL .~ mempty)
           -- A scenario-ending action (e.g. Resign) leaves the game "in action"
           -- with a revert diff/snapshot pointing at the entities we just tore
@@ -622,6 +623,7 @@ runGameMessage msg g = case msg of
       & (activeAbilitiesL .~ mempty)
       & (playerOrderL .~ (g ^. entitiesL . investigatorsL . to keys))
       & (actionRemovedEntitiesL .~ mempty)
+      & (tombstonesL .~ mempty)
       & (activeAbilitiesL .~ mempty)
       & (foundCardsL .~ mempty)
       & (highlightedCardsL .~ mempty)
@@ -1276,6 +1278,17 @@ runGameMessage msg g = case msg of
           & actionRemovedEntitiesL
           %~ (\e -> addCardEntityWith iid setAssetPlacement (unsafeCardIdToUUID card.id) e card)
       else pure g
+  -- Snapshot an asset on its way out, while its placement is still real: the
+  -- Asset runner's `RemovedFromPlay` handler clobbers it to `OutOfPlay
+  -- RemovedZone`, after which `AssetAt`/`AssetControlledBy` can no longer resolve
+  -- it. `withRemovedEntities` splices this copy back in while a leave-play window
+  -- is open so reactions to the removal can still match what left. #5518
+  RemoveFromPlay (AssetSource aid) -> do
+    parked <-
+      maybeAsset aid <&> \case
+        Nothing -> id
+        Just asset -> tombstonesL . assetsL %~ insertEntity asset
+    pure $ g & parked
   RemoveAsset aid -> do
     removedEntitiesF <-
       if notNull (gameActiveAbilities g)
@@ -2548,8 +2561,10 @@ runGameMessage msg g = case msg of
     pure $ g & removedFromPlayL %~ (card :)
   AddToVictory miid (SkillTarget sid) -> do
     card <- field SkillCard sid
-    pushAll $ windows [Window.AddedToVictory miid card]
-    pure $ g & (entitiesL . skillsL %~ deleteMap sid) -- we might not want to remove here?
+    pushAll $ ObtainCard card.id : Do msg : windows [Window.AddedToVictory miid card]
+    pure g
+  Do (AddToVictory _ (SkillTarget sid)) -> do
+    pure $ g & (entitiesL . skillsL %~ deleteMap sid)
   AddToVictory miid (EventTarget eid) -> do
     card <- field EventCard eid
     pushAll $ windows [Window.AddedToVictory miid card]
@@ -2568,8 +2583,9 @@ runGameMessage msg g = case msg of
         pushAll $ windows [Window.AddedToVictory miid card']
         pure $ g & (entitiesL . storiesL %~ deleteMap sid)
   AddToVictory miid (TreacheryTarget tid) -> do
-    card <- field TreacheryCard tid
-    pushAll $ RemoveTreachery tid : windows [Window.AddedToVictory miid card]
+    whenM (selectAny $ TreacheryWithId tid) do
+      card <- field TreacheryCard tid
+      pushAll $ RemoveTreachery tid : windows [Window.AddedToVictory miid card]
     pure g
   AddToVictory miid (LocationTarget lid) -> do
     case preview (entitiesL . enemyLocationsL . ix lid) g of
@@ -2635,6 +2651,7 @@ runGameMessage msg g = case msg of
       & (turnPlayerInvestigatorIdL ?~ x)
       & (activeAbilitiesL .~ mempty)
       & (actionRemovedEntitiesL .~ mempty)
+      & (tombstonesL .~ mempty)
       & (entitiesL %~ clearRemovedEntities)
       -- +1 because the batch processing this BeginTurn ends at the next Ask
       -- (the investigator's first action choice). We want undo to land there,
@@ -3771,12 +3788,14 @@ runGameMessage msg g = case msg of
   Discard miid source (TreacheryTarget tid) -> do
     mcard <- fieldMay TreacheryCard tid
     for_ mcard \card -> do
-      miid' <- maybeSomeInvestigator miid
-      let windows'' = windows [Window.EntityDiscarded source (toTarget tid)]
-      wouldDo
-        (Run $ windows'' <> [Discarded (TreacheryTarget tid) source card])
-        (Window.WouldBeDiscarded (TreacheryTarget tid))
-        (Window.Discarded miid' source card)
+      inVictory <- selectAny $ VictoryDisplayCardMatch $ basic $ CardWithId $ toCardId card
+      unless inVictory do
+        miid' <- maybeSomeInvestigator miid
+        let windows'' = windows [Window.EntityDiscarded source (toTarget tid)]
+        wouldDo
+          (Run $ windows'' <> [Discarded (TreacheryTarget tid) source card])
+          (Window.WouldBeDiscarded (TreacheryTarget tid))
+          (Window.Discarded miid' source card)
 
     pure g
   UpdateHistory iid historyItem@(HistoryItem HistoryCardsDrawn n) -> do

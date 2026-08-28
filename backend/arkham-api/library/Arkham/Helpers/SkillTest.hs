@@ -415,27 +415,33 @@ getIsPerilous skillTest = case skillTestSource skillTest of
     pure $ Peril `elem` keywords
   _ -> pure False
 
+-- | Net contribution of committed icons, negated under @SkillIconsSubtract@.
+signedSkillIconCount :: HasGame m => SkillTest -> m Int
+signedSkillIconCount st = do
+  modifiers' <- getModifiers (SkillTestTarget st.id)
+  if any (`elem` modifiers') [CancelSkills, CancelEachCommittedCard]
+    then pure 0
+    else do
+      iconCount <- skillIconCount st
+      subtractIconCount <- subtractSkillIconCount st
+      let sign = if SkillIconsSubtract `elem` modifiers' then negate . abs else id
+      pure $ sign iconCount - subtractIconCount
+
 -- should likely only be used by `calculateSkillTestResultsData`
 getSkillTestModifiedSkillValue :: HasGame m => m Int
 getSkillTestModifiedSkillValue = do
   st <- getJustSkillTest
-  modifiers' <- getModifiers (SkillTestTarget st.id)
-  let cancelSkills = any (`elem` modifiers') [CancelSkills, CancelEachCommittedCard]
   currentSkillValue <- getCurrentSkillValue st
-  iconCount <- if cancelSkills then pure 0 else skillIconCount st
-  subtractIconCount <- if cancelSkills then pure 0 else subtractSkillIconCount st
-  pure $ max 0 (currentSkillValue + iconCount - subtractIconCount)
+  iconValue <- signedSkillIconCount st
+  pure $ max 0 (currentSkillValue + iconValue)
 
 getModifiedSkillValue :: HasGame m => m Int
 getModifiedSkillValue = do
   st <- getJustSkillTest
-  modifiers' <- getModifiers (SkillTestTarget st.id)
-  let cancelSkills = any (`elem` modifiers') [CancelSkills, CancelEachCommittedCard]
   currentSkillValue <- getCurrentSkillValue st
-  iconCount <- if cancelSkills then pure 0 else skillIconCount st
-  subtractIconCount <- if cancelSkills then pure 0 else subtractSkillIconCount st
+  iconValue <- signedSkillIconCount st
   chaosTokenValues <- totalChaosTokenValues st
-  pure $ max 0 (currentSkillValue + iconCount - subtractIconCount + chaosTokenValues)
+  pure $ max 0 (currentSkillValue + iconValue + chaosTokenValues)
 
 getSkillTestDifficulty :: (HasCallStack, HasGame m) => m (Maybe Int)
 getSkillTestDifficulty = do
@@ -465,9 +471,7 @@ calculateSkillTestResultsData :: HasGame m => SkillTest -> m SkillTestResultsDat
 calculateSkillTestResultsData s = do
   modifiers' <- getModifiers (SkillTestTarget s.id)
   modifiedSkillTestDifficulty <- getModifiedSkillTestDifficulty s
-  let cancelSkills = any (`elem` modifiers') [CancelSkills, CancelEachCommittedCard]
-  iconCount <- if cancelSkills then pure 0 else skillIconCount s
-  subtractIconCount <- if cancelSkills then pure 0 else subtractSkillIconCount s
+  iconValue <- signedSkillIconCount s
   currentSkillValue <- getCurrentSkillValue s
   chaosTokenValues <- totalChaosTokenValues s
   let
@@ -475,7 +479,7 @@ calculateSkillTestResultsData s = do
     addResultModifier n _ = n
     resultValueModifiers = foldl' addResultModifier 0 modifiers'
     modifiedSkillValue' =
-      max 0 (currentSkillValue + chaosTokenValues + iconCount - subtractIconCount)
+      max 0 (currentSkillValue + chaosTokenValues + iconValue)
     op = if FailTies `elem` modifiers' then (>) else (>=)
     baseSuccess = modifiedSkillValue' `op` modifiedSkillTestDifficulty
     succeedByAmount = modifiedSkillValue' - modifiedSkillTestDifficulty
@@ -486,7 +490,7 @@ calculateSkillTestResultsData s = do
       pure
         $ SkillTestResultsData
           currentSkillValue
-          ((if SkillIconsSubtract `elem` modifiers' then negate . abs else id) iconCount - subtractIconCount)
+          iconValue
           chaosTokenValues
           modifiedSkillTestDifficulty
           (resultValueModifiers <$ guard (resultValueModifiers /= 0))
@@ -580,7 +584,7 @@ getModifiedSkillTestDifficulty s = do
   imods <- filter forSkillTest <$> getModifiers s.investigator
   modifiers' <- (imods <>) <$> getModifiers (SkillTestTarget s.id)
   baseDifficulty <- getBaseSkillTestDifficulty s
-  let preModifiedDifficulty = foldr applyPreModifier baseDifficulty modifiers'
+  let preModifiedDifficulty = foldr applyPreModifier baseDifficulty modifiers' + s.difficultyIncrease
   let doubledDifficulty = foldr applyDoubler preModifiedDifficulty modifiers'
   max 0 <$> foldrM applyModifier doubledDifficulty modifiers'
  where
@@ -817,7 +821,15 @@ skillTestMatches iid source st mtchr = case Matcher.replaceYouMatcher iid mtchr 
       <$> countM
         (`Query.matches` Matcher.IncludeSealed matcher)
         (skillTestRevealedChaosTokens st <> skillTestAdditionalRevealedChaosTokens st)
-  Matcher.SkillTestOnCardWithTrait t -> elem t <$> sourceTraits (skillTestSource st)
+  -- The source may leave play mid-test (an event that shuffles itself back, for
+  -- example), so fall back to the card id captured when the test began.
+  Matcher.SkillTestOnCardWithTrait t -> do
+    traits <- sourceTraits (skillTestSource st)
+    if t `elem` traits
+      then pure True
+      else case st.sourceCard of
+        Nothing -> pure False
+        Just cid -> maybe False (`cardMatch` Matcher.CardWithTrait t) <$> getCardMaybe cid
   Matcher.SkillTestOnCard match -> (`cardMatch` match) <$> sourceToCard (skillTestSource st)
   Matcher.SkillTestOnLocation match -> case skillTestSource st of
     AbilitySource s n | n < 100 -> case s.location of

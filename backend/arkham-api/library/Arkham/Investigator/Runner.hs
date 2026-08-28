@@ -147,7 +147,8 @@ import Arkham.Timing qualified as Timing
 import Arkham.Token
 import Arkham.Token qualified as Token
 import Arkham.Treachery.CardDefs.TheCircleUndone.UnspeakableFate qualified as Treacheries
-import Arkham.Treachery.CardDefs.TheDreamEaters.PointOfNoReturn qualified as Treacheries
+import Arkham.Treachery.CardDefs.TheDreamEaters.DarkSideOfTheMoon qualified as DarkSideOfTheMoon
+import Arkham.Treachery.CardDefs.TheDreamEaters.PointOfNoReturn qualified as PointOfNoReturn
 import Arkham.Window (Window (..), mkAfter, mkWhen, mkWindow, primaryWindowTarget)
 import Arkham.Window qualified as Window
 import Arkham.Zone qualified as Zone
@@ -459,6 +460,8 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     when (a.id `elem` miid) do
       Lifted.checkWhen (Window.ChaosTokenSealed a.id token)
       Lifted.checkAfter (Window.ChaosTokenSealed a.id token)
+    Lifted.checkWhen (Window.ChaosTokenSealedOn a.id token)
+    Lifted.checkAfter (Window.ChaosTokenSealedOn a.id token)
     pure $ a & sealedChaosTokensL %~ (token :)
   SealedChaosToken token miid _ -> do
     when (a.id `elem` miid) do
@@ -503,6 +506,9 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
       %~ (\counts -> insertMap key (max 0 (findWithDefault 0 key counts + n)) counts)
   EndCheckWindow -> do
     depth <- getWindowDepth
+    -- only re-arm records whose window is still open, otherwise a record from a
+    -- closed window at the same depth is marked used again and blocks its ability
+    currentWindows <- concat <$> getWindowStack
     let
       filterAbility UsedAbility {..} = do
         getAbilityLimit (toId a) usedAbility <&> \case
@@ -516,7 +522,10 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
         ( \u ->
             if usedDepth u > depth
               then u {usedThisWindow = False}
-              else if usedDepth u == depth && depth > 0 then u {usedThisWindow = True} else u
+              else
+                if usedDepth u == depth && depth > 0 && any (`elem` currentWindows) (usedAbilityWindows u)
+                  then u {usedThisWindow = True}
+                  else u
         )
         <$> filterM filterAbility investigatorUsedAbilities
     pure $ a & usedAbilitiesL .~ usedAbilities
@@ -623,7 +632,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
                   , not
                       . ( `cardMatch`
                             oneOf
-                              [cardIs Treacheries.falseAwakening, cardIs Treacheries.falseAwakening]
+                              [cardIs DarkSideOfTheMoon.falseAwakening, cardIs PointOfNoReturn.falseAwakening]
                         )
                   ]
             )
@@ -799,6 +808,9 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
       pushAll [windowMsg, InvestigatorIsDefeated source iid]
     pure a
   InvestigatorIsDefeated source iid | iid == investigatorId -> handleInvestigatorIsDefeated a source iid
+  Msg.InvestigatorNoLongerDefeated iid
+    | iid == investigatorId ->
+        pure $ a & defeatedL .~ False & endedTurnL .~ False
   Msg.InvestigatorResigned iid | iid == investigatorId -> do
     pushAll [InvestigatorWhenEliminated (toSource a) iid (Just $ Do msg)]
     pure $ a & endedTurnL .~ True
@@ -2196,7 +2208,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
         investigators <- getInvestigators
         for_ investigators \i -> do
           mustBeCommitted <- getMustBeCommittableCards i
-          for_ mustBeCommitted $ push . SkillTestCommitCard investigatorId
+          for_ mustBeCommitted $ push . SkillTestCommitCard i
         push $ Do msg
     pure a
   Do (CommitToSkillTest skillTestId triggerMessage') -> do

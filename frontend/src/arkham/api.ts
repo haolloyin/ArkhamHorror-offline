@@ -49,6 +49,14 @@ export const fetchGame = async (gameId: string, spectate = false): Promise<Fetch
   return { playerId, game: gameData, multiplayerMode, eventId: eventId ?? null }
 }
 
+/* The "did anything happen?" probe: a single Int column, no game JSON, no lock.
+ * fetchGame is the most expensive endpoint we have, so a poller asks this first
+ * and only pays for the whole game when the step actually moved. */
+export const fetchGameStep = async (gameId: string): Promise<number> => {
+  const { data } = await api.get(`arkham/games/${gameId}/step`, { params: { _: Date.now() } })
+  return data.step
+}
+
 export const fetchGameReplay = async (gameId: string, step: number): Promise<FetchReplay> => {
   const { data } = await api.get(`arkham/games/${gameId}/replay/${step}`)
   const { totalSteps, game } = data
@@ -122,8 +130,18 @@ export const newDeck = async (
   return deckDecoder.decodePromise(data)
 }
 
-export const validateDeck = ( deckList: ArkhamDbDecklist): Promise<void> =>
-  api.post('arkham/decks/validate', deckList)
+/* Validation reads nothing and writes nothing, so a request that produced no
+ * response at all is safe to send again. Worth doing because a browser that
+ * loses a request mid-flight will not retry a POST on its own -- Firefox on
+ * HTTP/3 hangs here rather than falling back (see terraform's http3_enabled). */
+export const validateDeck = async (deckList: ArkhamDbDecklist): Promise<void> => {
+  try {
+    await api.post('arkham/decks/validate', deckList, { timeout: 15000 })
+  } catch (err) {
+    if ((err as { response?: unknown }).response) throw err
+    await api.post('arkham/decks/validate', deckList, { timeout: 15000 })
+  }
+}
 
 export const fetchDeckList = async (url: string): Promise<ArkhamDbDecklist> => {
   const { data } = await api.post('arkham/decks/fetch', { url })

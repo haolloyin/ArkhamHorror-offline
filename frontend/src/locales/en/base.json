@@ -72,6 +72,7 @@
   "Fight": "Fight",
   "Engage": "Engage",
   "Forced": "Forced",
+  "Use": "Use",
   "Reaction": "Reaction",
   "Delayed": "Delayed",
   "Objective": "Objective",
@@ -165,7 +166,7 @@
   },
   "destiny": {
     "theWitchingHour": "The Witching Hour",
-    "atDeathsDoorStep": "At Death's Door Step",
+    "atDeath'sDoorstep": "At Death's Doorstep",
     "theSecretName": "The Secret Name",
     "theWagesOfSin": "The Wages of Sin",
     "forTheGreaterGood": "For the Greater Good",
@@ -244,7 +245,8 @@
     "save": "Save",
     "saveAndUse": "Save & Use",
     "useWithoutSaving": "Use Without Saving",
-    "unimplementedError": "Could not create deck, the following cards are unimplemented:"
+    "unimplementedError": "Could not create deck, the following cards are unimplemented:",
+    "requestFailed": "Could not reach the server to validate this deck. Check your connection and try again."
   },
   "deckSyncedSuccessfully": "Deck synced successfully",
   "areYouSureDeleteDeck": "Are you sure you want to delete this deck?",

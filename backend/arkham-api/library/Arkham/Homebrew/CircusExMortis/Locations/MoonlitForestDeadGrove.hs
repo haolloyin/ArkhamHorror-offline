@@ -3,8 +3,8 @@ module Arkham.Homebrew.CircusExMortis.Locations.MoonlitForestDeadGrove (
 ) where
 
 import Arkham.Ability
-import Arkham.Homebrew.CircusExMortis.Tokens (pattern MoonToken)
 import Arkham.Homebrew.CircusExMortis.CardDefs.Locations qualified as Cards
+import Arkham.Homebrew.CircusExMortis.Tokens (pattern MoonToken)
 import Arkham.Location.Import.Lifted hiding (RevealChaosToken)
 import Arkham.Matcher
 
@@ -14,12 +14,11 @@ newtype MoonlitForestDeadGrove = MoonlitForestDeadGrove LocationAttrs
 
 moonlitForestDeadGrove :: LocationCard MoonlitForestDeadGrove
 moonlitForestDeadGrove =
-  locationWith
+  location
     MoonlitForestDeadGrove
     Cards.moonlitForestDeadGrove
     3
     (Static 2)
-    connectsToAdjacent
 
 instance HasAbilities MoonlitForestDeadGrove where
   getAbilities (MoonlitForestDeadGrove a) =

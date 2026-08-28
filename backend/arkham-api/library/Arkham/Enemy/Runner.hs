@@ -295,6 +295,16 @@ getPaths a destinations =
             pure $ if null barricadedPathIds then pathIds' else barricadedPathIds
           else pure pathIds'
 
+-- | Select locations with the enemy's `HunterConnectedTo` links applied to its own location
+selectWithEnemyConnections :: HasGame m => EnemyAttrs -> LocationMatcher -> m [LocationId]
+selectWithEnemyConnections a matcher =
+  getLocationOf a >>= \case
+    Nothing -> select matcher
+    Just loc -> do
+      mods <- getModifiers a
+      let additionalConnections = [ConnectedToWhen (LocationWithId loc) (LocationWithId lid') | HunterConnectedTo lid' <- mods]
+      withModifiers loc (toModifiers a additionalConnections) $ select matcher
+
 getActualAvailablePrey :: HasGame m => EnemyAttrs -> m [InvestigatorId]
 getActualAvailablePrey a =
   getPreyMatcher a >>= \case
@@ -783,9 +793,12 @@ instance RunMessage EnemyAttrs where
             pushAll $ MoveToward (toTarget a) (LocationWithId destinationLocationId)
               : [Move $ movement {moveMeans = TowardsN (n - 1)} | n > 1]
         ToLocationMatching matcher -> do
-          lids <- select matcher
+          -- additional connections let an enemy on an otherwise disconnected
+          -- location (e.g. the unrevealed Unvisited Isle) still find a destination
+          lids <- selectWithEnemyConnections a matcher
           player <- getLeadPlayer
-          push
+          unless (null lids)
+            $ push
             $ chooseOrRunOne player
             $ [targetLabel lid [Move $ movement {moveDestination = ToLocation lid}] | lid <- lids]
       pure $ a & movementL ?~ movement {moveFromInPlay = isInPlayPlacement enemyPlacement}
@@ -932,6 +945,28 @@ instance RunMessage EnemyAttrs where
         when (CannotBeEngaged `elem` mods) $ case enemyPlacement of
           InThreatArea iid -> push $ DisengageEnemy iid enemyId
           _ -> pure ()
+      pure a
+    PredatorsAttack | not enemyExhausted && not enemyDefeated && isInPlayPlacement a.placement -> do
+      keywords <- getModifiedKeywords a
+      unengaged <- matches enemyId UnengagedEnemy
+      mfight <- field EnemyFight enemyId
+      for_ (guard (Keyword.Predator `elem` keywords && unengaged) *> mfight) \predatorFight -> do
+        candidates <-
+          filter (/= enemyId)
+            <$> select
+              ( EnemyAt (locationWithEnemy enemyId)
+                  <> EnemyWithoutTrait Elite
+                  <> EnemyCanBeDamagedBySource (toSource a)
+              )
+        weaker <- filterM (fieldMap EnemyFight (maybe False (< predatorFight))) candidates
+        prey <- mapMaybe (\(x, y) -> (x,) <$> y) <$> forToSnd weaker (field EnemyRemainingHealth)
+        -- prefers the weakest prey, damaging every enemy tied for lowest
+        for_ (minimumMay $ map snd prey) \lowest ->
+          pushAll
+            [ nonAttackEnemyDamage Nothing (toSource a) 1 eid
+            | (eid, health) <- prey
+            , health == lowest
+            ]
       pure a
     HuntersMove | not enemyExhausted && not (isSwarm a) && isInPlayPlacement a.placement -> do
       let isAttached = isJust a.placement.attachedTo
@@ -1333,9 +1368,11 @@ instance RunMessage EnemyAttrs where
     Do (EnemyEvaded iid eid) | eid == enemyId -> do
       mods <- getModifiers iid
       emods <- getModifiers eid
+      -- Both halves read the enemy's own modifiers too: an enemy that "cannot be
+      -- disengaged" stays engaged when evaded, exactly as one that does not exhaust.
       for_
         ( evasionResult
-            (DoNotDisengageEvaded `notElem` mods)
+            (DoNotDisengageEvaded `notElem` (mods <> emods))
             (DoNotExhaustEvaded `notElem` (mods <> emods))
         )
         (`successfulEvasion` eid)
@@ -1693,15 +1730,12 @@ instance RunMessage EnemyAttrs where
               else getModifiedDamageAmount a damageAssignment
           let
             damageAssignment' = damageAssignment {damageAssignmentAmount = amount'}
-            combine l r =
-              if l.effect == r.effect
-                then l {damageAssignmentAmount = l.amount + r.amount}
-                else
-                  error
-                    $ "mismatched damage assignments\n\nassignment: "
-                    <> show l
-                    <> "\nnew assignment: "
-                    <> show r
+            -- Both halves are real damage and must count toward defeat, so
+            -- always sum. Since #5530 an ability's attack and non-attack damage
+            -- share a key (both are UseAbilitySource <attacker> <card> <idx>),
+            -- so the effects can differ; keep the incoming one rather than
+            -- crashing -- only the DealtExcessDamage window reads it.
+            combine l r = l {damageAssignmentAmount = l.amount + r.amount}
           push $ AssignedDamage (toTarget a) amount' 0
           unless damageAssignment'.delayed do
             push $ checkDefeated source eid
@@ -1910,7 +1944,9 @@ instance RunMessage EnemyAttrs where
           }
       pure $ a & (defeatedL .~ False) & (exhaustedL .~ False)
     AddToVictory _miid (isTarget a -> True) -> do
-      push $ RemoveFromPlay (toSource a)
+      -- Do (AddToVictory ...) raises the leave-play windows itself, once the card
+      -- is actually in the victory display, so only the cleanup belongs here
+      push $ RemovedFromPlay (toSource a)
       push $ Do msg
       pure a
     Do (AddToVictory miid (isTarget a -> True)) -> do
@@ -2439,7 +2475,9 @@ instance RunMessage EnemyAttrs where
     PlaceUnderneath (isTarget a -> True) cards -> do
       pure $ a & cardsUnderneathL %~ (nubBy ((==) `on` toCardId) . (<> cards))
     PlaceUnderneath _ cards -> do
-      when (toCard a `elem` cards) $ push $ RemoveEnemy (toId a)
+      -- Going underneath something is leaving play, so route through
+      -- RemoveFromPlay for the leave-play windows and attachment cleanup.
+      when (toCard a `elem` cards) $ push $ removeFromGameMessage a
       pure a
     ObtainCard c -> do
       pure $ a & cardsUnderneathL %~ filter ((/= c) . toCardId)
@@ -2485,9 +2523,9 @@ instance RunMessage EnemyAttrs where
     RemoveFromGame target | a `isTarget` target -> do
       a <$ push (RemoveFromPlay $ toSource a)
     RemoveFromPlay source | isSource a source -> do
-      windowMsg <-
-        checkWindows $ (`Window.mkWindow` Window.LeavePlay (toTarget a)) <$> [#when, #at, #after]
-      pushAll [windowMsg, RemovedFromPlay source]
+      whenLeavePlay <- checkWindows $ (`Window.mkWindow` Window.LeavePlay (toTarget a)) <$> [#when, #at]
+      afterLeavePlay <- checkWindows [mkAfter $ Window.LeavePlay (toTarget a)]
+      pushAll [whenLeavePlay, RemovedFromPlay source, afterLeavePlay]
       pure a
     DoBatch _ msg' -> do
       -- generic DoBatch handler

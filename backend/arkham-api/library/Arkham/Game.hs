@@ -300,6 +300,7 @@ newGame scenarioOrCampaignId seed playerCount difficulty includeTarotReadings =
         , gameInSearchEntities = defaultEntities
         , gamePlayers = mempty
         , gameActionRemovedEntities = mempty
+        , gameTombstones = mempty
         , gameActivePlayerId = PlayerId nil
         , gameActiveInvestigatorId = InvestigatorId "00000"
         , gameTurnPlayerInvestigatorId = Nothing
@@ -749,9 +750,17 @@ publicOtherInvestigators = \case
           $ map (\iid -> (iid, asPublicInvestigator $ lookupInvestigator iid (PlayerId nil)))
           $ Map.keys (campaignDecks attrs)
 
+-- The wire encoding must never see tombstones. `getAssetsMatching` revives a
+-- defeated asset with its pre-removal placement while a leave-play window is open
+-- (#5518), which is right for a reaction asking "what was this when it left?" and
+-- wrong for everything here: `select (AssetWithPlacement (InPlayArea iid))` put the
+-- dead asset back in the investigator's published asset list, but `game.assets`
+-- only carries live entities, so the frontend dereferenced an id that was not
+-- there. Same class of bug as `getDoomCount` projecting a field off that id.
+-- Blinding the whole encoder is one line and covers every published list at once.
 instance ToJSON gid => ToJSON (PublicGame gid) where
   toEncoding (FailedToLoadGame e) = pairs ("tag" .= String "FailedToLoadGame" <> "error" .= toJSON e)
-  toEncoding (PublicGame gid name glog g@Game {..}) = flip runReader g do
+  toEncoding (PublicGame gid name glog g@Game {..}) = flip runReader (g & tombstonesL .~ mempty) do
     locations <-
       traverse withLocationConnectionData
         =<< traverse withModifiers (filterMap (attr (not . locationOutOfGame)) $ gameLocations g)
@@ -851,7 +860,7 @@ instance ToJSON gid => ToJSON (PublicGame gid) where
           . map (\iid -> (iid, asPublicInvestigator $ lookupInvestigator iid (PlayerId nil)))
           $ deadIids
   toJSON (FailedToLoadGame e) = object ["tag" .= String "FailedToLoadGame", "error" .= toJSON e]
-  toJSON (PublicGame gid name glog g@Game {..}) = flip runReader g do
+  toJSON (PublicGame gid name glog g@Game {..}) = flip runReader (g & tombstonesL .~ mempty) do
     locations <-
       traverse withLocationConnectionData
         =<< traverse withModifiers (filterMap (attr (not . locationOutOfGame)) $ gameLocations g)
@@ -1197,7 +1206,8 @@ getInvestigatorsMatching MatcherFunc {..} matcher = do
       mostKeyCount <- getMax0 <$> selectAgg (Max0 . Set.size) InvestigatorKeys UneliminatedInvestigator
       pure $ mostKeyCount == Set.size (investigatorKeys $ toAttrs i)
     InvestigatorWithHiddenCard -> flip runMatchesM as $ \i -> do
-      andM
+      -- A hidden card in hand is an enemy *or* a treachery, not both.
+      orM
         [ selectAny $ EnemyInHandOf (InvestigatorWithId $ toId i)
         , selectAny $ TreacheryInHandOf (InvestigatorWithId $ toId i)
         ]
@@ -1456,15 +1466,16 @@ getInvestigatorsMatching MatcherFunc {..} matcher = do
       pure $ count (not . isEmptySlot) slots > 0
     InvestigatorWithMetaKey k -> flip runMatchesM as $ \i -> do
       hasEffectKey <- hasModifier (toId i) (MetaModifier (String k))
-      if hasEffectKey
-        then pure True
-        else
-          field InvestigatorMeta (toId i) >>= \case
-            Object o ->
-              case KeyMap.lookup (Key.fromText k) o of
-                Just (Bool b) -> pure b
-                _ -> pure False
-            _ -> pure False
+      -- a transfigured form's bookkeeping lands in formMeta, ours stays in meta
+      let
+        hasMetaKey = \case
+          Object o | Just (Bool b) <- KeyMap.lookup (Key.fromText k) o -> b
+          _ -> False
+        attrs = toAttrs i
+      pure
+        $ hasEffectKey
+        || hasMetaKey (investigatorMeta attrs)
+        || hasMetaKey (investigatorFormMeta attrs)
     ContributedMatchingIcons valueMatcher -> flip runMatchesM as $ \i -> do
       mSkillTest <- getSkillTest
       case mSkillTest of
@@ -1766,6 +1777,7 @@ getTreacheriesMatching matcher = do
       pure $ discardee `elem` iids
     TreacheryIsNonWeakness ->
       fieldMap TreacheryCard (`cardMatch` NonWeaknessTreachery) . toId
+    TreacheryDrawnFromDeck deck -> fieldMap TreacheryDrawnFrom (== Just deck) . toId
     TreacheryWithTitle title -> pure . (`hasTitle` title)
     TreacheryWithFullTitle title subtitle ->
       pure . (== (title <:> subtitle)) . toName
@@ -2095,6 +2107,11 @@ getGameAbilities = do
   -- so the HasGame-aware collector produces them here, already proxied so that
   -- ability.source.asset == trueMagickId for the matcher DSL.
   trueMagickInHandAbilities <- getTrueMagickInHandAbilities
+  -- Abilities the campaign grants onto cards in play (Circus Ex Mortis grants
+  -- reactions to Curse of the Rougarou / Lady Esprit for the rest of the
+  -- campaign). They are anchored by matcher-source proxies, so
+  -- replaceMatcherSources below drops them when the card is not in play.
+  let campaignAbilities' = foldMap getAbilities (modeCampaign $ g ^. modeL)
   inDiscardAssetAbilities <-
     concatMap (filter inDiscardAbility . getAbilities)
       <$> filterM unblanked (toList $ g ^. inDiscardEntitiesL . each . assetsL)
@@ -2110,6 +2127,7 @@ getGameAbilities = do
     <> inHandEventAbilities
     <> inHandAssetAbilities
     <> trueMagickInHandAbilities
+    <> campaignAbilities'
     <> inDiscardAssetAbilities
     <> actAbilities
     <> agendaAbilities
@@ -2135,6 +2153,9 @@ replaceMatcherSources ability = case abilitySource ability of
     pure $ map (\source -> ability {abilitySource = ProxySource source base}) sources
   ProxySource (EnemyMatcherSource m) base -> do
     sources <- selectMap EnemySource m
+    pure $ map (\source -> ability {abilitySource = ProxySource source base}) sources
+  ProxySource (TreacheryMatcherSource m) base -> do
+    sources <- selectMap TreacherySource m
     pure $ map (\source -> ability {abilitySource = ProxySource source base}) sources
   _ -> pure [ability]
 
@@ -3030,8 +3051,65 @@ guardYourLocation body = do
     Nothing -> pure []
     Just lid -> body lid
 
+{- | The assets named by leave-play windows currently on the stack.
+
+Only these are resurrected, not every tombstone: a leave-play window is open for
+a whole frame, and during it unrelated queries (@getDoomCount@ totalling doom for
+the UI, say) run too. Widening the result set for them surfaced ids that nothing
+downstream could dereference, throwing MissingEntity from `selectAgg`. Scoping to
+the window's own subject keeps the visibility to the entity the window is
+actually about. #5518
+
+Outside such a window nothing is resurrected at all: `select` is the liveness
+test that placement is not (#5426), and quietly reviving removed entities in
+ordinary queries is exactly the bug that comment exists to prevent.
+-}
+leavePlayWindowAssets :: HasGame m => m (Set AssetId)
+leavePlayWindowAssets = do
+  stack <- fromMaybe [] . gameWindowStack <$> getGame
+  pure $ setFromList $ mapMaybe (subjectOf . windowType) (concat stack)
+ where
+  subjectOf = \case
+    Window.AssetDefeated aid _ -> Just aid
+    Window.LeavePlay (AssetTarget aid) -> Just aid
+    Window.EntityDiscarded _ (AssetTarget aid) -> Just aid
+    _ -> Nothing
+
+{- | While a leave-play window is open, resolve asset queries against a game in
+which assets blanked by this frame's removals are restored to the snapshots
+parked by @RemoveFromPlay@ into @gameTombstones@ -- frozen copies that still
+carry their real placement. They have to live outside @gameActionRemovedEntities@:
+that map is in the message-dispatch chain, so @RemovedFromPlay@ reaches the parked
+copy too and blanks it exactly like the live one.
+
+It has to be the whole game, not just the candidate list: @filterMatcher@'s
+branches re-project by id (@AssetAt@ is
+@filterM (fieldP AssetLocation ... . toId) as@), so an entity handed in by value
+is ignored and the live, blanked copy is read instead. Same reason
+@getEnemiesMatching@'s @DefeatedEnemy@ branch re-inserts into the game env rather
+than filtering a list.
+
+The ReaderT layer has a no-op query cache (#4985), so this only wraps when a
+leave-play window is actually open; otherwise the hot path is untouched.
+-}
 getAssetsMatching :: HasGame m => AssetMatcher -> m [Asset]
 getAssetsMatching matcher = do
+  g <- getGame
+  let parked = g ^. tombstonesL . assetsL
+  if null parked
+    then getAssetsMatching' matcher
+    else do
+      subjects <- leavePlayWindowAssets
+      let revive = Map.filterWithKey (\aid _ -> aid `member` subjects) parked
+      if null revive
+        then getAssetsMatching' matcher
+        else do
+          let restore aid a = if a.placement.outOfGame then findWithDefault a aid revive else a
+          let g' = g & entitiesL . assetsL %~ \live -> mapWithKey restore live <> revive
+          runReaderT (getAssetsMatching' matcher) g'
+
+getAssetsMatching' :: HasGame m => AssetMatcher -> m [Asset]
+getAssetsMatching' matcher = do
   let
     ignoreVisibility = case matcher of
       IgnoreVisibility _ -> const True
@@ -3156,6 +3234,13 @@ getAssetsMatching matcher = do
           AttachedToAsset _ (Just inner) -> inThreatArea inner
           _ -> False
       filterM (fieldP AssetPlacement inThreatArea . toId) as
+    AssetFacedownInThreatAreaOf investigatorMatcher -> do
+      iids <- select $ IncludeEliminated investigatorMatcher
+      let
+        facedownInThreatArea = \case
+          FacedownInThreatArea iid' -> iid' `elem` iids
+          _ -> False
+      filterM (fieldP AssetPlacement facedownInThreatArea . toId) as
     AssetAttachedTo targetMatcher -> do
       let
         isValid a = case (assetPlacement (toAttrs a)).attachedTo of
@@ -3453,6 +3538,10 @@ getEventsMatching matcher = case matcher of
     EventWithDoom valueMatcher -> filterM ((`gameValueMatches` valueMatcher) . (.doom) . toAttrs) as
     EventWithToken tkn -> filterM (fieldMap EventTokens (Token.hasToken tkn) . toId) as
     EventReady -> pure $ filter (not . attr eventExhausted) as
+    EventTargetsInvestigator ->
+      pure $ filter (\a -> case attr eventTarget a of Just (InvestigatorTarget _) -> True; _ -> False) as
+    EventTargetsEnemy ->
+      pure $ filter (\a -> case attr eventTarget a of Just (EnemyTarget _) -> True; _ -> False) as
     EventMatches ms -> foldM filterMatcher as ms
     EventOneOf ms -> nub . concat <$> traverse (filterMatcher as) ms
     AnyEvent -> pure as
@@ -3615,7 +3704,8 @@ getMaybeOutOfPlayEnemy outOfPlayZone eid = do
 zone (@OutOfPlay VoidZone/PursuitZone/TheDepths/SetAsideZone/...@) and not
 face-down in a threat area. To reach those, a matcher must decorate itself
 (@OutOfPlayEnemy zone@, @IncludeOutOfPlayEnemy@, @EnemyWithPlacement (OutOfPlay
-...)@, @EnemyWithPlacement (FacedownInThreatArea ...)@, or @DefeatedEnemy@);
+...)@, @EnemyWithPlacement (FacedownInThreatArea ...)@,
+@EnemyFacedownInThreatAreaOf@, or @DefeatedEnemy@);
 when it does, we leave the full candidate set intact so the decorator can find
 them. This makes @InPlayEnemy@ redundant (a no-op) for its one real job of
 excluding zone-resident enemies. Non-zone placements that are also \"not in
@@ -3645,6 +3735,7 @@ referencesOutOfPlay = any isOutOfPlayReference . universe
     IncludeOutOfPlayEnemy {} -> True
     DefeatedEnemy {} -> True
     EnemyWithPlacement p -> isOutOfPlayPlacement p
+    EnemyFacedownInThreatAreaOf {} -> True
     _ -> False
 
 getEnemiesMatching :: (HasCallStack, HasGame m) => EnemyMatcher -> m [Enemy]
@@ -4139,6 +4230,11 @@ enemyMatcherFilter es matcher' = do
     EnemyWithEvadeValue n -> filterM (fieldP EnemyEvade (== Just n) . toId) es
     EnemyWithFight -> filterM (fieldP EnemyFight isJust . toId) es
     EnemyWithPlacement p -> filterM (fieldP EnemyPlacement (== p) . toId) es
+    EnemyFacedownInThreatAreaOf investigatorMatcher -> do
+      iids <- select $ IncludeEliminated investigatorMatcher
+      pure $ flip filter es \enemy -> case enemyPlacement (toAttrs enemy) of
+        FacedownInThreatArea iid -> iid `elem` iids
+        _ -> False
     EnemyHiddenInHand investigatorMatcher -> do
       iids <- select investigatorMatcher
       pure $ flip filter es \enemy -> case enemyPlacement (toAttrs enemy) of
@@ -4325,16 +4421,15 @@ enemyMatcherFilter es matcher' = do
         if excluded || sourceIsExcluded
           then pure False
           else
-            anyM
-              ( andM
-                  . sequence
-                    [ pure . (`abilityIs` Action.Evade)
-                    , getCanPerformAbility iid [window]
-                        . (`decreaseAbilityActionCost` 1)
-                        . overrideFunc
-                    ]
-              )
-              (getAbilities enemy)
+            Helpers.withModifiersOf iid GameSource [IgnoreActionCost]
+              $ anyM
+                ( andM
+                    . sequence
+                      [ pure . (`abilityIs` Action.Evade)
+                      , getCanPerformAbility iid [window] . overrideFunc
+                      ]
+                )
+                (getAbilities enemy)
     EnemyCanBeDefeatedBy source -> flip filterM es \enemy -> do
       modifiers <- getModifiers enemy
       let
@@ -4852,6 +4947,7 @@ getEnemyField f e = do
           then setFromList <$> select (InvestigatorAt $ locationWithEnemy enemyId)
           else pure mempty
     EnemyPlacement -> pure enemyPlacement
+    EnemyAsSelfLocation -> pure enemyAsSelfLocation
     EnemyCardsUnderneath -> pure enemyCardsUnderneath
     EnemyLastKnownLocation -> pure enemyLastKnownLocation
     Arkham.Enemy.Types.EnemyDrawnFrom -> pure enemyDrawnFrom
@@ -6080,6 +6176,7 @@ eventField e fld = do
     EventController -> pure eventController
     EventDoom -> pure attrs.doom
     EventCard -> pure $ toCard e
+    EventPlayTarget -> pure eventTarget
 
 instance Projection Event where
   getAttrs eid = toAttrs <$> getEvent eid

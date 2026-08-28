@@ -1,35 +1,82 @@
 module Arkham.Homebrew.CircusExMortis.Campaign (circusExMortis) where
 
+import Arkham.Ability
 import Arkham.Asset.Cards qualified as Assets
-import Arkham.Homebrew.CircusExMortis.Tokens (pattern MoonToken)
-import Arkham.Homebrew.CircusExMortis.CardDefs.Assets qualified as HBAssets
 import Arkham.Campaign.Import.Lifted
-import Arkham.Homebrew.CircusExMortis.CampaignSteps
-import Arkham.Homebrew.CircusExMortis.ChaosBag
-import Arkham.Homebrew.CircusExMortis.Helpers
-import Arkham.Homebrew.CircusExMortis.Key
+import Arkham.CampaignLogKey (recorded)
+import Arkham.Card
+import Arkham.Classes.HasGame (getGame)
+import Arkham.Decklist.Type (investigator_name)
+import Arkham.Game.Base (gamePerformTarotReadings)
 import Arkham.Helpers.Campaign (getCompletedSteps, getOwner)
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Modifiers (ModifierType (..), modifySelectWith, setActiveDuringSetup)
+import Arkham.Helpers.Query (getInvestigators, getLeadPlayer)
 import Arkham.Helpers.Xp (toBonus)
+import Arkham.Homebrew.CircusExMortis.CampaignSteps
+import Arkham.Homebrew.CircusExMortis.CardDefs.Assets qualified as HBAssets
+import Arkham.Homebrew.CircusExMortis.CardDefs.Skills qualified as Skills
+import Arkham.Homebrew.CircusExMortis.ChaosBag
+import Arkham.Homebrew.CircusExMortis.Helpers
+import Arkham.Homebrew.CircusExMortis.Key
+import Arkham.Homebrew.CircusExMortis.Tokens (pattern MoonToken)
 import Arkham.Investigator.Types (Field (..))
 import Arkham.Matcher
+import Arkham.Message (pattern UseThisAbility)
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
+import Arkham.Name (toTitle)
 import Arkham.Projection
-import Arkham.Homebrew.CircusExMortis.CardDefs.Skills qualified as Skills
+import Arkham.Question (DestinyDrawing (..), Question (PickDestiny))
 import Arkham.Source
 import Arkham.Target (Target (GameTarget))
+import Arkham.Tarot (TarotCard (..), TarotCardArcana (..), TarotCardFacing (Upright))
 import Arkham.Trait (Trait (Believer, Chosen, Clairvoyant, Miskatonic, Scholar))
+import Arkham.Treachery.CardDefs.CurseOfTheRougarou qualified as Treacheries
+import Data.Text qualified as T
 
 newtype CircusExMortis = CircusExMortis CampaignAttrs
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
+
+{- | The grants Scenario IV hands out (guide p14) live on the campaign, so they
+must survive into later scenarios. Each is anchored onto the card it is granted
+to with a matcher proxy, so the ability exists only while that card is in play
+and reads, in the UI, as an ability of that card.
+-}
+data GrantedOn = GrantedOn Source CardCode
+
+instance Sourceable GrantedOn where
+  toSource (GrantedOn source _) = source
+
+instance HasCardCode GrantedOn where
+  toCardCode (GrantedOn _ cardCode) = cardCode
+
+grantedOn :: (HasCardCode def, Sourceable matcher) => def -> matcher -> GrantedOn
+grantedOn def matcher = GrantedOn (proxy matcher CampaignSource) (toCardCode def)
+
+releaseAMoonTokenReaction :: AbilityType
+releaseAMoonTokenReaction = freeReaction $ ChaosTokenReleased #after You moonToken
 
 circusExMortis :: Difficulty -> CircusExMortis
 circusExMortis = campaign CircusExMortis (CampaignId ":circus-ex-mortis") "Circus Ex Mortis"
 
 instance IsCampaign CircusExMortis where
   campaignTokens = chaosBagContents
+  campaignAbilities (CircusExMortis attrs)
+    | HarmsWay `notElem` attrs.completedSteps = []
+    | otherwise =
+        [ restricted
+            (grantedOn Treacheries.curseOfTheRougarou $ treacheryIs Treacheries.curseOfTheRougarou)
+            1
+            (TreacheryExists $ treacheryIs Treacheries.curseOfTheRougarou <> TreacheryInThreatAreaOf You)
+            releaseAMoonTokenReaction
+        , playerLimit PerRound
+            $ restricted
+              (grantedOn Assets.ladyEsprit $ assetIs Assets.ladyEsprit)
+              2
+              ControlsThis
+              releaseAMoonTokenReaction
+        ]
   nextStep a = case (toAttrs a).normalizedStep of
     PrologueStep -> continue OneNightOnly
     OneNightOnly -> continue ThePrimrosePath
@@ -60,6 +107,16 @@ instance HasModifiersFor CircusExMortis where
 
 instance RunMessage CircusExMortis where
   runMessage msg c = runQueueT $ campaignI18n $ case msg of
+    -- "Curse of the Rougarou gains '[reaction] After you release a {moon}
+    -- token: Discard Curse of the Rougarou.'" (guide p14)
+    UseThisAbility iid source 1 | isProxySource (toAttrs c) source -> do
+      for_ source.treachery $ toDiscardBy iid source
+      pure c
+    -- "Lady Esprit gains '[reaction] After you release a {moon} token: Discover
+    -- a clue. (Limit once per round.)'" (guide p14)
+    UseThisAbility iid source 2 | isProxySource (toAttrs c) source -> do
+      discoverAtYourLocation NotInvestigate iid source 1
+      pure c
     CampaignStep PrologueStep -> do
       scope "additionalRules" $ flavor $ setTitle "title" >> p "moonTokens"
       scope "prologue" do
@@ -69,6 +126,37 @@ instance RunMessage CircusExMortis where
           p "minnie"
           ul $ li "addMoonTokens"
       replicateM_ 3 $ addChaosToken MoonToken
+      whenM (gamePerformTarotReadings <$> getGame) $ scope "campaignReading" do
+        leadPlayer <- getLeadPlayer
+        storyWithChooseOneM' (setTitle "title" >> p "body") do
+          labeled' "performCampaignReading" do
+            push $ SetPerformTarotReadings False
+            push
+              $ Ask leadPlayer
+              $ PickDestiny
+              $ zipWith
+                DestinyDrawing
+                [ "oneNightOnly"
+                , "thePrimrosePath"
+                , "harm'sWay"
+                , "allPointsWest"
+                , "piperAtTheGatesOfDawn"
+                , "bacchanalia"
+                , "redSunrise"
+                , "thousandToOne"
+                ]
+              $ map
+                (TarotCard Upright)
+                [ TheMagicianI
+                , TheHermitIX
+                , StrengthVIII
+                , TheChariotVII
+                , TheDevilXV
+                , TemperanceXIV
+                , TheSunXIX
+                , TheMoonXVIII
+                ]
+          labeled' "performIndividualReadings" nothing
       nextCampaignStep
       pure c
     -- Interlude: The Future and the Past (guide pp9-10)
@@ -124,6 +212,22 @@ instance RunMessage CircusExMortis where
           labeled' "addInvocationOfDiana"
             $ addCampaignCardToDeck iid DoNotShuffleIn Skills.invocationOfDiana
           labeled' "doNotAddInvocationOfDiana" nothing
+      flavor $ setTitle "title" >> p "destinyIntro"
+      investigators <- getInvestigators
+      let
+        destinyWords = ["heart", "pipes", "torch", "rock", "sigil", "stain", "prayer", "burden"]
+        chooseDestiny :: (HasI18n, ReverseQueue m) => [Text] -> [InvestigatorId] -> m ()
+        chooseDestiny _ [] = pure ()
+        chooseDestiny remaining (iid : rest) =
+          chooseOneM iid do
+            questionLabeledCard iid
+            questionLabeled' "destinyQuestion"
+            for_ remaining \word ->
+              labeled' word do
+                name <- toTitle <$> field InvestigatorName iid
+                recordSetInsert Destinies [String $ name <> ": " <> word]
+                chooseDestiny (filter (/= word) remaining) rest
+      chooseDestiny destinyWords investigators
       storyWithChooseOneM' (setTitle "title" >> p "role") do
         labeled' "determination" do
           flavor $ setTitle "title" >> p "determination"
@@ -169,6 +273,7 @@ instance RunMessage CircusExMortis where
       pure c
     -- Interlude: Good Omens (guide pp27-28)
     CampaignStep (InterludeStep 3 _) -> scope "goodOmens" do
+      flavor $ setTitle "title" >> p "destinyReminder"
       flavor $ setTitle "title" >> p "intro"
       mAmalthea <- getAmaltheaWeaverOwner
       case snd <$> mAmalthea of
@@ -282,6 +387,20 @@ instance RunMessage CircusExMortis where
               assignHorror iid CampaignSource 1
               releaseMoonToken token
       pure c
+    -- Written in Stone's Destinies (guide p19): "If an investigator is killed
+    -- or driven insane, their destiny is transferred to the investigator
+    -- chosen to replace them." Rewrite any "<old name>: <word>" entry to the
+    -- replacement's name; the decklist already carries their display name, so
+    -- no query against the (already-departed, by the time a deferred lookup
+    -- would run) old investigator is needed beyond this synchronous point.
+    ReplaceInvestigator oldIid decklist -> do
+      oldName <- toTitle <$> field InvestigatorName oldIid
+      let newName = investigator_name decklist
+      entries <- getSomeRecordSetJSON @Text Destinies
+      for_ entries \entry ->
+        for_ (T.stripPrefix (oldName <> ": ") entry) \word ->
+          recordSetReplace Destinies (recorded $ String entry) (recorded $ String $ newName <> ": " <> word)
+      lift $ defaultCampaignRunner msg c
     _ -> lift $ defaultCampaignRunner msg c
    where
     isAfterHarmsWay = do
