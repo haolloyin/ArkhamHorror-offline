@@ -86,6 +86,14 @@ checkWindows windows' = do
   mBatchId <- getCurrentBatchId
   pure $ CheckWindows $ map (\w -> w {windowBatchId = windowBatchId w <|> mBatchId}) windows'
 
+{- | Like 'checkWindows', but pins the tick at which the triggering condition
+initiated. Use it when the window is built ahead of the point at which it is
+checked (e.g. an attack's after-window, built when the attack starts) so that a
+card entering play in between can't react to a condition it wasn't around for.
+-}
+checkWindowsAt :: HasGame m => Int -> [Window] -> m Message
+checkWindowsAt tick windows' = checkWindows (map (setWindowConditionTick tick) windows')
+
 windows :: [WindowType] -> [Message]
 windows windows' = [CheckWindows $ map (mkWindow timing) windows' | timing <- [#when, #at, #after]]
 
@@ -100,7 +108,7 @@ wouldWindows window = do
   batchId <- getRandom
   pure
     ( batchId
-    , [ CheckWindows [Window timing window (Just batchId)]
+    , [ CheckWindows [Window timing window (Just batchId) Nothing]
       | timing <- [Timing.When, Timing.AtIf, Timing.After]
       ]
     )
@@ -956,6 +964,14 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
             , extendedCardMatch card cardMatcher
             ]
         _ -> noMatch
+    Matcher.DiscardedFromHandBatch timing whoMatcher sourceMatcher ->
+      guardTiming timing $ \case
+        Window.DiscardedFromHandBatch who source' _ ->
+          andM
+            [ matchWho iid who whoMatcher
+            , sourceMatches source' sourceMatcher
+            ]
+        _ -> noMatch
     Matcher.AssetWouldBeDiscarded timing assetMatcher -> guardTiming timing $ \case
       Window.WouldBeDiscarded (AssetTarget aid) -> elem aid <$> select assetMatcher
       _ -> noMatch
@@ -1038,7 +1054,7 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
       guardTiming timing $ \case
         Window.InvestigatorDefeated defeatedBy who ->
           andM
-            [ matchWho iid who whoMatcher
+            [ matchWho iid who whoMatcher.includeEliminated
             , defeatedByMatches defeatedBy defeatedByMatcher
             ]
         _ -> noMatch

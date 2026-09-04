@@ -48,6 +48,7 @@ import Arkham.Campaigns.TheForgottenAge.Supply
 import Arkham.Campaigns.TheScarletKeys.Concealed.Types
 import Arkham.Campaigns.TheScarletKeys.Key.Id
 import Arkham.Card
+import Arkham.Card.CardOption
 import Arkham.Card.Settings
 import Arkham.ChaosBag.RevealStrategy
 import Arkham.ChaosBagStepState
@@ -496,6 +497,8 @@ data Message
   | ClearAbilityUse AbilityRef
   | UpdateGlobalSetting InvestigatorId SetGlobalSetting
   | UpdateCardSetting InvestigatorId CardCode SetCardSetting
+  | -- | Set one option a card declares in @cdOptions@ for this investigator
+    SetCardOption InvestigatorId CardCode Text OptionValue
   | SetAsIfRuling AsIfRuling
   | SetUltimatumsAndBoonsEnabled Bool
   | -- | Ultimatum of The Scream: ban this ally for the rest of the campaign
@@ -722,6 +725,7 @@ data Message
     PayForAbility Ability [Window]
   | CreatedCost ActiveCostId
   | CancelCost ActiveCostId
+  | CancelCostPayment ActiveCostId
   | SetCost ActiveCostId Cost
   | SetActiveCostChosenAction ActiveCostId Action
   | PaySealCost InvestigatorId CardId Cost
@@ -853,6 +857,18 @@ data Message
   | InitDeck InitDeckAttrs -- used to initialize the deck for the campaign
   | LoadSideDeck InvestigatorId [PlayerCard] -- used to initialize the side deck for the campaign
   | LoadDecklist PlayerId ArkhamDBDecklist
+  | -- Between-scenarios roster changes. LeaveCampaign is the ask's message: the
+    -- campaign decides whether this investigator has anything worth keeping and
+    -- resolves it as one of the two below.
+    LeaveCampaign InvestigatorId
+  | -- Set the investigator aside whole (see gameRetiredInvestigators) so
+    -- UnretireInvestigator can restore their xp and trauma.
+    RetireInvestigator InvestigatorId
+  | -- Drop an investigator who never played, campaign decks and all, so nothing
+    -- remembers them and their investigator is free to be chosen again.
+    RemoveInvestigatorFromCampaign InvestigatorId
+  | UnretireInvestigator InvestigatorId
+  | JoinCampaign PlayerId
   | ReplaceInvestigator InvestigatorId ArkhamDBDecklist
   | UpgradeDeck InvestigatorId (Maybe Text) (Deck PlayerCard) -- used to upgrade deck during campaign
   | UpgradeDecklist InvestigatorId ArkhamDBDecklist
@@ -879,6 +895,7 @@ data Message
   | -- Maybe Target is handler for success
     Investigate Investigate
   | UpdateEventMeta EventId Value
+  | UpdateEventTarget EventId (Maybe Target)
   | LoadDeck InvestigatorId (Deck PlayerCard) -- used to reset the deck of the investigator
   | LookAtRevealed InvestigatorId Source Target
   | LookAtTopOfDeck InvestigatorId Target Int
@@ -1742,6 +1759,10 @@ pattern RemoveLocation lid = Remove (LocationTarget lid)
 -- Bidirectional pattern synonyms preserving the public API for EnemyAttackMessage.
 pattern EnemiesAttack :: Message
 pattern EnemiesAttack = EnemyAttackMessage EnemiesAttack_
+
+-- | Enemy phase, after 3.3: relentless enemies ready and attack again.
+pattern RelentlessEnemiesAttack :: Message
+pattern RelentlessEnemiesAttack = EnemyAttackMessage RelentlessEnemiesAttack_
 
 pattern EnemyWillAttack :: EnemyAttackDetails -> Message
 pattern EnemyWillAttack d = EnemyAttackMessage (EnemyWillAttack_ d)
@@ -2870,6 +2891,25 @@ deck setup -- the tail that used to sit in the queue behind the ask, after
 continuation, so the state flip is likewise driven by the barrier releasing rather
 than by the queue draining to the right position.
 -}
+
+{- | Open deck selection for a single seat joining a campaign already in progress.
+
+Unlike 'chooseDecks' this must not emit 'ChoosingDecks': that clears every
+investigator, which is right for setup and would wipe the table mid-campaign.
+@used@ is the investigators already played this campaign, which the new player
+may not choose.
+-}
+chooseJoinDeck :: BatchId -> PlayerId -> [InvestigatorId] -> [Message] -> Message
+chooseJoinDeck batchId pid used continuation =
+  Run
+    [ SetGameState (IsChooseDecks [pid])
+    , BeginSimultaneousAsk
+        batchId
+        JoinAll
+        (singletonMap pid (ChooseJoinDeck used))
+        (DoneChoosingDecks : continuation)
+    ]
+
 chooseDecks :: BatchId -> [PlayerId] -> [Message] -> Message
 chooseDecks batchId pids continuation =
   Run

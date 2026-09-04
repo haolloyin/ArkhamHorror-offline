@@ -160,7 +160,6 @@ import Arkham.Modifier qualified as Modifier
 import Arkham.Movement
 import Arkham.Phase
 import Arkham.Placement
-import Arkham.Plural
 import Arkham.Prelude
 import Arkham.Projection
 import Arkham.ScenarioLogKey
@@ -324,9 +323,18 @@ handleDiscardCard a@InvestigatorAttrs {..} iid source cardId msg = do
       afterWindowMsg <- checkWindows [mkAfter (Window.Discarded (Just iid) source card)]
       beforeHandWindowMsg <- checkWindows [mkWhen (Window.DiscardedFromHand iid source card)]
       afterHandWindowMsg <- checkWindows [mkAfter (Window.DiscardedFromHand iid source card)]
+      -- A bare DiscardCard outside a DiscardFromHand batch never reaches
+      -- DoneDiscarding, so it opens its own single-card batch window here.
+      batchWindowMsgs <-
+        if isJust investigatorDiscarding
+          then pure []
+          else pure <$> checkWindows [mkAfter (Window.DiscardedFromHandBatch iid source [card])]
       if inMulligan
         then push (Do msg)
-        else pushAll [beforeWindowMsg, beforeHandWindowMsg, Do msg, afterWindowMsg, afterHandWindowMsg]
+        else
+          pushAll
+            $ [beforeWindowMsg, beforeHandWindowMsg, Do msg, afterWindowMsg, afterHandWindowMsg]
+            <> batchWindowMsgs
     Nothing -> do
       card <- getCard cardId
       beforeWindowMsg <- checkWindows [mkWhen (Window.Discarded (Just iid) source card)]
@@ -342,6 +350,7 @@ handleDoDiscardCard a@InvestigatorAttrs {..} iid cardId = do
           updateHandDiscard handDiscard =
             handDiscard
               { discardAmount = max 0 (discardAmount handDiscard - 1)
+              , discardBatchCards = discardBatchCards handDiscard <> [card]
               }
         push $ AddToDiscard iid pc
         pure $ a & handL %~ filter (/= card) & discardingL %~ fmap updateHandDiscard
@@ -354,6 +363,13 @@ handleDoDiscardCard a@InvestigatorAttrs {..} iid cardId = do
 handleDoneDiscarding a@InvestigatorAttrs {..} iid = case investigatorDiscarding of
   Nothing -> pure a
   Just handDiscard -> do
+    -- One window for the whole discard: "discard 1 or more cards from hand" is a
+    -- single event, so responders must not fire once per card.
+    unless (null $ discardBatchCards handDiscard) do
+      batchWindowMsg <-
+        checkWindows
+          [mkAfter (Window.DiscardedFromHandBatch iid handDiscard.source (discardBatchCards handDiscard))]
+      push batchWindowMsg
     when (discardAmount handDiscard == 0)
       $ for_ (discardThen handDiscard) push
     pure $ a & discardingL .~ Nothing
@@ -554,6 +570,15 @@ handlePutCardIntoPlay a@InvestigatorAttrs {..} card = do
     & (handL %~ filter (/= card))
     & (bondedCardsL %~ filter (/= card))
 
+removeCardFromZones :: Card -> InvestigatorAttrs -> InvestigatorAttrs
+removeCardFromZones card a =
+  a
+    & (handL %~ filter (/= card))
+    & (discardL %~ filter ((/= card) . PlayerCard))
+    & (deckL %~ Deck . filter ((/= card) . PlayerCard) . unDeck)
+    & (cardsUnderneathL %~ filter ((/= card) . toCard))
+    & (foundCardsL . each %~ filter (/= card))
+
 handleDiscardTopOfDeck a@InvestigatorAttrs {..} iid n source mTarget = do
   ok <- can.manipulate.deck iid
   if ok
@@ -706,11 +731,16 @@ handleDoDrawCardsV2 a@InvestigatorAttrs {..} iid cardDraw = do
                 (\mtch -> partition (`cardMatch` mtch) allBeforeFilter)
                 cardDraw.discard
             doShuffleBackInEachWeakness = ShuffleBackInEachWeakness `elem` cardDrawRules cardDraw
+            -- Only the weaknesses go back unresolved, the rest of the draw is a normal draw
+            (unresolved, resolved) =
+              if doShuffleBackInEachWeakness
+                then partition (`cardMatch` WeaknessCard) allDrawn
+                else ([], allDrawn)
             handleCard c = pure $ drawThisCardFrom iid c (Just cardDraw.deck)
-          msgs <- if not doShuffleBackInEachWeakness then concatMapM handleCard allDrawn else pure []
+          msgs <- concatMapM handleCard resolved
           player <- getPlayer iid
           let
-            weaknesses = map PlayerCard $ filter (`cardMatch` WeaknessCard) allDrawn
+            weaknesses = map PlayerCard unresolved
             msgs' =
               (<> msgs)
                 $ guard (doShuffleBackInEachWeakness && notNull weaknesses)

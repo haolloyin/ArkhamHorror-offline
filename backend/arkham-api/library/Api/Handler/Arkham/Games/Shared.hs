@@ -475,13 +475,21 @@ updateGame response gameId mRoom = do
         updatedLog <- reverse <$> readIORef logRef
 
         now <- liftIO getCurrentTime
+        -- A one-player game is created WithFriends, but its player adding a second
+        -- hand makes it multihanded solo: both seats now belong to the same user.
+        -- The row was inserted by handleAnswer above, in this transaction.
+        variant' <- case response of
+          JoinCampaignAnswer | arkhamGameMultiplayerVariant /= Solo -> do
+            seats <- P.count [ArkhamPlayerArkhamGameId P.==. gameId]
+            pure $ if seats > 1 then Solo else arkhamGameMultiplayerVariant
+          _ -> pure arkhamGameMultiplayerVariant
         deleteWhere [ArkhamStepArkhamGameId P.==. gameId, ArkhamStepStep P.>. arkhamGameStep]
         let g' =
               ArkhamGame
                 arkhamGameName
                 ge
                 (arkhamGameStep + 1)
-                arkhamGameMultiplayerVariant
+                variant'
                 arkhamGameCreatedAt
                 now
         replace gameId g'
@@ -541,11 +549,17 @@ updateGame response gameId mRoom = do
               players <- P.selectList [ArkhamPlayerArkhamGameId P.==. gameId] []
               let userIds = ordNub $ map (arkhamPlayerUserId . entityVal) players
               let
+                -- Seat rows are written in two formats: the deck-selection path
+                -- stores the bare ArkhamDB code ("03004"), while the debug import
+                -- and claim-seat paths store the JSON-shaped, 'c'-prefixed one
+                -- ("c03004"). Compare both ends stripped, the way CardCode's
+                -- FromJSON does, or an earn silently credits nobody.
+                normalizeSeat = T.dropWhile (== 'c')
                 usersFor iid =
                   ordNub
                     [ arkhamPlayerUserId p
                     | p <- map entityVal players
-                    , arkhamPlayerInvestigatorId p == coerce iid
+                    , normalizeSeat (arkhamPlayerInvestigatorId p) == normalizeSeat (coerce iid)
                     ]
               directEarns <- fmap concat $ for earned \achievement -> do
                 inserted <- for userIds \uid ->

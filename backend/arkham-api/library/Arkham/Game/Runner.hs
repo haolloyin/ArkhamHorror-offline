@@ -28,6 +28,10 @@ import Arkham.DamageEffect
 import Arkham.Debug
 import Arkham.Deck qualified as Deck
 import Arkham.Decklist
+import Arkham.Decklist.RandomBasicWeakness (
+  RandomBasicWeaknessContext (..),
+  sampleRandomBasicWeaknessMatching,
+ )
 import Arkham.Difficulty
 import Arkham.Effect
 import Arkham.Effect.Types (EffectAttrs (effectFinished, effectOnDisable))
@@ -73,6 +77,7 @@ import Arkham.Helpers.Playable
 import Arkham.Helpers.Query
 import Arkham.Helpers.Ref
 import Arkham.Helpers.Scenario
+import Arkham.Helpers.Slot (retainSlotAssets, slotSource)
 import Arkham.Helpers.Source
 import Arkham.Helpers.Window hiding (getAsset, getEnemy, getLocation)
 import Arkham.History
@@ -120,7 +125,6 @@ import Arkham.Name
 import Arkham.Phase
 import Arkham.Placement
 import Arkham.Placement qualified as Placement
-import Arkham.PlayerCard
 import Arkham.Prelude
 import Arkham.Projection
 import Arkham.Scenario
@@ -177,6 +181,50 @@ revelation resolves.
 resolveRevelations :: [ModifierType] -> Message -> [Message]
 resolveRevelations modifiers' revelation =
   replicate (1 + max 0 (sum [n | AdditionalRevelations n <- modifiers'])) revelation
+
+-- | Whether a departing investigator is kept for a possible return.
+data Departure = SetAside | ForgetSeat
+  deriving stock Eq
+
+{- | Take an investigator out of the game between scenarios.
+
+'SetAside' keeps the whole entity in 'gameRetiredInvestigators', so rejoining
+restores the xp and trauma the campaign log recorded for them. 'ForgetSeat' is for
+an investigator who never played: nothing remembers them afterwards.
+-}
+removeSeat :: Departure -> InvestigatorId -> Game -> Game
+removeSeat departure iid g = case Map.lookup iid (g ^. entitiesL . investigatorsL) of
+  Nothing -> g
+  Just investigator ->
+    g
+      & (retiredInvestigatorsL %~ if departure == SetAside then Map.insert iid investigator else id)
+      & (entitiesL . investigatorsL .~ remaining)
+      & (playersL .~ remainingPlayers)
+      & (playerOrderL .~ order)
+      & (playerCountL %~ max 1 . subtract 1)
+      & (inHandEntitiesL %~ Map.delete iid)
+      & (inDiscardEntitiesL %~ Map.delete iid)
+      & (phaseHistoryL %~ Map.delete iid)
+      & (turnHistoryL %~ Map.delete iid)
+      & (roundHistoryL %~ Map.delete iid)
+      & (questionL %~ Map.delete pid)
+      & (modifiersL %~ Map.delete (InvestigatorTarget iid))
+      & (cardUsesL %~ Map.map (filter (/= iid)))
+      & (activeInvestigatorIdL %~ replaceIid)
+      & (leadInvestigatorIdL %~ replaceIid)
+      & (turnPlayerInvestigatorIdL %~ fmap replaceIid)
+      & (activePlayerIdL %~ replacePid)
+   where
+    pid = attr investigatorPlayerId investigator
+    remaining = Map.delete iid (g ^. entitiesL . investigatorsL)
+    order = filter (/= iid) (gamePlayerOrder g)
+    remainingPlayers = filter (/= pid) (gamePlayers g)
+    -- The departing seat can be the lead or the active one; hand those to whoever
+    -- is left rather than leaving the game pointing at an absent investigator.
+    heir = fromMaybe iid (headMay order <|> headMay (Map.keys remaining))
+    heirPid = fromMaybe pid (headMay remainingPlayers)
+    replaceIid x = if x == iid then heir else x
+    replacePid x = if x == pid then heirPid else x
 
 runGameMessage :: Runner Game
 runGameMessage msg g = case msg of
@@ -353,6 +401,7 @@ runGameMessage msg g = case msg of
           updateAttrs (lookupInvestigator iid' playerId) \ia ->
             ia
               { investigatorTaboo = dl.taboo
+              , investigatorCardPool = dl.cardPool
               , investigatorMutated = tabooMutated' dl.taboo (coerce iid')
               , investigatorSettings =
                   let settings = investigatorSettings ia
@@ -415,6 +464,7 @@ runGameMessage msg g = case msg of
           updateAttrs (lookupInvestigator iid' playerId) \ia ->
             ia
               { investigatorTaboo = dl.taboo
+              , investigatorCardPool = dl.cardPool
               , investigatorMutated = tabooMutated' dl.taboo (coerce iid')
               , investigatorSettings =
                   let settings = ia.settings
@@ -458,6 +508,7 @@ runGameMessage msg g = case msg of
             ( \ia ->
                 ia
                   { investigatorTaboo = dl.taboo
+                  , investigatorCardPool = dl.cardPool
                   , investigatorMutated = tabooMutated' dl.taboo (coerce iid')
                   , investigatorSettings =
                       let settings = investigatorSettings ia
@@ -504,6 +555,24 @@ runGameMessage msg g = case msg of
       %~ map replaceF
       & leadInvestigatorIdL
       %~ replaceF
+  RetireInvestigator iid -> pure $ removeSeat SetAside iid g
+  RemoveInvestigatorFromCampaign iid -> pure $ removeSeat ForgetSeat iid g
+  UnretireInvestigator iid -> case Map.lookup iid (gameRetiredInvestigators g) of
+    Nothing -> pure g
+    Just investigator -> do
+      let pid = attr investigatorPlayerId investigator
+      pure
+        $ g
+        & (retiredInvestigatorsL %~ Map.delete iid)
+        & (entitiesL . investigatorsL %~ insertEntity investigator)
+        & (playersL %~ \ps -> if pid `elem` ps then ps else ps <> [pid])
+        & (playerOrderL %~ \po -> if iid `elem` po then po else po <> [iid])
+        & (playerCountL %~ (+ 1))
+  JoinCampaign pid ->
+    pure
+      $ g
+      & (playersL %~ \ps -> if pid `elem` ps then ps else ps <> [pid])
+      & (playerCountL %~ (+ 1))
   Run msgs -> g <$ pushAll msgs
   If wType _ -> do
     window <- checkWindows [mkWindow Timing.AtIf wType]
@@ -594,12 +663,30 @@ runGameMessage msg g = case msg of
     persistedAssets <- select (AssetWithModifier Persist)
     let keepCardCache =
           Persist `elem` map modifierType (Map.findWithDefault [] GameTarget (gameModifiers g))
+    -- investigatorSlots is not part of gameEntities, so it survives the wipe below with
+    -- dangling AssetIds. `ForInvestigators [] ResetGame` normally rebuilds it right after,
+    -- but skipInvestigatorSetup (Hemlock Vale's afterPrelude) skips that message (#5593).
+    let assetSurvives aid = aid `elem` persistedAssets
+    let slotSourceGone = \case
+          AssetSource aid -> not (assetSurvives aid)
+          EventSource _ -> True
+          BothSource x y -> slotSourceGone x || slotSourceGone y
+          ProxySource x y -> slotSourceGone x || slotSourceGone y
+          _ -> False
+    let pruneSlots attrs =
+          attrs
+            { investigatorSlots =
+                Map.map
+                  (map (retainSlotAssets assetSurvives) . filter (not . slotSourceGone . slotSource))
+                  (investigatorSlots attrs)
+            }
     pure
       $ g
       & (encounterDiscardEntitiesL .~ defaultEntities)
       & (skillTestL .~ Nothing)
       & (skillTestResultsL .~ Nothing)
       & (entitiesL . assetsL %~ Map.filterWithKey (\k _ -> k `elem` persistedAssets))
+      & (entitiesL . investigatorsL . each %~ overAttrs pruneSlots)
       & (entitiesL . locationsL .~ mempty)
       & (entitiesL . enemiesL .~ mempty)
       & (entitiesL . enemyLocationsL .~ mempty)
@@ -1500,7 +1587,7 @@ runGameMessage msg g = case msg of
     pure $ g & entitiesL . investigatorsL %~ map (rewriteUsedAbilityWindows matchesP rewriteWT)
   CommitCard iid card -> do
     let alreadyCommitted = any ((== card.id) . toCardId) (g ^. entitiesL . skillsL)
-    if alreadyCommitted
+    if alreadyCommitted || isNothing (g ^. skillTestL)
       then pure g
       else do
         push $ InvestigatorCommittedCard iid card
@@ -1928,7 +2015,9 @@ runGameMessage msg g = case msg of
                     attrs
                       { eventWindows = windows'
                       , eventPlayedFrom = zone
-                      , eventTarget = mtarget
+                      , -- a target chosen before costs were paid (move events pick their
+                        -- destination up front) stands unless the play names one
+                        eventTarget = mtarget <|> eventTarget attrs
                       , eventOriginalCardCode = pcOriginalCardCode pc
                       , eventPayment = payment
                       , eventPlacement = Limbo
@@ -2531,23 +2620,25 @@ runGameMessage msg g = case msg of
   Discard _ _ (SearchedCardTarget cardId) -> do
     investigator' <- getActiveInvestigator
     let
-      card =
-        fromJustNote "must exist"
-          $ find ((== cardId) . toCardId)
+      mCard =
+        find ((== cardId) . toCardId)
           $ fromMaybe [] (headMay $ g ^. focusedCardsL)
           <> ( concat
                  . Map.elems
                  . view Investigator.foundCardsL
                  $ toAttrs investigator'
              )
-    case card of
-      PlayerCard pc -> do
+    case mCard of
+      -- The card already left the search (for instance a duplicate resolution of the ability that
+      -- discarded it as a cost). Nothing left to discard, so don't take the game down with us.
+      Nothing -> pure g
+      Just card@(PlayerCard pc) -> do
         pushAll
           [ RemoveCardFromSearch (toId investigator') cardId
           , AddToDiscard (toId investigator') pc
           ]
         pure $ g & focusedCardsL %~ map (filter (/= card))
-      _ -> error "should not be an option for other cards"
+      Just _ -> error "should not be an option for other cards"
   Discard _ _ (ActTarget aid) ->
     pure $ g & entitiesL . actsL %~ Map.filterWithKey (\k _ -> k /= aid)
   Discard _ _ (AgendaTarget aid) ->
@@ -3280,25 +3371,19 @@ runGameMessage msg g = case msg of
     pure $ g & (phaseHistoryL %~ insertHistory iid historyItem) & setTurnHistory
   FoundEncounterCardFrom {} -> pure $ g & (focusedCardsL .~ mempty) & (foundCardsL .~ mempty)
   FoundAndDrewEncounterCard {} -> pure $ g & (focusedCardsL .~ mempty) & (foundCardsL .~ mempty)
+  -- Every caller searches for a basic weakness, so this shares the deck building
+  -- sampler and only layers @matcher@ on top of the filters it already applies.
   SearchCollectionForRandom iid source matcher -> do
-    investigatorClass <- field Investigator.InvestigatorClass iid
-    playerCount <- getPlayerCount
-    let
-      multiplayerFilter =
-        if playerCount < 2
-          then notElem MultiplayerOnly . cdDeckRestrictions . toCardDef
-          else const True
-      notForClass = \case
-        OnlyClass c -> c /= investigatorClass
-        _ -> True
-      classOnlyFilter = not . any notForClass . cdDeckRestrictions . toCardDef
-      cardFilter = and . sequence [multiplayerFilter, classOnlyFilter, (`cardMatch` matcher)]
+    ctx <-
+      RandomBasicWeaknessContext
+        <$> field Investigator.InvestigatorClass iid
+        <*> getPlayerCount
+        <*> field Investigator.InvestigatorTaboo iid
+        <*> field Investigator.InvestigatorCardPool iid
+        <*> getIsStandalone
     mcard <-
-      case filter
-        (cardFilter . (`lookupPlayerCard` nullCardId))
-        (toList allPlayerCards) of
-        [] -> pure Nothing
-        (x : xs) -> Just <$> (genPlayerCard =<< sample (x :| xs))
+      traverse genPlayerCard
+        =<< sampleRandomBasicWeaknessMatching ((`cardMatch` matcher) . (`lookupPlayerCard` nullCardId)) [] ctx
     g <$ push (RequestedPlayerCard iid source mcard [])
   CancelSurge _ -> do
     ems <- effectModifiers GameSource [NoSurge]
@@ -3981,6 +4066,38 @@ preloadEntities g = do
       , gameEntities = gameEntities g <> topOfDeckEntities
       }
 
+-- NOTE: preloadEntities rebuilds the in-hand/in-search/in-discard entities from the card's current
+-- zone before every message, so a card whose parked copy is still here (kept so an in-flight
+-- ability can finish, see ResolvedAbility) can end up loaded twice at once. UseAbility is the one
+-- message both copies act on -- the parked copy from the bare handler and the live copy from the
+-- InSearch/InHand one -- and each pushes `Do msg`, so the ability resolves, and pays its cost,
+-- twice. Astounding Revelation hit this when a later search found it again (#5555), the same shape
+-- as the in-discard double resolve noted in Arkham.Event.Runner (#4764). Every other message keeps
+-- the plain dispatch.
+runActionRemovedEntities :: Runner Game
+runActionRemovedEntities msg g = case msg of
+  UseAbility {} -> do
+    let
+      live =
+        gameInSearchEntities g
+          <> fold (gameInHandEntities g)
+          <> fold (gameInDiscardEntities g)
+      removed = gameActionRemovedEntities g
+      (parkedEvents, ownEvents) =
+        Map.partitionWithKey (\k _ -> k `Map.member` entitiesEvents live) (entitiesEvents removed)
+      (parkedAssets, ownAssets) =
+        Map.partitionWithKey (\k _ -> k `Map.member` entitiesAssets live) (entitiesAssets removed)
+    removed' <- runMessage msg removed {entitiesEvents = ownEvents, entitiesAssets = ownAssets}
+    pure
+      $ g
+        { gameActionRemovedEntities =
+            removed'
+              { entitiesEvents = entitiesEvents removed' <> parkedEvents
+              , entitiesAssets = entitiesAssets removed' <> parkedAssets
+              }
+        }
+  _ -> actionRemovedEntitiesL (runMessage msg) g
+
 -- NOTE: We need preloadEntities to be a the end because the game state is not
 -- "saved" between steps here. For example if we discard a card with in discard
 -- effects (See Moonstone) it won't be loaded in the environment until 1 step
@@ -3990,7 +4107,7 @@ instance RunMessage Game where
     ( (modeL . here) (runMessage msg) g
         >>= (modeL . there) (runMessage msg)
         >>= entitiesL (runMessage msg)
-        >>= actionRemovedEntitiesL (runMessage msg)
+        >>= runActionRemovedEntities msg
         >>= itraverseOf (inHandEntitiesL . itraversed) (\i -> runMessage (InHand i msg))
         >>= itraverseOf (inDiscardEntitiesL . itraversed) (\i -> runMessage (InDiscard i msg))
         >>= (inDiscardEntitiesL . itraversed) (runMessage msg)

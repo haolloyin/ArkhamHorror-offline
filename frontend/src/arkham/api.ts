@@ -182,6 +182,15 @@ export const updateCampaignSettings = (gameId: string, campaignLog: CampaignLogS
 export const exchangeTokens = (gameId: string, source: Source, fromInvestigator: string, toInvestigator: string, token: Token, amount: number): Promise<void> =>
   api.put(`arkham/games/${gameId}`, { tag: 'ExchangeAmountsAnswer', source, fromInvestigator, toInvestigator, token, amount })
 
+export const retireInvestigator = (gameId: string, investigatorId: string): Promise<void> =>
+  api.put(`arkham/games/${gameId}`, { tag: 'RetireInvestigatorAnswer', investigatorId })
+
+export const rejoinInvestigator = (gameId: string, investigatorId: string): Promise<void> =>
+  api.put(`arkham/games/${gameId}`, { tag: 'RejoinInvestigatorAnswer', investigatorId })
+
+export const joinCampaign = (gameId: string): Promise<void> =>
+  api.put(`arkham/games/${gameId}`, { tag: 'JoinCampaignAnswer' })
+
 export const setDestiny = (gameId: string, drawings: DestinyDrawing[]): Promise<void> =>
   api.put(`arkham/games/${gameId}`, { tag: 'PickDestinyAnswer', contents: drawings })
 
@@ -196,6 +205,15 @@ export const setLocationOffset = (gameId: string, locationId: string, x: number,
 
 export const resetLocationOffsets = (gameId: string): Promise<void> =>
   updateGameRaw(gameId, { tag: 'ResetLocationOffsets' })
+
+export const setCardOption = (
+  gameId: string,
+  investigatorId: string,
+  cardCode: string,
+  key: string,
+  value: boolean | string,
+): Promise<void> =>
+  updateGameRaw(gameId, { tag: 'SetCardOption', contents: [investigatorId, cardCode, key, value] })
 
 export interface PlayabilityResponse {
   cardId: string

@@ -246,15 +246,13 @@ instance RunMessage TheDoomOfEztli where
                   NoResolution -> do_ R2
                   _ -> do_ msg
             else do
-              recordCount YigsFury (yigsFury + 3)
+              addVengeance (vengeanceLabel "investigatorsDefeated") 3
               case r of
                 NoResolution -> do_ R3
                 _ -> do_ msg
 
       pure s
     Do (ScenarioResolution n) -> scope "resolutions" do
-      vengeance <- getTotalVengeanceInVictoryDisplay
-      yigsFury <- getRecordCount YigsFury
       inPlayHarbinger <-
         selectOne
           $ mapOneOf enemyIs [Enemies.harbingerOfValusia, Enemies.harbingerOfValusiaTheSleeperReturns]
@@ -283,21 +281,21 @@ instance RunMessage TheDoomOfEztli where
           record TheInvestigatorsRecoveredTheRelicOfAges
           addRelicOfAges
           harbingerMessages
-          recordCount YigsFury $ yigsFury + vengeance
+          recordVengeance
           endOfScenario
           pure s
         Resolution 2 -> do
           resolutionWithXp "resolution2" $ allGainXp' attrs
           record AlejandroRecoveredTheRelicOfAges
           harbingerMessages
-          recordCount YigsFury $ yigsFury + vengeance
+          recordVengeance
           endOfScenario
           pure s
         Resolution 3 -> do
           resolution "resolution3"
           leadChooseOneM do
-            labeled' "goBackInside" $ do_ R4
-            labeled' "thisPlaceMustBeDestroyed" $ do_ R5
+            labeled "goBackInside" $ do_ R4
+            labeled "thisPlaceMustBeDestroyed" $ do_ R5
           pure s
         Resolution 4 -> do
           standalone <- getIsStandalone
@@ -321,7 +319,8 @@ instance RunMessage TheDoomOfEztli where
           record TheInvestigatorsRecoveredTheRelicOfAges
           addRelicOfAges
           harbingerMessages
-          recordCount YigsFury (yigsFury + vengeance + 10)
+          recordVengeance
+          addVengeance (vengeanceLabel "ruinsDestroyed") 10
           endOfScenario
           pure s
         _ -> error "Unknown Resolution"

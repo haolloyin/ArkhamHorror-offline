@@ -188,6 +188,7 @@ filterOutEnemyMessages eid ask'@(Ask pid q) = case q of
     x -> Just (Ask pid $ ChooseOneAtATimeWithAuto k x)
   ChooseUpgradeDeck -> Just (Ask pid ChooseUpgradeDeck)
   ChooseDeck -> Just ask'
+  ChooseJoinDeck {} -> Just ask'
   ChoosePaymentAmounts {} -> Just ask'
   ChooseAmounts {} -> Just ask'
   PickScenarioSettings -> Just (Ask pid PickScenarioSettings)
@@ -1176,10 +1177,6 @@ instance RunMessage EnemyAttrs where
               CannotBeAttacked -> pure False
               _ -> pure True
         when (iid `elem` iids) do
-          keywords <- getModifiedKeywords a
-          phase <- getPhase
-          let attackCount :: Int
-              attackCount = if phase == #enemy && Keyword.Relentless `elem` keywords then 2 else 1
           case iids of
             [] -> do
               whenAny (locationWithEnemy enemyId <> LocationWithModifier CountsAsInvestigatorForHunterEnemies) do
@@ -1187,25 +1184,21 @@ instance RunMessage EnemyAttrs where
                 scenarioSpecific "enemyAttacked" enemyId
               pure ()
             [x] ->
-              pushAll
-                [ EnemyWillAttack
-                    $ (enemyAttack enemyId a x)
-                      { attackDamageStrategy = enemyDamageStrategy
-                      , attackExhaustsEnemy = attackNumber == attackCount
-                      }
-                | attackNumber <- [1 .. attackCount]
-                ]
+              push
+                $ EnemyWillAttack
+                $ (enemyAttack enemyId a x)
+                  { attackDamageStrategy = enemyDamageStrategy
+                  , attackExhaustsEnemy = True
+                  }
             (x : xs) ->
-              pushAll
-                [ EnemyWillAttack
-                    $ (enemyAttack enemyId a x)
-                      { attackDamageStrategy = enemyDamageStrategy
-                      , attackExhaustsEnemy = attackNumber == attackCount
-                      , attackTarget = MassiveAttackTargets (map toTarget $ x : xs)
-                      , attackOriginalTarget = MassiveAttackTargets (map toTarget $ x : xs)
-                      }
-                | attackNumber <- [1 .. attackCount]
-                ]
+              push
+                $ EnemyWillAttack
+                $ (enemyAttack enemyId a x)
+                  { attackDamageStrategy = enemyDamageStrategy
+                  , attackExhaustsEnemy = True
+                  , attackTarget = MassiveAttackTargets (map toTarget $ x : xs)
+                  , attackOriginalTarget = MassiveAttackTargets (map toTarget $ x : xs)
+                  }
       pure a
     Do EnemiesAttack | not enemyExhausted && not enemyDefeated -> do
       mods <- getModifiers (EnemyTarget enemyId)
@@ -1219,10 +1212,6 @@ instance RunMessage EnemyAttrs where
               CannotBeAttackedBy matcher -> notElem enemyId <$> select matcher
               CannotBeAttacked -> pure False
               _ -> pure True
-        keywords <- getModifiedKeywords a
-        phase <- getPhase
-        let attackCount :: Int
-            attackCount = if phase == #enemy && Keyword.Relentless `elem` keywords then 2 else 1
         case iids of
           [] -> do
             whenAny (locationWithEnemy enemyId <> LocationWithModifier CountsAsInvestigatorForHunterEnemies) do
@@ -1230,33 +1219,34 @@ instance RunMessage EnemyAttrs where
               scenarioSpecific "enemyAttacked" enemyId
             pure ()
           [x] ->
-            pushAll
-              [ EnemyWillAttack
-                  $ (enemyAttack enemyId a x)
-                    { attackDamageStrategy = enemyDamageStrategy
-                    , attackExhaustsEnemy = attackNumber == attackCount
-                    }
-              | attackNumber <- [1 .. attackCount]
-              ]
+            push
+              $ EnemyWillAttack
+              $ (enemyAttack enemyId a x)
+                { attackDamageStrategy = enemyDamageStrategy
+                , attackExhaustsEnemy = True
+                }
           (x : xs) ->
-            pushAll
-              [ EnemyWillAttack
-                  $ (enemyAttack enemyId a x)
-                    { attackDamageStrategy = enemyDamageStrategy
-                    , attackExhaustsEnemy = attackNumber == attackCount
-                    , attackTarget = MassiveAttackTargets (map toTarget $ x : xs)
-                    , attackOriginalTarget = MassiveAttackTargets (map toTarget $ x : xs)
-                    }
-              | attackNumber <- [1 .. attackCount]
-              ]
+            push
+              $ EnemyWillAttack
+              $ (enemyAttack enemyId a x)
+                { attackDamageStrategy = enemyDamageStrategy
+                , attackExhaustsEnemy = True
+                , attackTarget = MassiveAttackTargets (map toTarget $ x : xs)
+                , attackOriginalTarget = MassiveAttackTargets (map toTarget $ x : xs)
+                }
       pure a
     AttackEnemy eid choose | eid == enemyId -> do
       let iid = choose.investigator
       let source = choose.source
       let sid = choose.skillTest
 
+      -- The after-window is built here but not checked until the whole attack
+      -- has resolved. Pin the tick so a card that enters play in between -- an
+      -- enemy spawned by an act the attack advanced, say -- can't react to an
+      -- attack that predates it (#5576).
+      conditionTick <- getWindowTick
       whenWindow <- checkWindows [mkWhen (Window.EnemyAttacked iid source enemyId)]
-      afterWindow <- checkWindows [mkAfter (Window.EnemyAttacked iid source enemyId)]
+      afterWindow <- checkWindowsAt conditionTick [mkAfter (Window.EnemyAttacked iid source enemyId)]
       attempt <- checkWindows [mkWhen (Window.AttemptToFightEnemy sid iid enemyId)]
       keywords <- getModifiedKeywords a
 
@@ -1328,9 +1318,11 @@ instance RunMessage EnemyAttrs where
     Failed (Action.Fight, target) iid _source _ _ | isTarget a target -> do
       mods <- getCombinedModifiers [toTarget iid, toTarget a]
       keywords <- getModifiedKeywords a
+      canAttack <- canBeAttackedBy enemyId iid
 
       when
-        ( (Keyword.Retaliate `elem` keywords)
+        ( canAttack
+            && (Keyword.Retaliate `elem` keywords)
             && (IgnoreRetaliate `notElem` mods)
             && (not enemyExhausted || CanRetaliateWhileExhausted `elem` mods)
         )
@@ -1360,10 +1352,7 @@ instance RunMessage EnemyAttrs where
       -- a batch fronted by the EnemyWouldBeEvaded would-windows, so a reaction
       -- that replaces the evasion (Reminiscence (Covenant)) can CancelBatch and
       -- leave the enemy engaged and ready.
-      (batchId, wouldMsgs) <- wouldWindows $ Window.EnemyWouldBeEvaded iid enemyId
-      whenWindow <- checkWindows [mkWhen $ Window.EnemyEvaded iid enemyId]
-      afterWindow <- checkWindows [mkAfter $ Window.EnemyEvaded iid enemyId]
-      push $ Would batchId $ wouldMsgs <> [whenWindow, Do msg, afterWindow]
+      Evade.pushEvadedWindows iid enemyId msg
       pure a
     Do (EnemyEvaded iid eid) | eid == enemyId -> do
       mods <- getModifiers iid
@@ -1470,9 +1459,11 @@ instance RunMessage EnemyAttrs where
     Failed (Action.Evade, target) iid _ _ _ | isTarget a target -> do
       mods <- getModifiers iid
       keywords <- getModifiedKeywords a
+      canAttack <- canBeAttackedBy enemyId iid
       pushAll
         [ EnemyAttack $ viaAlert $ (enemyAttack enemyId a iid) {attackDamageStrategy = enemyDamageStrategy}
-        | Keyword.Alert `elem` keywords
+        | canAttack
+        , Keyword.Alert `elem` keywords
         , IgnoreRetaliate `notElem` mods
         ]
       pure a
@@ -1508,17 +1499,26 @@ instance RunMessage EnemyAttrs where
       whenM (attackIsValid details a) do
         case details.investigator of
           Just iid -> do
-            mods <- getModifiers iid
+            fullMods <- getFullModifiers iid
+            let mods = map (\m -> m.kind) fullMods
             let ignoreMatchers = [m | MayIgnoreAttacksOfOpportunityOf m <- mods]
             ignoreMatches <- if null ignoreMatchers then pure False else matches enemyId (concat ignoreMatchers)
             let canIgnore = MayIgnoreAttacksOfOpportunity `elem` mods || ignoreMatches
             let willIgnore = IgnoreAttacksOfOpportunity `elem` mods
             if (canIgnore || willIgnore) && details.kind == AttackOfOpportunity
-              then do
-                player <- getPlayer iid
-                when canIgnore do
-                  push
-                    $ chooseOne player [Label "$label.ignoreAttackOfOpportunity" [], Label "$label.doNotIgnore" [Do msg]]
+              then
+                if canIgnore
+                  then do
+                    player <- getPlayer iid
+                    push
+                      $ chooseOne player [Label "$label.ignoreAttackOfOpportunity" [], Label "$label.doNotIgnore" [Do msg]]
+                  else do
+                    -- A forced ignore drops the attack silently, but it was still made
+                    let ignoredBy = mapMaybe (\m -> m.card) $ filter (\m -> m.kind == IgnoreAttacksOfOpportunity) fullMods
+                    withI18n $ cardNameVar a $ case ignoredBy of
+                      (card : _) -> withVar "source" (String $ format card) $ sendI18n "log.attackOfOpportunityIgnoredBy"
+                      [] -> sendI18n "log.attackOfOpportunityIgnored"
+                    push $ UpdateHistory iid (HistoryItem HistoryAttacksOfOpportunity 1)
               else push $ Do msg
           _ -> push $ Do msg
       pure $ a & wantsToAttackL .~ False
@@ -1944,17 +1944,20 @@ instance RunMessage EnemyAttrs where
           }
       pure $ a & (defeatedL .~ False) & (exhaustedL .~ False)
     AddToVictory _miid (isTarget a -> True) -> do
-      -- Do (AddToVictory ...) raises the leave-play windows itself, once the card
-      -- is actually in the victory display, so only the cleanup belongs here
-      push $ RemovedFromPlay (toSource a)
-      push $ Do msg
+      whenLeavePlay <- checkWindows $ (`Window.mkWindow` Window.LeavePlay (toTarget a)) <$> [#when, #at]
+      pushAll [whenLeavePlay, RemovedFromPlay (toSource a), Do msg]
       pure a
     Do (AddToVictory miid (isTarget a -> True)) -> do
       selectEach (SwarmOf a.id) (push . RemoveEnemy)
       mloc <- getLocationOf a
       mods <- getModifiers a
       let card = toCard a
-      pushAll $ windows [Window.LeavePlay (toTarget a), Window.AddedToVictory miid card]
+      pushAll
+        [ CheckWindows [mkWhen $ Window.AddedToVictory miid card]
+        , CheckWindows [Window.mkWindow #at $ Window.AddedToVictory miid card]
+        , CheckWindows
+            [mkAfter $ Window.LeavePlay (toTarget a), mkAfter $ Window.AddedToVictory miid card]
+        ]
       unless (StayInVictory `elem` mods) $ removeEnemy a
       withLocationOf a $ for_ a.keys . placeKey
       pure

@@ -23,10 +23,12 @@ import Treachery from '@/arkham/components/Treachery.vue';
 import TokenPool, { type TokenPoolItem } from '@/arkham/components/TokenPool.vue';
 import CardsUnderIndicator from '@/arkham/components/CardsUnderIndicator.vue';
 import AbilitiesMenu from '@/arkham/components/AbilitiesMenu.vue'
+import CardConfig from '@/arkham/components/CardConfig.vue'
 import Story from '@/arkham/components/Story.vue';
 import { useCardFlip } from '@/arkham/composables/useCardFlip';
-import Token from '@/arkham/components/Token.vue';
+import SealedChaosTokens from '@/arkham/components/SealedChaosTokens.vue';
 import * as Arkham from '@/arkham/types/Asset';
+import { useSettings } from '@/stores/settings';
 import { isManifestedSpiritAsset } from '@/arkham/spiritVisuals';
 import { useDbCardStore } from '@/stores/dbCards'
 
@@ -35,7 +37,11 @@ const props = withDefaults(defineProps<{
   asset: Arkham.Asset
   playerId: string
   atLocation?: boolean
-}>(), { atLocation: false })
+  // Played, but held out of play until a slot frees up
+  pending?: boolean
+  // A target label on this asset means discarding it to free that slot
+  discardToMakeRoom?: boolean
+}>(), { atLocation: false, pending: false, discardToMakeRoom: false })
 
 const debugging = ref(false)
 const frame = ref(null)
@@ -162,6 +168,7 @@ function canAdjustSanity(c: Message): boolean {
 
 const cardAction = computed(() => choices.value.findIndex(isCardAction))
 const canInteract = computed(() => abilities.value.length > 0 || cardAction.value !== -1)
+const showDiscardMark = computed(() => props.discardToMakeRoom && cardAction.value !== -1)
 const healthAction = computed(() => choices.value.findIndex(canAdjustHealth))
 const sanityAction = computed(() => choices.value.findIndex(canAdjustSanity))
 
@@ -217,6 +224,7 @@ const cardsUnderneath = computed(() => props.asset.cardsUnderneath)
 const keys = computed(() => props.asset.keys)
 
 const debug = useDebug()
+const settings = useSettings()
 const dragging = ref(false)
 
 const assetTokens = computed(() => {
@@ -314,10 +322,14 @@ const storyImage = computed(() => {
 const faceImage = computed(() => storyImage.value ?? image.value)
 const { displayedImage, flipping } = useCardFlip(faceImage)
 
+// Permanents can be dragged into (and back out of) the hidden stack whenever
+// that setting is on, not just in debug.
+const canTuck = computed(() => settings.hideInertCards && props.asset.permanent)
+
 function startDrag(event: DragEvent) {
   dragging.value = true
   if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.effectAllowed = 'copyMove'
     event.dataTransfer.setData('text/plain', JSON.stringify({ "tag": "AssetTarget", "contents": props.asset.id }))
   }
 }
@@ -383,7 +395,7 @@ function startDrag(event: DragEvent) {
           />
           <span class="deck-size">{{asset.spiritDeck.length}}</span>
         </div>
-        <div class="card-wrapper" :class="{ 'asset--can-interact': canInteract}">
+        <div class="card-wrapper" :class="{ 'asset--can-interact': canInteract, 'asset--pending': pending }">
           <font-awesome-icon v-if="isSpirit" :icon="['fas', 'ghost']" class="spirit-icon" />
           <span v-if="jammed" class="status-icon" v-tooltip="'Jammed'">
             <font-awesome-icon :icon="['fas', 'wrench']" />
@@ -397,12 +409,19 @@ function startDrag(event: DragEvent) {
             :class="{ exhausted, 'ability-target': isHighlighted || isAttackTarget, 'card--flipping': flipping }"
             :style="{ '--ui-rotation': `${uiRotation}deg` }"
             :data-rotation="uiRotation || undefined"
-            :draggable="debug.active"
+            :draggable="debug.active || canTuck"
             @dragstart="startDrag"
             @click="clicked"
             :data-customizations="JSON.stringify(asset.customizations)"
             :data-chained="asset.chained || undefined"
           />
+          <span v-if="showDiscardMark" class="discard-mark" aria-hidden="true" @click="clicked">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v10" />
+              <path d="M8 9.5 12 13.5 16 9.5" />
+              <path d="M3.5 15v3.5a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2V15" />
+            </svg>
+          </span>
           <div v-if="investigators.length > 0" class="in-vehicle">
             <div v-for="investigator in investigators" :key="investigator.id">
               <Investigator
@@ -421,7 +440,12 @@ function startDrag(event: DragEvent) {
             <KeyToken v-for="k in keys" :key="keyToId(k)" :keyToken="k" :game="game" :playerId="playerId" @choose="choose" />
           </div>
           <TokenPool :tokens="assetTokens" :extra-items="forcedTokenItems" @choose="chooseTokenPoolItem" />
-          <Token v-for="(sealedToken, index) in asset.sealedChaosTokens" :key="index" :token="sealedToken" :playerId="playerId" :game="game" @choose="choose" />
+          <SealedChaosTokens
+            :tokens="asset.sealedChaosTokens"
+            :game="game"
+            :playerId="playerId"
+            @choose="choose"
+          />
         </div>
         <AbilitiesMenu
           v-model="showAbilities"
@@ -430,7 +454,9 @@ function startDrag(event: DragEvent) {
           :game="game"
           @choose="chooseAbility"
         />
+        <CardConfig :game="game" :playerId="playerId" :cardCode="cardCode" />
       </div>
+      <span v-if="pending" class="pending-label">{{ $t('needsSlots') }}</span>
       <CardsUnderIndicator
         v-if="cardsUnderneath.length > 0"
         class="asset-cards-under"
@@ -540,6 +566,68 @@ function startDrag(event: DragEvent) {
     border: 2px solid var(--select);
     cursor:pointer;
   }
+}
+
+.asset--pending {
+  img.card {
+    box-shadow: 0 0 0 2px var(--seeker), 0 0 10px rgba(239, 163, 69, 0.35);
+    filter: grayscale(0.55) brightness(0.72);
+  }
+
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 5px;
+    background: repeating-linear-gradient(135deg, rgba(239, 163, 69, 0.16) 0 6px, transparent 6px 12px);
+    pointer-events: none;
+  }
+}
+
+.pending-label {
+  margin-top: 3px;
+  padding: 2px 3px;
+  border-radius: 2px;
+  background: var(--seeker);
+  color: var(--seeker-text);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+/* Says what clicking does. Red and an X are already spoken for by damage, so
+   this is the selection magenta rather than a warning. */
+.discard-mark {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: var(--z-index-3);
+  display: grid;
+  place-items: center;
+  width: clamp(13px, calc(var(--card-width) * 0.3), 20px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: 1px solid var(--select-dark);
+  background: var(--background-dark);
+  color: #f4dbf4;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+  cursor: pointer;
+  transition: background 120ms ease, transform 120ms ease;
+
+  svg {
+    width: 62%;
+    height: 62%;
+    display: block;
+  }
+}
+
+.card-wrapper:hover .discard-mark {
+  background: var(--select-dark);
+  color: #fff;
+  transform: scale(1.08);
 }
 
 .pool {

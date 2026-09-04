@@ -378,6 +378,28 @@ const uiLock = ref<boolean>(false)
 const showSettings = ref(false)
 const showHistory = ref(false)
 const processing = ref(false)
+// The spinner is only worth showing for a wait a player would otherwise wonder
+// about. Most answers round-trip in well under this, so gating it behind a delay
+// keeps a plain "continue" click from flickering an animation on every press.
+const showProcessing = ref(false)
+let processingTimer: ReturnType<typeof setTimeout> | null = null
+watch(processing, (busy) => {
+  if (processingTimer) {
+    clearTimeout(processingTimer)
+    processingTimer = null
+  }
+  if (!busy) {
+    showProcessing.value = false
+    return
+  }
+  processingTimer = setTimeout(() => {
+    showProcessing.value = true
+  }, 400)
+})
+// Set while a story/interlude answer is in flight. Those screens keep their text
+// on display for the round-trip instead of blanking their question, so this is
+// what stops the passage from being answered a second time meanwhile.
+const storyAnswerPending = ref(false)
 const oldQuestion = ref<Record<string, Question> | null>(null)
 const skipAllPending = ref<Set<string>>(new Set())
 const { t } = useI18n()
@@ -566,6 +588,7 @@ const isActualScenarioView = computed(() => {
   const activeQuestionTag = questionTag(question.value)
   return activeQuestionTag !== 'ChooseUpgradeDeck'
     && activeQuestionTag !== 'ChooseDeck'
+    && activeQuestionTag !== 'ChooseJoinDeck'
     && activeQuestionTag !== 'PickScenarioSettings'
     && activeQuestionTag !== 'PickCampaignSettings'
     && activeQuestionTag !== 'ContinueCampaign'
@@ -746,6 +769,7 @@ const gameCardOnlyDecoder = JsonDecoder.object<GameCardOnly>(
 // Socket Handling
 const onError = () => {
   processing.value = false
+  storyAnswerPending.value = false
   if (game.value && oldQuestion.value) {
     setGameQuestion(oldQuestion.value)
   }
@@ -803,6 +827,7 @@ function applyGameUpdate(updatedGame: Arkham.Game, locked: boolean) {
   const previousGame = game.value
   const apply = async () => {
     game.value = nextGame
+    storyAnswerPending.value = false
     await nextTick()
   }
   const transitionDocument = document as Document & {
@@ -998,6 +1023,7 @@ async function resyncGame() {
     applyGameUpdate(refetched, uiLock.value)
     updateGameLog(refetched.log)
     processing.value = false
+    storyAnswerPending.value = false
   } catch (e) {
     console.error('Resync after reconnect failed', e)
   } finally {
@@ -1017,13 +1043,15 @@ const handleResult = (result: ServerResult) => {
   switch (result.tag) {
     case 'GameError':
       if (props.spectate) return
+      storyAnswerPending.value = false
       error.value = result.contents
       if (game.value && oldQuestion.value) {
         setGameQuestion(oldQuestion.value)
       }
       return
     case 'GameMessage':
-      gameLog.value = Object.freeze([...gameLog.value, localize(result.contents)])
+      // Raw, like the game payload's entries: GameMessage.vue localizes at render
+      gameLog.value = Object.freeze([...gameLog.value, result.contents])
       return
     case 'GameShowDiscard':
       emitter.emit('showDiscards', result.contents)
@@ -1371,6 +1399,11 @@ const handleKeyPress = (event: KeyboardEvent) => {
   if (event.key === ' ' || event.code === 'Space') {
     event.preventDefault()
 
+    if (gameCard.value || tarotCards.value.length > 0) {
+      continueUI()
+      return
+    }
+
     const skipTriggers = choices.value.findIndex(
       (c) => c.tag === Message.MessageType.SKIP_TRIGGERS_BUTTON,
     )
@@ -1660,6 +1693,14 @@ function shouldPreserveFocusedCardChoice() {
   return Boolean(game.value.question[playerId.value])
 }
 
+// Read questions (story passages, interludes, resolutions) render as a full-page
+// spread rather than a widget over the board.
+function isStoryQuestion(question: Question | null | undefined): boolean {
+  if (!question) return false
+  const inner = question.tag === 'QuestionLabel' ? question.question : question
+  return inner?.tag === 'Read'
+}
+
 // Callbacks
 async function choose(idx: number) {
   if (processing.value) return
@@ -1667,7 +1708,14 @@ async function choose(idx: number) {
     oldQuestion.value = game.value.question
     const questionVersion = game.value.scenarioSteps
     if (!shouldPreserveFocusedChaosWindow() && !shouldPreserveFocusedCardChoice()) {
-      setGameQuestion({})
+      // A story screen is the whole page. Blanking its question empties the view
+      // for the round-trip and the next passage pops in from nothing, so hold the
+      // text and mark its choices spent instead.
+      if (isStoryQuestion(game.value.question[playerId.value ?? ''])) {
+        storyAnswerPending.value = true
+      } else {
+        setGameQuestion({})
+      }
     }
     sendAnswer(
       JSON.stringify({
@@ -1730,13 +1778,6 @@ async function chooseAmounts(amounts: Record<string, number>): Promise<void> {
   }
 }
 
-function localize(str: string): string {
-  if (str.startsWith('$')) {
-    return t(str.slice(1))
-  }
-  return str
-}
-
 async function update(state: Arkham.Game) {
   game.value = state
   followPendingUpgradeQuestion(state)
@@ -1785,6 +1826,7 @@ provide('switchInvestigator', switchInvestigator)
 provide('solo', solo)
 provide('spectate', computed(() => props.spectate))
 provide('processing', processing)
+provide('storyAnswerPending', storyAnswerPending)
 provide('uiLock', uiLock)
 provide('skipAllTriggers', skipAllTriggers)
 provide('skipAllAvailable', skipAllAvailable)
@@ -1864,6 +1906,7 @@ onUnmounted(() => {
   if (focusLightAnimationFrame !== null) cancelAnimationFrame(focusLightAnimationFrame)
   window.removeEventListener('arkham-setting-change', handleSettingChange)
   if (chooseDecksPoll !== null) clearTimeout(chooseDecksPoll)
+  if (processingTimer !== null) clearTimeout(processingTimer)
   delete (window as any).sendDebug
   delete (window as any).undo
   delete (window as any).debugChoose
@@ -1893,7 +1936,7 @@ onUnmounted(() => {
         <button @click="error = null">{{ $t('close') }}</button>
       </div>
     </dialog>
-    <div v-if="processing" class="processing">
+    <div v-if="showProcessing" class="processing">
       <LottieAnimation
         :animation-data="processingJSON"
         :auto-play="true"

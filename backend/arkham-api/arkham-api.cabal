@@ -2407,6 +2407,7 @@ library
       Arkham.Card
       Arkham.Card.CardCode
       Arkham.Card.CardDef
+      Arkham.Card.CardOption
       Arkham.Card.CardType
       Arkham.Card.Class
       Arkham.Card.Cost
@@ -2451,6 +2452,7 @@ library
       Arkham.Deck
       Arkham.DeckBuilding.Adjustment
       Arkham.Decklist
+      Arkham.Decklist.CardPool
       Arkham.Decklist.RandomBasicWeakness
       Arkham.Decklist.Type
       Arkham.Decks
@@ -4033,6 +4035,7 @@ library
       Arkham.Helpers.Calculation
       Arkham.Helpers.Campaign
       Arkham.Helpers.Card
+      Arkham.Helpers.CardOption
       Arkham.Helpers.ChaosBag
       Arkham.Helpers.ChaosBag.Lifted
       Arkham.Helpers.ChaosToken
@@ -6288,7 +6291,6 @@ library
       Arkham.Phase
       Arkham.Placement
       Arkham.PlayerCard
-      Arkham.Plural
       Arkham.Prelude
       Arkham.Projection
       Arkham.Query
@@ -8422,6 +8424,7 @@ test-suite spec
       Arkham.Asset.Assets.HardKnocks2Spec
       Arkham.Asset.Assets.HardKnocksSpec
       Arkham.Asset.Assets.HeirloomOfHyperboreaSpec
+      Arkham.Asset.Assets.HelplessPassengerSpec
       Arkham.Asset.Assets.HolyRosarySpec
       Arkham.Asset.Assets.Hyperawareness2Spec
       Arkham.Asset.Assets.HyperawarenessSpec
@@ -8516,6 +8519,7 @@ test-suite spec
       Arkham.Enemy.Cards.TheDreamEaters.DarkSideOfTheMoon.MoonBeastSpec
       Arkham.Enemy.Cards.TheDreamEaters.TheSearchForKadath.HordeOfNightSpec
       Arkham.Enemy.Cards.TheDrownedCity.DeepOnes.ElderDeepOneSpec
+      Arkham.Enemy.Cards.TheDrownedCity.StarSpawn.CoralStarSpawnSpec
       Arkham.Enemy.Cards.TheFeastOfHemlockVale.TheTwistedHollow.StalkingHybridSpec
       Arkham.Enemy.Cards.TheInnsmouthConspiracy.IntoTheMaelstrom.DagonsBroodSpec
       Arkham.Enemy.Cards.ThePathToCarcosa.Hauntings.PoltergeistSpec
@@ -8556,6 +8560,7 @@ test-suite spec
       Arkham.Event.Events.HiddenPocketSpec
       Arkham.Event.Events.HotStreak4Spec
       Arkham.Event.Events.IllTakeThatSpec
+      Arkham.Event.Events.JoinTheCaravan1Spec
       Arkham.Event.Events.LieInWaitSpec
       Arkham.Event.Events.LiveAndLearnSpec
       Arkham.Event.Events.LookWhatIFoundSpec
@@ -8590,6 +8595,7 @@ test-suite spec
       Arkham.Game.ChooseDecksSpec
       Arkham.Game.DiffSpec
       Arkham.Game.PendingGameOptionsSpec
+      Arkham.Game.ResetGameSpec
       Arkham.GameSpec
       Arkham.Helpers.EnemySpec
       Arkham.Helpers.InvestigatorSpec
@@ -8629,6 +8635,7 @@ test-suite spec
       Arkham.Location.Cards.TheDreamEaters.BeyondTheGatesOfSleep.EnchantedWoodsVillageOfZoogsSpec
       Arkham.Location.Cards.TheInnsmouthConspiracy.FloodedCaverns.UndergroundRiverSpec
       Arkham.Location.TypesSpec
+      Arkham.Matcher.AlternatePrintingSpec
       Arkham.Matcher.CoveredByAnyInPlayEnemySpec
       Arkham.Matcher.LegacyJSONSpec
       Arkham.Matcher.NearestLocationToMostSpec

@@ -35,6 +35,7 @@ import Arkham.Helpers (unDeck)
 import Arkham.Helpers.Ability (getCanPerformAbility)
 import Arkham.Helpers.Calculation (calculate)
 import Arkham.Helpers.Card (cardListMatches, getModifiedCardCost)
+import Arkham.Helpers.CardOption (getCardOptionSet)
 import Arkham.Helpers.ChaosBag (
   getRemainingBlessTokens,
   getRemainingCurseTokens,
@@ -53,6 +54,7 @@ import Arkham.Helpers.Phase (matchPhase)
 import Arkham.Helpers.Placement (onSameLocation)
 import {-# SOURCE #-} Arkham.Helpers.Playable (getIsPlayable, getIsPlayableWithResources)
 import Arkham.Helpers.Query (getPlayerCount)
+import {-# SOURCE #-} Arkham.Helpers.Ref (sourceToMaybeCard)
 import Arkham.Helpers.Scenario (
   getScenarioDeck,
   getVictoryDisplay,
@@ -112,6 +114,10 @@ passesCriteria iid mcard source' requestor windows' ctr = case ctr of
   Criteria.IfCriteria p a b -> do
     pv <- passesCriteria iid mcard source' requestor windows' p
     passesCriteria iid mcard source' requestor windows' $ if pv then a else b
+  Criteria.CardOptionSet k ->
+    sourceToMaybeCard source' >>= \case
+      Nothing -> pure False
+      Just c -> getCardOptionSet iid (toCardCode c) k
   Criteria.CanEnterThisVehicle -> do
     case source.asset of
       Just aid -> do
@@ -863,7 +869,7 @@ passesEnemyCriteria iid source windows' criterion = do
       -- TODO: should not be multiple enemies, but if so need to OR not AND matcher
       let
         getAttackingEnemy = \case
-          Window _ (Window.EnemyAttacks details) _ -> Just $ attackEnemy details
+          Window _ (Window.EnemyAttacks details) _ _ -> Just $ attackEnemy details
           _ -> Nothing
        in
         case mapMaybe getAttackingEnemy windows' of

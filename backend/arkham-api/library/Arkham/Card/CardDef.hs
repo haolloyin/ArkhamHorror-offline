@@ -8,6 +8,7 @@ import Arkham.Actions as X
 import Arkham.Asset.Uses
 import Arkham.Calculation
 import Arkham.Card.CardCode
+import Arkham.Card.CardOption
 import Arkham.Card.CardType
 import Arkham.Card.Cost
 import Arkham.ClassSymbol
@@ -166,6 +167,16 @@ may be different printings (their derived 'Eq' would say no).
 canonicalCardCode :: CardDef -> CardCode
 canonicalCardCode c = foldl' min (cdCardCode c) (cdAlternateCardCodes c)
 
+{- | Is @cardCode@ one of the printings of this entity's card? 'toCardCodePairs'
+gives every printing its own 'CardDef' with 'cdCardCode' rewritten, so a bare
+@toCardCode x == cardCode@ misses reprints (Revised Core, Chapter 2). Used by the
+'*Is' matchers; still goes through the loose 'Eq CardCode' so a/b sides keep
+cross-matching (see 'Arkham.Matcher.EnemyIsExact' for the strict variant).
+-}
+isPrintingOf :: (HasCardCode a, HasCardDef a) => CardCode -> a -> Bool
+isPrintingOf cardCode x =
+  toCardCode x == cardCode || cardCode `elem` (toCardDef x).cardCodes
+
 {- | 'cdTags' marker for cards with an ability that triggers on
 'Arkham.Matcher.EnemyReadies' or 'Arkham.Matcher.EnemyWouldReady'. Any such card MUST
 carry this tag: 'Arkham.Game.hasEnemyReadyAbilities' skips the enemy-ready window
@@ -174,6 +185,27 @@ outright when no tagged card is in play, so an untagged card's ability never fir
 -}
 enemyReadyTag :: Text
 enemyReadyTag = "enemy-ready"
+
+{- | 'cdTags' marker for a card whose entire text resolves at deck creation or
+between scenarios (deck size, deckbuilding options, purchase cost, purchase
+trauma/XP). The engine never does anything with it during play.
+-}
+noGameplayEffectTag :: Text
+noGameplayEffectTag = "no-gameplay-effect"
+
+{- | 'cdTags' marker for a card whose entire text resolves once, at or before
+setup, and then never acts again: a slot grant applied on entering play, or a
+draw driven from the setup code. The card stays in play but nothing consults it.
+-}
+setupOnlyTag :: Text
+setupOnlyTag = "setup-only"
+
+{- | 'cdTags' marker for a card that is spent once its once-per-game ability has
+been used, rather than at a fixed point like setup. Clients decide it is spent by
+looking for the card in the controller's used abilities.
+-}
+hideWhenUsedTag :: Text
+hideWhenUsedTag = "hide-when-used"
 
 data IsRevelation
   = NoRevelation
@@ -272,6 +304,8 @@ data CardDef = CardDef
   decide whether to prompt the active player for ordering.
   -}
   , cdMeta :: Map Text Value
+  , cdOptions :: [CardOption]
+  -- ^ Player-configurable options this card offers; see "Arkham.Card.CardOption".
   , cdTags :: [Text]
   , cdOutOfPlayEffects :: [OutOfPlayEffect]
   , cdHealth :: Maybe Health
@@ -421,6 +455,7 @@ emptyCardDef cCode name cType =
     , cdCanCommitWhenNoIcons = False
     , cdCommitTrigger = False
     , cdMeta = mempty
+    , cdOptions = []
     , cdTags = []
     , cdOutOfPlayEffects = []
     , cdHealth = Nothing
@@ -562,6 +597,7 @@ cardDefKeyValues CardDef {..} =
         cdCanCommitWhenNoIcons
     , pairWhen cdCommitTrigger "commitTrigger" cdCommitTrigger
     , pairWhen (not $ null cdMeta) "meta" cdMeta
+    , pairWhen (not $ null cdOptions) "options" cdOptions
     , pairWhen (not $ null cdTags) "tags" cdTags
     , pairWhen (not $ null cdOutOfPlayEffects) "outOfPlayEffects" cdOutOfPlayEffects
     , pairJust "health" cdHealth
@@ -638,6 +674,7 @@ instance FromJSON CardDef where
       o .:? "canCommitWhenNoIcons" .!= (null cdSkills && cdCardType == SkillType)
     cdCommitTrigger <- o .:? "commitTrigger" .!= False
     cdMeta <- o .:? "meta" .!= mempty
+    cdOptions <- o .:? "options" .!= []
     cdTags <- o .:? "tags" .!= []
     inHandEffects <- o .:? "cardInHandEffects" .!= False
     inDiscardEffects <- o .:? "cardInDiscardEffects" .!= False

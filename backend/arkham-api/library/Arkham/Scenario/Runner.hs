@@ -65,6 +65,7 @@ import Arkham.Helpers.Calculation
 import Arkham.Helpers.Card
 import Arkham.Helpers.Deck
 import Arkham.Helpers.Enemy
+import Arkham.Helpers.History (getAllHistoryField)
 import Arkham.Helpers.Investigator
 import Arkham.Helpers.Log (getHasRecord)
 import Arkham.Helpers.Message qualified as Msg
@@ -79,6 +80,7 @@ import Arkham.Homebrew.Tokens
 import Arkham.I18n (countVar, withI18n)
 import Arkham.Id
 import Arkham.Investigator.Types (Field (..))
+import Arkham.Keyword qualified as Keyword
 import Arkham.Location.Grid
 import Arkham.Location.Types (Field (..))
 import Arkham.Matcher qualified as Matcher
@@ -298,9 +300,9 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
         physicalTrauma <- field InvestigatorPhysicalTrauma iid
         chooseOrRunOneM iid $ withI18n $ countVar 1 do
           when (physicalTrauma > 0) do
-            labeled' "healPhysicalTrauma" $ push $ HealTrauma iid 1 0
+            labeled "healPhysicalTrauma" $ push $ HealTrauma iid 1 0
           when (mentalTrauma > 0) do
-            labeled' "healMentalTrauma" $ push $ HealTrauma iid 0 1
+            labeled "healMentalTrauma" $ push $ HealTrauma iid 0 1
     pure a
   EndSetup -> do
     -- Preludes are the same game as the scenario that follows them, so the
@@ -1122,7 +1124,7 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
 
       when (searchType == Searching) $ do
         pushBatch batchId
-          $ CheckWindows [Window.Window #when (Window.AmongSearchedCards batchId iid) (Just batchId)]
+          $ CheckWindows [Window.Window #when (Window.AmongSearchedCards batchId iid) (Just batchId) Nothing]
 
       pushBatch batchId $ ResolveSearch (toTarget a)
       pushBatch batchId $ EndSearch iid source t cardSources
@@ -1867,6 +1869,20 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
   EnemiesAttack -> do
     eachInvestigator (`forInvestigator` EnemiesAttack)
     do_ EnemiesAttack
+    pure a
+  -- Enemy phase, after framework step 3.3: each relentless enemy that attacked
+  -- this phase (even if that attack was cancelled) readies and attacks the
+  -- investigator(s) it is engaged with a second time.
+  RelentlessEnemiesAttack -> do
+    attacked <- getAllHistoryField PhaseHistory HistoryEnemiesAttackedBy
+    relentless <-
+      select
+        $ Matcher.EnemyWithKeyword Keyword.Relentless
+        <> Matcher.mapOneOf Matcher.EnemyWithId attacked
+    pushAll
+      =<< concatForM relentless \eid -> do
+        exhausted <- eid <=~> Matcher.ExhaustedEnemy
+        pure $ [Ready (EnemyTarget eid) | exhausted] <> [ForTarget (EnemyTarget eid) (Do EnemiesAttack)]
     pure a
   LoadScenario opts -> do
     for_ (challengeScenarioInvestigator scenarioId) \title -> do
