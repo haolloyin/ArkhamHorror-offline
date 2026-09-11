@@ -26,6 +26,7 @@ import Arkham.Classes.HasGame
 import Arkham.Cost qualified as Cost
 import Arkham.DamageEffect
 import Arkham.Debug
+import Arkham.Debug.CardDestination
 import Arkham.Deck qualified as Deck
 import Arkham.Decklist
 import Arkham.Decklist.RandomBasicWeakness (
@@ -1034,7 +1035,12 @@ runGameMessage msg g = case msg of
     push $ CreatedEffect effectId Nothing source GameTarget
     pure $ g & entitiesL . effectsL %~ insertMap effectId effect
   DisableEffect effectId -> do
-    mEffect <- maybeEffect effectId
+    -- Only the live effect counts. One duration can be ended by several
+    -- messages -- a move fires MoveAction, Move and ResolvedMovement -- and each
+    -- pushes its own DisableEffect. 'maybeEffect' falls back to the removed
+    -- entities, so the later ones used to find the finished copy and run its
+    -- onDisable body again (Close Watch spawned an enemy per trigger).
+    let mEffect = preview (entitiesL . effectsL . ix effectId) g
     for_ mEffect \effect ->
       for_ (attr effectOnDisable effect) pushAll
     pure
@@ -2798,6 +2804,77 @@ runGameMessage msg g = case msg of
     let card = lookupCard cardCode cardId
     replaceCard cardId card
     pure g
+  DebugRegisterCustomCard customCard -> do
+    let def = (customCardDef customCard) {cdCardCode = cardCode, cdArt = unCardCode cardCode}
+        cardCode = sanitizeCustomCardCode (toCardCode $ customCardDef customCard)
+        customCard' = customCard {customCardDef = def}
+    registerCustomCards (singletonMap cardCode customCard')
+    pure $ g & customCardsL %~ insertMap cardCode customCard'
+  DebugRemoveCustomCard cardCode -> pure $ g & customCardsL %~ deleteMap cardCode
+  DebugPlaceCard iid cardId -> do
+    card <- getCard cardId
+    case cdCardType (toCardDef card) of
+      LocationType -> push =<< placeLocation_ card
+      EnemyLocationCardType -> push =<< placeLocation_ card
+      -- Drawn rather than placed: this is the path that spawns an enemy and
+      -- resolves a revelation, so surge and peril behave as they would at the
+      -- table.
+      cardType | cardType `elem` [EnemyType, TreacheryType] -> case card of
+        EncounterCard ec -> push $ InvestigatorDrewEncounterCard iid ec
+        _ -> push $ putCardIntoPlay iid card
+      PlayerEnemyType -> push $ DrewPlayerEnemy iid card
+      -- A skill has no in-play state, so a hand is the only place to put it.
+      SkillType -> push $ DebugAddToHand iid cardId
+      StoryType -> push $ StoryMessage (ReadStory iid card ResolveIt Nothing)
+      -- Assets, events and weaknesses: into play for free, no cost paid.
+      _ -> push $ putCardIntoPlay iid card
+    pure g
+  DebugAddToCampaignDeck iid cardId -> do
+    card <- getCard cardId
+    when (cdCardType (toCardDef card) `elem` playerCardTypes) do
+      card' <- setOwner iid card
+      pushAll
+        [ AddCampaignCardToDeck iid ShuffleIn card'
+        , ShuffleCardsIntoDeck (Deck.InvestigatorDeck iid) [card']
+        ]
+    pure g
+  DebugAddToEncounterDeck deck cardId -> do
+    card <- getCard cardId
+    push $ ShuffleCardsIntoDeck deck [card]
+    pure g
+  DebugMoveCard cardId destination -> do
+    card <- getCard cardId
+    case destination of
+      -- RemoveCard, SetAsideCards and DebugAddToHand each obtain the card as
+      -- their first step, so they already pull it out of every other zone.
+      DebugCardRemovedFromGame -> push $ RemoveCard cardId
+      DebugCardSetAside -> push $ SetAsideCards [card]
+      DebugCardHand iid -> push $ DebugAddToHand iid cardId
+      DebugCardDiscard -> case card of
+        EncounterCard ec -> push $ AddToEncounterDiscard ec
+        PlayerCard pc -> do
+          -- AddToDiscard only answers for the investigator who owns the card, and
+          -- a card sitting in the victory display may have no owner at all.
+          iid <- maybe getLead pure pc.owner
+          pushAll [ObtainCard cardId, AddToDiscard iid (setPlayerCardOwner iid pc)]
+        VengeanceCard _ -> pure ()
+      DebugCardDeck deck position ->
+        when (cardDefCanEnterDeck (toCardDef card) deck) do
+          -- The investigator only names whose deck to touch; every other deck
+          -- ignores it, so fall back to the lead rather than inventing an id.
+          iid <- maybe getLead pure deck.investigator
+          -- Obtain first: PutCardOnTopOfDeck leaves the victory display alone, so
+          -- without this the card would exist in both places, #5662.
+          pushAll
+            $ ObtainCard cardId
+            : case position of
+              DebugDeckTop | deckSupportsEnds deck -> [PutCardOnTopOfDeck iid deck card]
+              DebugDeckBottom | deckSupportsEnds deck -> [PutCardOnBottomOfDeck iid deck card]
+              -- Only three deck signifiers implement top/bottom; for the rest the
+              -- message is a no-op, and since the card has already been obtained
+              -- that would destroy it. Shuffling in is handled for every deck.
+              _ -> [ShuffleCardsIntoDeck deck [card]]
+    pure g
   After EndPhase -> do
     clearQueue
     case g ^. phaseL of
@@ -3949,7 +4026,11 @@ preloadEntities g = do
         forPlayHosts =
           mapFromList
             [ (cid, aid)
-            | Modifier {modifierType = AsIfInHandFor ForPlay cid, modifierSource = AssetSource aid} <- forPlayMods
+            | Modifier {modifierType = mType, modifierSource = AssetSource aid} <- forPlayMods
+            , cid <- case mType of
+                AsIfInHandFor ForPlay cid' -> [cid']
+                AsIfInHandForEffects cid' -> [cid']
+                _ -> []
             ]
         placementFor c = maybe (StillInHand iid) (`AttachedToAsset` Nothing) (lookup c.id forPlayHosts)
         handEffectCards =

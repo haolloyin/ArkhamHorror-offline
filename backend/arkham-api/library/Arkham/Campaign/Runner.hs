@@ -8,6 +8,7 @@ import Arkham.Source as X
 import Arkham.Target as X
 
 import Arkham.Ability
+import Arkham.Campaign.Overlay (CampaignOverlay (..))
 import Arkham.CampaignLog
 import Arkham.CampaignLogKey
 import Arkham.CampaignStep
@@ -18,6 +19,7 @@ import Arkham.Classes.Entity
 import Arkham.Classes.GameLogger
 import Arkham.Classes.Query
 import Arkham.Classes.RunMessage
+import Arkham.Custom.Overlay (DeckOverlay (..))
 import {-# SOURCE #-} Arkham.GameEnv
 import Arkham.GameT
 import Arkham.Helpers
@@ -171,7 +173,7 @@ defaultCampaignRunner msg a = case msg of
       , ForInvestigators [] ResetGame
       , StartScenario sid Nothing
       ]
-    spendSideStoryXp sid
+    spendSideStoryXp (campaignOverlays a) sid
     pure a
   CampaignStep (StandaloneScenarioStepWithOptions sid _ opts) -> do
     pushAll
@@ -181,7 +183,7 @@ defaultCampaignRunner msg a = case msg of
       , ForInvestigators [] ResetGame
       , StartScenario sid (Just opts)
       ]
-    spendSideStoryXp sid
+    spendSideStoryXp (campaignOverlays a) sid
     pure a
   SetChaosTokensForScenario -> a <$ push (SetChaosTokens $ campaignChaosBag $ toAttrs a)
   SetCampaignChaosBag tokens' -> pure $ updateAttrs a (overCampaignChaosBag (const tokens'))
@@ -189,17 +191,21 @@ defaultCampaignRunner msg a = case msg of
     card' <- setOwner iid card
     pure $ updateAttrs a (storyCardsL %~ insertWith (<>) iid [card'])
   RemoveCampaignCardFromDeck iid cardDef ->
-    pure
-      $ updateAttrs a
-      $ (storyCardsL %~ adjustMap (filter ((/= cardDef) . toCardDef)) iid)
-      . (decksL %~ adjustMap (withDeck $ filter ((/= cardDef) . toCardDef)) iid)
+    -- Printing-aware: the copy in the deck may be a reprint or a campaign
+    -- overlay's stand-in, which a structural CardDef comparison would miss.
+    let notIt :: IsCard c => c -> Bool
+        notIt = not . isPrintingOf cardDef.cardCode
+     in pure
+          $ updateAttrs a
+          $ (storyCardsL %~ adjustMap (filter notIt) iid)
+          . (decksL %~ adjustMap (withDeck $ filter notIt) iid)
   ReplaceCard cardId card ->
     -- Keep campaign story cards in sync when a card's identity changes (e.g. a
     -- story asset moved from the encounter pool to the player pool).
     pure $ updateAttrs a (storyCardsL %~ Map.map (map (\c -> if toCardId c == cardId then card else c)))
-  AddChaosToken token -> do
-    if token `notElem` [CurseToken, BlessToken]
-      then pure $ updateAttrs a (overCampaignChaosBag (token :))
+  AddChaosTokenWith details -> do
+    if details.toCampaign && details.face `notElem` [CurseToken, BlessToken]
+      then pure $ updateAttrs a (overCampaignChaosBag (details.face :))
       else pure a
   RemoveChaosToken token -> pure $ updateAttrs a (overCampaignChaosBag (deleteFirstMatch (== token)))
   RemoveAllChaosTokens token -> pure $ updateAttrs a (overCampaignChaosBag (filter (/= token)))
@@ -306,6 +312,36 @@ defaultCampaignRunner msg a = case msg of
     let mental = getChoiceAmount "$mental" choiceMap
     push $ SufferTrauma iid physical mental
     pure a
+  {- Laying custom cards over a campaign deck between scenarios.
+
+  Deliberately not routed through 'UpgradeDeck': that is the /purchase/ path,
+  which charges trauma for what it adds and initialises xp on the new cards.
+  Nothing here is bought, so the deck is simply edited in place.
+  -}
+  ApplyDeckOverlay iid overlay -> do
+    let deck = maybe [] unDeck $ lookup iid (campaignDecks $ toAttrs a)
+    let taken = Map.toList (overlaySwaps overlay)
+    -- A swap is a removal and an addition of however many actually came out.
+    let (afterSwaps, swappedIn) = foldl' swapOut (deck, []) taken
+    let afterRemovals = foldl' removeCopies afterSwaps (Map.toList (overlayRemove overlay))
+    added <-
+      concat <$> for (swappedIn <> Map.toList (overlayAdd overlay)) \(cardCode, n) ->
+        case lookupCardDef cardCode of
+          Nothing -> pure []
+          Just def -> replicateM n (genPlayerCard def)
+    -- Answering took the continuation ask with it, so re-run the step to hand
+    -- the lead a fresh one -- the same thing the roster changes below do.
+    push (CampaignStep $ campaignStep $ toAttrs a)
+    pure $ updateAttrs a $ decksL %~ insertMap iid (Deck (afterRemovals <> added))
+   where
+    matching cardCode = (== cardCode) . toCardCode
+    removeCopies cards (cardCode, n) =
+      foldr (\_ cs -> deleteFirstMatch (matching cardCode) cs) cards [1 .. n]
+    swapOut (cards, adds) (replaced, replacement) =
+      let n = length (filter (matching replaced) cards)
+       in ( filter (not . matching replaced) cards
+          , if n > 0 then (replacement, n) : adds else adds
+          )
   UpgradeDeck iid mUrl deck -> do
     let
       oldDeck = fromJustNote "No deck? (UpgradeDeck)" $ lookup iid (campaignDecks $ toAttrs a)
@@ -594,12 +630,14 @@ defaultCampaignRunner msg a = case msg of
     pure a
   _ -> pure a
 
-{- | Side-stories cost each investigator xp to play. Challenge scenarios only
+{- | Campaign overlays can replace a side-story's entry cost. Challenge scenarios
 charge their required investigator the full cost; everyone else pays 1.
 -}
-spendSideStoryXp :: ScenarioId -> GameT ()
-spendSideStoryXp sid = do
-  let baseCost = getSideStoryCost sid
+spendSideStoryXp :: [CampaignOverlay] -> ScenarioId -> GameT ()
+spendSideStoryXp overlays sid = do
+  let baseCost =
+        fromMaybe (getSideStoryCost sid)
+          $ listToMaybe [o.xpCost | o <- overlays, o.available, o.scenario == sid]
   investigators <- select Anyone
   case challengeScenarioInvestigator sid of
     Nothing -> for_ investigators \iid -> push $ SpendXP iid baseCost

@@ -57,8 +57,10 @@ import Arkham.Choose
 import Arkham.ClassSymbol
 import Arkham.Classes.HasQueue (QueueWrapper (..))
 import Arkham.Cost
+import Arkham.Custom.Overlay (DeckOverlay)
 import Arkham.Customization
 import Arkham.DamageEffect
+import Arkham.Debug.CardDestination
 import Arkham.Deck
 import Arkham.DeckBuilding.Adjustment
 import Arkham.Decklist.Type
@@ -123,6 +125,7 @@ import Arkham.Spawn
 import Arkham.Target
 import Arkham.Tarot
 import Arkham.Token qualified as Token
+import Arkham.TokenBag (CustomChaosBag)
 import Arkham.Trait
 import Arkham.Window (Window, WindowType)
 import Arkham.Xp
@@ -134,6 +137,7 @@ import Data.Aeson.Types
 import Data.UUID (fromWords64, nil)
 import Data.UUID qualified as UUID
 import GHC.OverloadedLabels
+import GHC.Records
 
 messageType :: Message -> Maybe MessageType
 messageType (PerformEnemyAttack _) = Just AttackMessage
@@ -450,6 +454,34 @@ data ShuffleIn = ShuffleIn | DoNotShuffleIn
   deriving stock (Show, Ord, Eq, Generic, Data)
   deriving anyclass (ToJSON, FromJSON)
 
+data AddChaosTokenDetails = AddChaosTokenDetails
+  { addChaosTokenFace :: ChaosTokenFace
+  , addChaosTokenToCampaign :: Bool
+  {- ^ Tokens added to the campaign stay in 'campaignChaosBag' for the rest of
+  the campaign; the rest are gone when the scenario ends.
+  -}
+  }
+  deriving stock (Show, Ord, Eq, Generic, Data)
+  deriving anyclass (ToJSON, FromJSON)
+
+instance HasField "face" AddChaosTokenDetails ChaosTokenFace where
+  getField = addChaosTokenFace
+
+instance HasField "toCampaign" AddChaosTokenDetails Bool where
+  getField = addChaosTokenToCampaign
+
+{- | Add a token to the chaos bag for the remainder of the campaign. Matches an
+add of either lifetime, so anything that cares must match 'AddChaosTokenWith'.
+-}
+pattern AddChaosToken :: ChaosTokenFace -> Message
+pattern AddChaosToken face <- AddChaosTokenWith (AddChaosTokenDetails face _)
+  where
+    AddChaosToken face = AddChaosTokenWith (AddChaosTokenDetails face True)
+
+-- | Add a token for this game only, leaving the campaign's bag alone.
+pattern AddChaosTokenForGame :: ChaosTokenFace -> Message
+pattern AddChaosTokenForGame face = AddChaosTokenWith (AddChaosTokenDetails face False)
+
 data InitDeckAttrs = InitDeckAttrs
   { initDeckInvestigator :: InvestigatorId
   , initDeckUrl :: Maybe Text
@@ -499,6 +531,10 @@ data Message
   | UpdateCardSetting InvestigatorId CardCode SetCardSetting
   | -- | Set one option a card declares in @cdOptions@ for this investigator
     SetCardOption InvestigatorId CardCode Text OptionValue
+  | {- | Silence a card for this investigator: stop offering its non-forced
+    window triggers. Set from the hidden-cards stack.
+    -}
+    SetCardSilenced InvestigatorId CardCode Bool
   | SetAsIfRuling AsIfRuling
   | SetUltimatumsAndBoonsEnabled Bool
   | -- | Ultimatum of The Scream: ban this ally for the rest of the campaign
@@ -614,7 +650,7 @@ data Message
   | -- Victory
     AddToVictory (Maybe InvestigatorId) Target
   | -- Tokens
-    AddChaosToken ChaosTokenFace
+    AddChaosTokenWith AddChaosTokenDetails
   | -- Asset Uses
     AddUses Source AssetId UseType Int
   | -- Asks
@@ -872,6 +908,11 @@ data Message
   | ReplaceInvestigator InvestigatorId ArkhamDBDecklist
   | UpgradeDeck InvestigatorId (Maybe Text) (Deck PlayerCard) -- used to upgrade deck during campaign
   | UpgradeDecklist InvestigatorId ArkhamDBDecklist
+  | {- | Lay custom cards over an investigator's campaign deck between scenarios.
+    Not an upgrade: nothing is purchased, so no trauma is charged and no xp
+    is initialised for what it adds.
+    -}
+    ApplyDeckOverlay InvestigatorId DeckOverlay
   | FinishedUpgradingDecks
   | Flip InvestigatorId Source Target
   | Flipped Source Card
@@ -1125,6 +1166,8 @@ data Message
   | BecomeHomunculus InvestigatorId
   | BecomeShatteredSelf InvestigatorId
   | SetScenarioMeta Value
+  | SetCustomChaosBag Text CustomChaosBag
+  | RemoveCustomChaosBag Text
   | ScenarioSpecific Text Value
   | CampaignSpecific Text Value
   | SetCampaignMeta Value
@@ -1218,11 +1261,28 @@ data Message
     ClearQueue
   | SetCardOwner CardId InvestigatorId
   | DebugAddToHand InvestigatorId CardId
+  | DebugAddToEncounterDeck DeckSignifier CardId
+  | -- Debug: move a card to another zone from wherever it currently sits. Always
+    -- obtains the card first, so it leaves the victory display, set-aside pile or
+    -- deck it came from rather than being duplicated into the destination.
+    DebugMoveCard CardId DebugCardDestination
   | DebugCustomize InvestigatorId CardId
   | DebugIncreaseCustomization InvestigatorId CardCode Customization [CustomizationChoice]
   | SetScenarioDifficulty Difficulty
   | SetCampaignStep CampaignStep
   | CreateCard CardId CardCode
+  | -- Debug: register a runtime-authored card (see "Arkham.Card.CustomCard") on
+    -- the game, so its def resolves for every player and survives a reload.
+    DebugRegisterCustomCard CustomCard
+  | DebugRemoveCustomCard CardCode
+  | -- Debug: resolve an already-created card the way drawing it would --
+    -- spawn an enemy, reveal a treachery, put a location on the board, deal a
+    -- player card to a hand. Dispatches on the card's type.
+    DebugPlaceCard InvestigatorId CardId
+  | -- Debug: earn a card for the rest of the campaign -- into the deck now, and
+    -- into the campaign's story cards so it comes back in later scenarios.
+    -- Player cards only; nothing else survives deck loading.
+    DebugAddToCampaignDeck InvestigatorId CardId
   | -- Epic Multiplayer: mutate a shared counter on the owning event. These are
     -- captured (not dispatched to a game entity) by the run loop when the game
     -- belongs to an event; otherwise they are inert no-ops. See "Arkham.Epic".
@@ -2386,6 +2446,8 @@ mconcat
               pure $ case contents of
                 Right (a, b, c, d, s) -> FindEncounterCard a b c d s
                 Left (a, b, c, d) -> FindEncounterCard a b c d LeadChooses
+            -- Legacy: saves written before the details object stored the bare face
+            "AddChaosToken" -> AddChaosToken <$> o .: "contents"
             -- Legacy: pre-Message-refactor saves tagged entity-specific removals
             -- with these names; they are now pattern synonyms over `Remove Target`.
             "RemoveAsset" -> Remove . AssetTarget <$> o .: "contents"

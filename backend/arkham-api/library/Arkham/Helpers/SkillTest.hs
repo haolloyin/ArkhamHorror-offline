@@ -703,7 +703,16 @@ getIsCommittable a c = runValidT do
           pure $ fold [cst | AdditionalCostToCommit iid' cst <- mods, iid' == a]
       cmods <- getModifiers (CardIdTarget $ toCardId c)
       let costToCommit = fold [cst | AdditionalCostToCommit iid' cst <- cmods, iid' == a]
-      liftGuardM $ getCanAffordCost a (toSource a) [] [] (costToCommit <> otherAdditionalCosts)
+      -- The card's own additional cost (e.g. Justify the Means (3)'s curse tokens) is
+      -- only reachable via the card def here; the skill entity that carries it isn't
+      -- created until CommitCard, by which point failing to pay is a hard error. Only a
+      -- skill pays it on commit, for an asset or event it is a cost of playing the card.
+      let ownAdditionalCost =
+            if NoAdditionalCosts `elem` cmods || toCardType card /= SkillType
+              then mempty
+              else fold (cdAdditionalCost $ toCardDef card)
+      liftGuardM
+        $ getCanAffordCost a (toSource a) [] [] (costToCommit <> otherAdditionalCosts <> ownAdditionalCost)
       liftGuardM $ allM passesCommitRestriction (cdCommitRestrictions $ toCardDef card)
     EncounterCard card -> guard $ CommittableTreachery `elem` cdCommitRestrictions (toCardDef card)
     VengeanceCard _ -> error "vengeance card"
@@ -789,6 +798,15 @@ skillTestMatches iid source st mtchr = case Matcher.replaceYouMatcher iid mtchr 
   Matcher.NotSkillTest matcher ->
     not <$> skillTestMatches iid source st matcher
   Matcher.AnySkillTest -> pure True
+  Matcher.SkillTestWithResult resultMatcher -> do
+    result <- fromMaybe (skillTestResult st) <$> getSkillTestResultWithResultModifiers
+    case (result, resultMatcher) of
+      (SucceededBy _ n, Matcher.SuccessResult vm) -> gameValueMatches n vm
+      (FailedBy _ n, Matcher.FailureResult vm) -> gameValueMatches n vm
+      (_, Matcher.AnyResult) -> pure True
+      (_, Matcher.ResultOneOf ms) ->
+        anyM (skillTestMatches iid source st . Matcher.SkillTestWithResult) ms
+      _ -> pure False
   Matcher.SkillTestWasFailed -> pure $ case skillTestResult st of
     FailedBy _ _ -> True
     _ -> False

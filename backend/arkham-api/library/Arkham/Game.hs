@@ -277,6 +277,7 @@ newGame scenarioOrCampaignId seed playerCount difficulty includeTarotReadings =
   let state = IsPending []
    in Game
         { gameCards = mempty
+        , gameCustomCards = mempty
         , gameWindowDepth = 0
         , gameWindowStack = Nothing
         , gameWindowTick = 0
@@ -1966,7 +1967,7 @@ abilityMatches a@Ability {..} = \case
     andM
       [ pure
           $ abilityIndex
-          `notElem` [AbilityAttack, AbilityInvestigate, AbilityEvade, AbilityEngage, AbilityMove]
+          `notElem` [AbilityAttack, AbilityInvestigate, AbilityEvade, AbilityEngage, AbilityMove, ActAdvancement]
       , abilitySource `sourceMatches` M.EncounterCardSource
       ]
   AbilityOnCard _ | abilityBasic -> pure False
@@ -2064,7 +2065,9 @@ getAbilitiesMatching matcher = guardYourLocation $ \_ -> do
     AbilityOnEncounterCard ->
       as
         & filter
-          ( \a -> a.index `notElem` [AbilityAttack, AbilityInvestigate, AbilityEvade, AbilityEngage, AbilityMove]
+          ( \a ->
+              a.index
+                `notElem` [AbilityAttack, AbilityInvestigate, AbilityEvade, AbilityEngage, AbilityMove, ActAdvancement]
           )
         & filterM (\a -> a.source `sourceMatches` M.EncounterCardSource)
     AbilityOnCard cardMatcher ->
@@ -2118,6 +2121,12 @@ getGameAbilities = do
   inHandAssetAbilities <-
     concatMap (filter inHandAbility . getAbilities)
       <$> filterM unblanked (toList $ g ^. inHandEntitiesL . each . assetsL)
+  -- A skill is preloaded in hand the same way, and a skill that acts from hand
+  -- is the whole point of the InHandEffect zone, so it needs the same guard
+  -- rather than being reachable only through the pure sweep.
+  inHandSkillAbilities <-
+    concatMap (filter inHandAbility . getAbilities)
+      <$> filterM unblanked (toList $ g ^. inHandEntitiesL . each . skillsL)
   -- True Magick (5) re-sources its controller's in-hand [Spell] asset [action]
   -- abilities onto itself. These cannot come from the path above (the spells
   -- carry no InHandEffect, so they are not preloaded, and getAbilities is pure)
@@ -2143,6 +2152,7 @@ getGameAbilities = do
     <> eventAbilities
     <> inHandEventAbilities
     <> inHandAssetAbilities
+    <> inHandSkillAbilities
     <> trueMagickInHandAbilities
     <> campaignAbilities'
     <> inDiscardAssetAbilities
@@ -2325,6 +2335,20 @@ getLocationsMatching lmatcher = do
     LocationWithUnrevealedTitle title -> pure $ filter ((`hasTitle` title) . Unrevealed) ls
     LocationWithId locationId -> pure $ filter ((== locationId) . toId) ls
     LocationWithSymbol locationSymbol -> pure $ filter ((== locationSymbol) . toLocationSymbol) ls
+    LeftmostConnectionOf matcher -> do
+      -- A location's connections are stored in printed order, so the first LocationWithSymbol
+      -- among them is the leftmost icon on its card.
+      origins <- select matcher
+      leftmosts <- for origins \origin -> do
+        revealed <- field LocationRevealed origin
+        connections <-
+          field (if revealed then LocationRevealedConnectedMatchers else LocationConnectedMatchers) origin
+        pure $ listToMaybe [m | m@(LocationWithSymbol _) <- connections]
+      case catMaybes leftmosts of
+        [] -> pure []
+        ms -> do
+          matching <- select (oneOf ms)
+          pure $ filter ((`elem` matching) . toId) ls
     LocationNotInPlay -> pure [] -- TODO: Should this check out of play locations
     Anywhere -> pure ls
     LocationIs cardCode -> pure $ filter (isPrintingOf cardCode) ls
@@ -2348,6 +2372,10 @@ getLocationsMatching lmatcher = do
         . toId
     LocationWithAsset assetMatcher -> do
       locations <- catMaybes <$> selectFields AssetLocation assetMatcher
+      pure $ filter ((`elem` locations) . toId) ls
+    LocationWithStory storyMatcher -> do
+      placements <- selectFields StoryPlacement storyMatcher
+      locations <- catMaybes <$> traverse Helpers.placementLocation placements
       pure $ filter ((`elem` locations) . toId) ls
     LocationWithAttachedEvent eventMatcher -> do
       events <- select eventMatcher
@@ -2722,9 +2750,7 @@ getLocationsMatching lmatcher = do
       matches' <-
         if currentMatch
           then pure [start]
-          else do
-            matchingLocationIds <- map toId <$> getLocationsMatching matcher
-            getShortestPath start (pure . (`elem` matchingLocationIds)) mempty
+          else getNearestLocations start . map toId =<< getLocationsMatching matcher
       pure $ filter ((`elem` matches') . toId) ls
     NearestLocationToMost matcher -> do
       -- "Nearest to the most investigators" is a vote count, not a single
@@ -2777,9 +2803,7 @@ getLocationsMatching lmatcher = do
           matches' <-
             if currentMatch
               then pure [start]
-              else do
-                matchingLocationIds <- map toId <$> getLocationsMatching matcher
-                getShortestPath start (pure . (`elem` matchingLocationIds)) mempty
+              else getNearestLocations start . map toId =<< getLocationsMatching matcher
           pure $ filter ((`elem` matches') . toId) ls
     ConnectedLocation forMovement -> guardYourLocation $ \yourLocation -> do
       go ls (ConnectedFrom forMovement $ LocationWithId yourLocation)
@@ -3714,6 +3738,7 @@ getStoriesMatching matcher = do
     StoryMatchAll ms -> foldM filterMatcher as ms
     StoryWithPlacement placement -> pure $ filter ((== placement) . attr storyPlacement) as
     StoryWithModifier modifier -> as & filterM \s -> elem modifier <$> getModifiers (toTarget s)
+    StoryWithTrait t -> pure $ filter (member t . toTraits . toAttrs) as
     StoryIs cardCode -> pure $ filter ((== cardCode) . toCardCode) as
     StoryWithCardId cardId -> pure $ filter ((== cardId) . attr storyCardId) as
     EnemyStory eid -> filterM (fieldP StoryPlacement (== AttachedToEnemy eid) . toId) as
@@ -5432,11 +5457,7 @@ instance Query ChaosTokenMatcher where
         Nothing -> pure []
         Just s -> do
           bag <- infestationBag <$> getAttrs @Story s
-          pure
-            $ map asChaosToken
-            $ infestationTokens bag
-            <> infestationSetAside bag
-            <> maybeToList (infestationCurrentToken bag)
+          pure $ map asChaosToken $ allBagTokens bag
     go :: HasGame m => ChaosTokenMatcher -> ChaosToken -> m Bool
     go = \case
       ChaosTokenIs cid -> pure . (== cid) . chaosTokenId
@@ -5982,6 +6003,13 @@ instance HasModifiersFor Entities where
     traverse_ getModifiersFor (e ^. investigatorsL)
     traverse_ getModifiersFor (e ^. storiesL)
 
+-- FAQ: an eligible location with no valid path counts as "nearest" only when no
+-- eligible location has one.
+getNearestLocations :: HasGame m => LocationId -> [LocationId] -> m [LocationId]
+getNearestLocations start candidates = do
+  nearest <- getShortestPath start (pure . (`elem` candidates)) mempty
+  pure $ if null nearest then candidates else nearest
+
 -- the results will have the initial location at 0, we need to drop
 -- this otherwise this will only ever return the current location
 getShortestPath
@@ -6337,6 +6365,7 @@ instance Projection Scenario where
       ScenarioResignedCardCodes -> pure scenarioResignedCardCodes
       ScenarioResolvedStories -> pure scenarioResolvedStories
       ScenarioChaosBag -> pure scenarioChaosBag
+      ScenarioCustomChaosBags -> pure scenarioCustomChaosBags
       ScenarioInResolution -> pure scenarioInResolution
       ScenarioIsPrelude -> pure scenarioIsPrelude
       ScenarioSetAsideCards -> do
@@ -6696,7 +6725,7 @@ runMessages gameId mLogger = do
             CheckWindows {} -> False
             Do (CheckWindows {}) -> False
             ClearUI {} -> False
-            ExhaustMessage {} -> False
+            ExhaustMessage m | isSwarmExhaust g m -> False
             After {} -> False
             DoBatch {} -> False
             CreatedCost {} -> False
@@ -7109,6 +7138,28 @@ enemyReadyCardCodes =
 whole enemy-ready window is skipped. Every card-backed entity map has to be scanned: the
 ability can live on an enemy (Gug Sentinel) just as easily as on an asset or event.
 -}
+
+{- | Exhausting or readying flips any modifier gated on an entity's ready state
+(New Moon Drudge stops locking down encounter card abilities the moment it
+exhausts), so those messages must preload modifiers. Swarm cards are the
+exception they were skipped for: they exhaust and ready in bulk and nothing
+reads a swarm card's exhaust state.
+-}
+isSwarmExhaust :: Game -> ExhaustMessage -> Bool
+isSwarmExhaust g = \case
+  Exhaust_ e -> isSwarmTarget e.target
+  Ready_ t -> isSwarmTarget t
+  ReadyAlternative_ _ t -> isSwarmTarget t
+  ReadyExhausted_ -> False
+ where
+  isSwarmTarget = \case
+    EnemyTarget eid -> case preview (entitiesL . enemiesL . ix eid) g of
+      Just e -> case enemyPlacement (toAttrs e) of
+        AsSwarm {} -> True
+        _ -> False
+      Nothing -> False
+    _ -> False
+
 hasEnemyReadyAbilities :: Game -> Bool
 hasEnemyReadyAbilities g =
   hasCode (e ^. assetsL)

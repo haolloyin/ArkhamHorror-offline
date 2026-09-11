@@ -408,13 +408,21 @@ instance RunMessage EnemyAttrs where
 
       getSpawnLocation details.spawnAt >>= \case
         Nothing -> do
-          do_ msg
+          -- A `SpawnPlaced` whose placement has no location still spawns (a
+          -- `Concealed X` enemy into the shadows). The `Do` half pushes only the
+          -- `#after` window, so the `#when` one has to come from here (#5649).
+          case details.spawnAt of
+            SpawnPlaced placement | isInPlayPlacement placement ->
+              batched \_ -> do
+                Lifted.checkWhen (Window.EnemySpawns enemyId placement)
+                do_ msg
+            _ -> do_ msg
           pure a'
         Just lid -> do
           batched \_ -> do
             Lifted.checkWhen $ Window.EnemyWouldSpawnAt enemyId lid
             whenM (enemyId <=~> IncludeOmnipotent (EnemyCanSpawnIn $ IncludeEmptySpace $ LocationWithId lid)) do
-              Lifted.checkWhen (Window.EnemySpawns enemyId lid)
+              Lifted.checkWhen (Window.EnemySpawns enemyId (AtLocation lid))
             do_ msg
           pure $ a' & placementL .~ AtLocation lid
     Do (EnemySpawn originalDetails) | originalDetails.enemy == enemyId && not enemyDefeated -> do
@@ -561,13 +569,22 @@ instance RunMessage EnemyAttrs where
                   unless (#massive `elem` keywords)
                     $ pushAll [EnemyEntered eid lid, EnemySpawned details]
         SpawnPlaced placement -> do
+          let spawnInto = do
+                afterSpawns <- checkWindows [mkAfter (Window.EnemySpawns enemyId placement)]
+                pushAll [PlaceEnemy enemyId placement, afterSpawns, EnemySpawned details]
           placementLocation placement >>= \case
-            Nothing -> push $ PlaceEnemy enemyId placement
+            -- A placement with no location still spawns: a `Concealed X` enemy
+            -- spawns into the shadows, "in play but not at any location" (RR,
+            -- Concealed X). `Window.EnemySpawns` carries the placement so it can
+            -- say so. Only a placement that is not in play at all (the pursuit
+            -- zone) skips the window -- and `EnemySpawned`, which is what runs
+            -- `details.after` (#5649).
+            Nothing
+              | isInPlayPlacement placement -> spawnInto
+              | otherwise -> push $ PlaceEnemy enemyId placement
             Just lid ->
               canSpawnInLocation enemyId lid >>= \case
-                True -> do
-                  afterSpawns <- checkWindows [mkAfter (Window.EnemySpawns enemyId lid)]
-                  pushAll [PlaceEnemy enemyId placement, afterSpawns, EnemySpawned details]
+                True -> spawnInto
                 False -> push $ toDiscard GameSource enemyId
         _ -> error $ "Unhandled spawn: " <> show details.spawnAt
       pure a
@@ -596,8 +613,8 @@ instance RunMessage EnemyAttrs where
           -- means an enemy is moving from out of play into play in a
           -- non-spawning method and we'll want to trigger them
           when (isOutOfPlayPlacement a.placement) do
-            pushM $ checkWhen $ Window.EnemySpawns eid lid
-            pushM $ checkAfter $ Window.EnemySpawns eid lid
+            pushM $ checkWhen $ Window.EnemySpawns eid (AtLocation lid)
+            pushM $ checkAfter $ Window.EnemySpawns eid (AtLocation lid)
 
           let entries = eid : swarm
           -- Investigators already at lid drive `EnemyEntersYourLocation` (the
@@ -657,7 +674,7 @@ instance RunMessage EnemyAttrs where
           swarm <- select $ SwarmOf eid
           let entries = eid : swarm
           iidsHere <- select $ investigatorAt lid
-          let spawnWindows = [mkAfter (Window.EnemySpawns eid lid) | isJust enemySpawnDetails]
+          let spawnWindows = [mkAfter (Window.EnemySpawns eid (AtLocation lid)) | isJust enemySpawnDetails]
           afterWindows <-
             checkWindows
               $ spawnWindows
@@ -682,8 +699,8 @@ instance RunMessage EnemyAttrs where
         _ -> do
           swarm <- select $ SwarmOf eid
           when (isOutOfPlayPlacement a.placement) do
-            pushM $ checkWhen $ Window.EnemySpawns eid lid
-            pushM $ checkAfter $ Window.EnemySpawns eid lid
+            pushM $ checkWhen $ Window.EnemySpawns eid (AtLocation lid)
+            pushM $ checkAfter $ Window.EnemySpawns eid (AtLocation lid)
 
           let entries = eid : swarm
           iidsHere <- filter (/= movingIid) <$> select (investigatorAt lid)
@@ -1707,11 +1724,15 @@ instance RunMessage EnemyAttrs where
         damageAmount = damageAssignmentAmount damageAssignment
       canDamage <- sourceCanDamageEnemy eid source
       when canDamage do
+        -- Defeat is part of *dealing* damage (Rules Reference, "Dealing Damage/Horror"
+        -- step 2), and "after..." effects only execute once the triggering condition has
+        -- fully resolved (FAQ 1.4), so both after-windows sit below `Damaged` -- which
+        -- pushes AssignedDamage + checkDefeated ahead of them, #5682.
         Lifted.checkWhen $ Window.WouldTakeDamage source (toTarget a) damageAmount DamageDirect
         Lifted.checkWhen $ Window.DealtDamage source damageEffect (toTarget a) damageAmount
-        Lifted.checkAfter $ Window.DealtDamage source damageEffect (toTarget a) damageAmount
         Lifted.checkWhen $ Window.TakeDamage source damageEffect (toTarget a) damageAmount
         push $ Damaged (EnemyTarget eid) damageAssignment
+        Lifted.checkAfter $ Window.DealtDamage source damageEffect (toTarget a) damageAmount
         Lifted.checkAfter $ Window.TakeDamage source damageEffect (toTarget a) damageAmount
       pure a
     Damaged (EnemyTarget eid) damageAssignment'' | eid == enemyId -> do
@@ -2369,15 +2390,30 @@ instance RunMessage EnemyAttrs where
       pure $ a & tokensL .~ mempty
     PlaceReferenceCard (isTarget a -> True) cardCode -> do
       pure $ a & referenceCardsL %~ (cardCode :)
+    -- evade/defeat windows deliberately still name a removed enemy, so a reaction
+    -- resolving in one must not put it back on the table (#5610)
+    PlaceEnemy eid placement
+      | eid == enemyId
+      , enemyDefeated
+      , isInPlayPlacement placement
+      , not (isInPlayPlacement a.placement) ->
+          pure a
     PlaceEnemy eid placement | eid == enemyId -> do
       mods <- getModifiers a
       let cannotEngage = [x | CannotEngage x <- mods]
       let handlePlacement placement' = do
             checkEntersThreatArea a placement'
             pushM $ checkAfter $ Window.EnemyPlaced enemyId placement'
-            when (not (isInPlayPlacement a.placement) && isInPlayPlacement placement') do
-              pushM $ checkWhen $ Window.EnterPlay (toTarget a)
-              pushM $ checkAfter $ Window.EnterPlay (toTarget a)
+            -- A spawn already announces itself with `Window.EnemySpawns`, which
+            -- `Matcher.EnemyEntersPlay` also matches, so emitting `EnterPlay`
+            -- here as well made every "after this enemy enters play" ability
+            -- fire twice for a `SpawnPlaced` spawn (Rise of the Elder Things
+            -- placing an Elder Thing in a threat area, swarm creation).
+            when
+              (not (isInPlayPlacement a.placement) && isInPlayPlacement placement' && isNothing enemySpawnDetails)
+              do
+                pushM $ checkWhen $ Window.EnterPlay (toTarget a)
+                pushM $ checkAfter $ Window.EnterPlay (toTarget a)
             when (isInPlayPlacement a.placement && not (isInPlayPlacement placement')) do
               pushM $ checkWhen $ Window.LeavePlay (toTarget a)
               pushM $ checkAfter $ Window.LeavePlay (toTarget a)

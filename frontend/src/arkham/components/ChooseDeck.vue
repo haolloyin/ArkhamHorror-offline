@@ -4,6 +4,9 @@ import { computed, ref, inject, watch, nextTick } from 'vue'
 import type { Game } from '@/arkham/types/Game';
 import { fetchDecks } from '@/arkham/api'
 import { cardImg, imgsrc, type InvestigatorClass } from '@/arkham/helpers'
+import { stripCardCodePrefix } from '@/arkham/customCards'
+import { overlayIsEmpty } from '@/arkham/deckOverlay'
+import { hasLibraryCards, loadLibrary } from '@/arkham/customCardLibrary'
 import { portraitImage as portraitImageHelper } from '@/arkham/cardImages'
 import * as Arkham from '@/arkham/types/Deck'
 import {deckClass} from '@/arkham/types/Deck'
@@ -11,6 +14,9 @@ import { deckInvestigatorCode, deckRequirementDescriptions, deckRestrictionError
 import type { ArkhamDbDecklist, DeckMeta } from '@/arkham/types/Deck'
 import type { Investigator } from '@/arkham/types/Investigator'
 import Question from '@/arkham/components/Question.vue';
+import OverlayEditor, { type DeckOverlay } from '@/arkham/components/debug/OverlayEditor.vue';
+import { storeToRefs } from 'pinia';
+import { useSettings } from '@/stores/settings';
 import UltimatumsAndBoonsQuestion from '@/arkham/components/UltimatumsAndBoonsQuestion.vue';
 import NewDeck from '@/arkham/components/NewDeck.vue'
 import DeckToolbar from '@/arkham/components/DeckToolbar.vue'
@@ -39,11 +45,20 @@ const CLASS_ORDER: Record<string, number> = {
 const allClasses: InvestigatorClass[] = ["guardian", "seeker", "rogue", "mystic", "survivor", "neutral"]
 
 function deckPortraitCode(deck: Arkham.Deck): string {
-  return deckInvestigatorCode(deck.list)
+  // The overlay edited here applies to this game only, but the row should still
+  // show who you are about to play.
+  if (deck.id === deckId.value && overlay.value?.investigator) {
+    return stripCardCodePrefix(overlay.value.investigator)
+  }
+  return deckInvestigatorCode(Arkham.deckPlayList(deck))
 }
 
+// A laid-over deck plays differently from the one it was built as, so say so.
+const deckHasOverlay = (deck: Arkham.Deck) => !overlayIsEmpty(deck.overlay ?? null)
+
 function deckTaboo(deck: Arkham.Deck): string | null {
-  return deck.list.taboo_id ? displayTabooId(deck.list.taboo_id) : null
+  const list = Arkham.deckPlayList(deck)
+  return list.taboo_id ? displayTabooId(list.taboo_id) : null
 }
 
 const filteredDecks = computed(() => {
@@ -53,7 +68,7 @@ const filteredDecks = computed(() => {
       filterClasses.value.some((k) => cls[k])
     const matchesSearch = !searchText.value ||
       deck.name.toLowerCase().includes(searchText.value.toLowerCase())
-    const matchesValidity = !validOnly.value || deckError(deck.list) === null
+    const matchesValidity = !validOnly.value || deckError(Arkham.deckPlayList(deck)) === null
     return matchesClass && matchesSearch && matchesValidity
   })
 
@@ -75,7 +90,7 @@ const props = defineProps<{
   playerId: string
 }>()
 
-const chooseDeck = inject<(deckId: string) => Promise<void>>('chooseDeck')
+const chooseDeck = inject<(deckId: string, overlay?: any) => Promise<void>>('chooseDeck')
 const chooseDeckList = inject<(deckList: ArkhamDbDecklist) => Promise<void>>('chooseDeckList')
 const question = computed(() => props.game.question[props.playerId])
 const deckRequirements = computed(() => deckRequirementDescriptions(props.game.scenario?.id, {
@@ -141,16 +156,17 @@ const weaknessPoolSummary = computed(() => {
 })
 
 function deckToArkhamDbDecklist(deck: Arkham.Deck): ArkhamDbDecklist {
+  const list = Arkham.deckPlayList(deck)
   return {
     id: deck.id,
     name: deck.name,
     url: deck.url,
-    investigator_code: deck.list.investigator_code,
+    investigator_code: list.investigator_code,
     investigator_name: deck.name,
-    slots: { ...deck.list.slots },
-    sideSlots: { ...(deck.list.sideSlots ?? {}) },
-    meta: deck.list.meta,
-    taboo_id: deck.list.taboo_id ?? null,
+    slots: { ...list.slots },
+    sideSlots: { ...(list.sideSlots ?? {}) },
+    meta: list.meta,
+    taboo_id: list.taboo_id ?? null,
   }
 }
 
@@ -296,7 +312,7 @@ const error = computed(() => {
   }
 
   const deck = decks.value.find((d) => d.id === deckId.value)
-  return deck ? deckError(deck.list) : null
+  return deck ? deckError(Arkham.deckPlayList(deck)) : null
 })
 
 const unsavedDeckError = computed(() => {
@@ -313,6 +329,28 @@ fetchDecks().then((result) => {
   ready.value = true;
 })
 
+const settings = useSettings()
+const { customCardsEnabled } = storeToRefs(settings)
+
+// A deck already laid over with your cards needs them resolvable to draw its row.
+if (customCardsEnabled.value) loadLibrary()
+
+/* Applies to this game only: it rides along with the answer rather than being
+ * saved onto the deck. */
+const overlay = ref<DeckOverlay | null>(null)
+const overlayOpen = ref(false)
+
+const overlaySummary = computed(() => {
+  const o = overlay.value
+  if (!o) return 'none'
+  const parts: string[] = []
+  if (o.investigator) parts.push('investigator')
+  const cards =
+    Object.keys(o.swaps).length + Object.keys(o.add).length + Object.keys(o.remove).length
+  if (cards) parts.push(`${cards} card${cards === 1 ? '' : 's'}`)
+  return parts.join(', ') || 'none'
+})
+
 const emit = defineEmits(['choose'])
 
 const chooseChoice = (idx: number) => emit('choose', idx)
@@ -324,7 +362,7 @@ async function choose() {
     if (weaknessPoolTouched.value && chooseDeckList && selectedDeck.value) {
       await chooseDeckList(deckListWithWeaknessPool(deckToArkhamDbDecklist(selectedDeck.value)))
     } else if (chooseDeck) {
-      await chooseDeck(deckId.value)
+      await chooseDeck(deckId.value, overlay.value)
     }
   }
 }
@@ -458,8 +496,24 @@ const needsReply = computed(() => {
                         <span v-if="deckTaboo(deck)" class="deck-item-taboo">
                           <font-awesome-icon icon="book" /> {{ deckTaboo(deck) }}
                         </span>
+                        <span
+                          v-if="deckHasOverlay(deck)"
+                          class="deck-item-overlaid"
+                          title="This deck is laid over with custom cards"
+                        >
+                          <font-awesome-icon icon="layer-group" /> Overlay
+                        </span>
                         <span v-if="deckId === deck.id && error" class="deck-item-error">{{ error }}</span>
                       </div>
+                      <button
+                        v-if="customCardsEnabled && hasLibraryCards"
+                        type="button"
+                        class="deck-item-overlay"
+                        :title="`Overlay: ${overlaySummary}`"
+                        @click.stop.prevent="deckId = deck.id; overlayOpen = !overlayOpen"
+                      >
+                        <font-awesome-icon icon="layer-group" />
+                      </button>
                       <button
                         type="button"
                         class="deck-item-weakness-button"
@@ -473,6 +527,17 @@ const needsReply = computed(() => {
                       <button class="deck-item-use" :disabled="deckUsedThisCampaign(deck.list)" @click.stop.prevent="selectAndChoose(deck)" :title="$t('chooseDeck.useThisDeck')">
                         <font-awesome-icon icon="chevron-right" />
                       </button>
+                      <div v-if="deckId === deck.id && overlayOpen" class="weakness-pool-panel deck-item-weakness-pool" @click.stop>
+                        <div class="weakness-pool-heading">
+                          <span>Overlay</span>
+                          <span class="weakness-pool-summary">{{ overlaySummary }}</span>
+                        </div>
+                        <p class="weakness-pool-help">
+                          Custom cards, laid over this deck for this game only. The deck itself is
+                          not changed.
+                        </p>
+                        <OverlayEditor v-model="overlay" :slots="deck.list.slots" :investigator="deck.list.investigator_code" />
+                      </div>
                       <div v-if="deckId === deck.id && weaknessPoolOpen" class="weakness-pool-panel deck-item-weakness-pool" @click.stop>
                         <div class="weakness-pool-heading">
                           <span>Random basic weakness pool</span>
@@ -857,6 +922,14 @@ const needsReply = computed(() => {
   letter-spacing: 0.04em;
 }
 
+.deck-item-overlaid {
+  color: var(--spooky-green);
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .deck-item-error {
   font-size: 0.75em;
   color: #ff8080;
@@ -864,6 +937,7 @@ const needsReply = computed(() => {
   letter-spacing: 0.04em;
 }
 
+.deck-item-overlay,
 .deck-item-use,
 .deck-item-weakness-button {
   flex-shrink: 0;

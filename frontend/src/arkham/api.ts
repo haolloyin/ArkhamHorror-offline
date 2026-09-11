@@ -2,6 +2,7 @@ import api from '@/api';
 import { Game, GameDetailsEntry, gameDecoder, gameDetailsEntryDecoder } from '@/arkham/types/Game';
 import { ArkhamDbDecklist, Deck, deckDecoder } from '@/arkham/types/Deck';
 import { CardDef, cardDefDecoder } from '@/arkham/types/CardDef';
+import { CustomCard, customCardDecoder } from '@/arkham/customCards';
 import { Difficulty } from '@/arkham/types/Difficulty';
 import { Source } from '@/arkham/types/Source';
 import { Token } from '@/arkham/types/Token';
@@ -18,6 +19,7 @@ import {
 } from '@/arkham/types/EpicEvent'
 import * as NewGame from '@/arkham/types/NewGame'
 import * as JsonDecoder from 'ts.data.json';
+import { registerArtVariants } from '@/arkham/artVariants'
 
 interface FetchData {
   playerId: string
@@ -102,12 +104,68 @@ export const fetchCards = async (cardPool: CardPoolMode | boolean = 'player'): P
   const mode: CardPoolMode = cardPool === true ? 'both' : cardPool === false ? 'player' : cardPool
   const query = mode === 'player' ? "" : `?includeEncounter&cardPool=${mode}`
   const { data } = await api.get(`arkham/cards${query}`)
-  return JsonDecoder.array(cardDefDecoder, 'ArkhamCardDef[]').decodePromise(data)
+  const cards = await JsonDecoder.array(cardDefDecoder, 'ArkhamCardDef[]').decodePromise(data)
+  registerArtVariants(cards)
+  return cards
 }
 
 export const fetchHomebrewCards = async (): Promise<CardDef[]> => {
   const { data } = await api.get('arkham/homebrew/cards')
-  return JsonDecoder.array(cardDefDecoder, 'ArkhamHomebrewCardDef[]').decodePromise(data)
+  const cards = await JsonDecoder.array(cardDefDecoder, 'ArkhamHomebrewCardDef[]').decodePromise(data)
+  registerArtVariants(cards)
+  return cards
+}
+
+export const setDeckOverlay = async (deckId: string, overlay: any): Promise<void> => {
+  await api.put(`arkham/decks/${deckId}/overlay`, overlay)
+}
+
+export const removeDeckOverlay = async (deckId: string): Promise<void> => {
+  await api.delete(`arkham/decks/${deckId}/overlay`)
+}
+
+export const fetchTraits = async (): Promise<[string, string][]> => {
+  const { data } = await api.get('arkham/traits')
+  return data
+}
+
+export type StoredCustomCard = { id: string; cardCode: string; def: any; art: string | null; updatedAt: string }
+
+export const fetchCustomCardLibrary = async (): Promise<StoredCustomCard[]> => {
+  const { data } = await api.get('arkham/custom-cards')
+  return data.map((row: any) => ({ id: row.id, ...row }))
+}
+
+export const saveCustomCard = async (card: { def: any; art: string | null }): Promise<StoredCustomCard> => {
+  const { data } = await api.post('arkham/custom-cards', card)
+  return { id: data.id, ...data }
+}
+
+export const importCustomCards = async (cards: { def: any; art: string | null }[]): Promise<StoredCustomCard[]> => {
+  const { data } = await api.post('arkham/custom-cards/import', { cards })
+  return data.map((row: any) => ({ id: row.id, ...row }))
+}
+
+export const deleteCustomCard = async (id: string): Promise<void> => {
+  await api.delete(`arkham/custom-cards/${id}`)
+}
+
+/* Art is uploaded rather than inlined: a data URI would ride in the def, and
+ * from there into every game that uses the card. */
+export const uploadCustomCardArt = async (file: File | Blob, filename = 'art.webp'): Promise<string> => {
+  const body = new FormData()
+  body.append('file', file, filename)
+  /* The client defaults to application/json; a multipart body has to carry its
+   * own boundary, which the browser only adds when the header is left unset. */
+  const { data } = await api.post('arkham/custom-cards/art', body, {
+    headers: { 'Content-Type': undefined },
+  })
+  return data
+}
+
+export const fetchCustomCards = async (gameId: string): Promise<CustomCard[]> => {
+  const { data } = await api.get(`arkham/games/${gameId}/custom-cards`)
+  return JsonDecoder.array(customCardDecoder, 'ArkhamCustomCard[]').decodePromise(data)
 }
 
 export const fetchCard = async (cardCode: string): Promise<CardDef> => {
@@ -188,6 +246,14 @@ export const retireInvestigator = (gameId: string, investigatorId: string): Prom
 export const rejoinInvestigator = (gameId: string, investigatorId: string): Promise<void> =>
   api.put(`arkham/games/${gameId}`, { tag: 'RejoinInvestigatorAnswer', investigatorId })
 
+// Lays custom cards over an investigator's campaign deck between scenarios.
+export const applyInvestigatorOverlay = (
+  gameId: string,
+  investigatorId: string,
+  overlay: unknown,
+): Promise<void> =>
+  api.put(`arkham/games/${gameId}`, { tag: 'ApplyOverlayAnswer', investigatorId, overlay })
+
 export const joinCampaign = (gameId: string): Promise<void> =>
   api.put(`arkham/games/${gameId}`, { tag: 'JoinCampaignAnswer' })
 
@@ -214,6 +280,14 @@ export const setCardOption = (
   value: boolean | string,
 ): Promise<void> =>
   updateGameRaw(gameId, { tag: 'SetCardOption', contents: [investigatorId, cardCode, key, value] })
+
+export const setCardSilenced = (
+  gameId: string,
+  investigatorId: string,
+  cardCode: string,
+  silenced: boolean,
+): Promise<void> =>
+  updateGameRaw(gameId, { tag: 'SetCardSilenced', contents: [investigatorId, cardCode, silenced] })
 
 export interface PlayabilityResponse {
   cardId: string
@@ -285,28 +359,34 @@ export const joinGame = async (gameId: string): Promise<Game> => {
   return gameDecoder.decodePromise(data)
 }
 
-export const undoChoice = (gameId: string, debug: boolean): Promise<void> => {
-  if (debug) {
-    return api.put(`arkham/games/${gameId}/undo?debug`);
-  } else {
-    return api.put(`arkham/games/${gameId}/undo`)
-  }
-}
+// The axios instance has no default timeout, so a request that never answers
+// never settles either. Undo holds a client-side lock for its round trip, and a
+// promise that never settles leaves that lock -- and the Undo button -- stuck for
+// the life of the page. Bound it: a rejected undo is recoverable, a hung one is
+// not. Multi-step undos fold N patches, so they get more room than a single step.
+const UNDO_TIMEOUT_MS = 30000
+const UNDO_MULTI_TIMEOUT_MS = 60000
+
+const undoRequest = (path: string, timeout: number): Promise<void> =>
+  api.put(path, null, { timeout })
+
+export const undoChoice = (gameId: string, debug: boolean): Promise<void> =>
+  undoRequest(`arkham/games/${gameId}/undo${debug ? '?debug' : ''}`, UNDO_TIMEOUT_MS)
 
 export const undoScenarioChoice = (gameId: string): Promise<void> =>
-  api.put(`arkham/games/${gameId}/undo/scenario`)
+  undoRequest(`arkham/games/${gameId}/undo/scenario`, UNDO_MULTI_TIMEOUT_MS)
 
 export const undoAction = (gameId: string): Promise<void> =>
-  api.put(`arkham/games/${gameId}/undo/action`)
+  undoRequest(`arkham/games/${gameId}/undo/action`, UNDO_MULTI_TIMEOUT_MS)
 
 export const undoTurn = (gameId: string): Promise<void> =>
-  api.put(`arkham/games/${gameId}/undo/turn`)
+  undoRequest(`arkham/games/${gameId}/undo/turn`, UNDO_MULTI_TIMEOUT_MS)
 
 export const undoPhase = (gameId: string): Promise<void> =>
-  api.put(`arkham/games/${gameId}/undo/phase`)
+  undoRequest(`arkham/games/${gameId}/undo/phase`, UNDO_MULTI_TIMEOUT_MS)
 
 export const undoRound = (gameId: string): Promise<void> =>
-  api.put(`arkham/games/${gameId}/undo/round`)
+  undoRequest(`arkham/games/${gameId}/undo/round`, UNDO_MULTI_TIMEOUT_MS)
 
 export const importGame = async (formData: FormData, multiplayerVariant: string): Promise<Game> => {
   const { data } = await api.post(`arkham/games/import?multiplayerVariant=${multiplayerVariant}`, formData, { headers: { 'Content-Type': 'multipart/form-data' } })

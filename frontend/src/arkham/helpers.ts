@@ -1,7 +1,16 @@
 import { useSiteSettingsStore } from '@/stores/site_settings'
+import { useSettings } from '@/stores/settings'
+import { variantArt } from '@/arkham/artVariants'
 import { replaceHomebrewIcons } from '@/arkham/homebrewAssets'
 import { iconClasses, runePlaceholder } from '@/arkham/icons'
 import { ref, type Ref } from 'vue';
+import {
+  cardArtReference,
+  customCardArt,
+  customCardDef,
+  customCardPlaceholder,
+  isCustomCardCode,
+} from '@/arkham/customCards'
 
 interface ImageHelper {
   root: string
@@ -97,10 +106,24 @@ export function isLocalized(src: string) {
   return false
 }
 
-export function imgsrc(src: string) {
+export function imgsrc(src: string): string {
+  const printedArt = src.replace(/^\//, '').match(/^cards\/(.+)\.avif$/)?.[1]
+
+  // A debug-authored card carries its art with it (a URL, or a data URI for a
+  // dropped image) rather than living under the asset host -- unless it names a
+  // printed card's art instead, which resolves down the ordinary path below.
+  if (isCustomCardCode(src)) {
+    const art = customCardArt(src)
+    if (!art) return customCardPlaceholder(src)
+    const reference = cardArtReference(art)
+    return reference ? imgsrc(cardImgPath(reference)) : art
+  }
+
   const store = useSiteSettingsStore()
   const language = localStorage.getItem('language') || 'en'
-  const path = src.replace(/^\//, '')
+  const path = src.replace(/^\//, '').replace(/^cards\/(.+)\.avif$/, (_, art: string) =>
+    `cards/${variantArt(art, useSettings().useVariants)}.avif`
+  )
   const fullPath = `${store.assetHost}/img/arkham/${path}`
 
   if (isLocalized(src)) {
@@ -121,6 +144,9 @@ export function imgsrc(src: string) {
 // Homebrew card art (prefixed codes) lives under its campaign folder.
 // `art` is a c-stripped card code, optionally with suffixes (e.g. "circus-ex-mortis:001b", "dark-matter:063aa").
 export function cardImgPath(art: string): string {
+  // Custom card art is resolved by `imgsrc`, not by path.
+  if (isCustomCardCode(art)) return art
+
   const homebrewMatch = art.match(/^:(.+):(\d+[a-z]*)$/)
 
   if (homebrewMatch) {
@@ -205,6 +231,13 @@ const CLASS_TO_CODES: Record<InvestigatorClass, Set<string>> = {
 }
 
 export function investigatorClass(code: string): CssClassFlags {
+  // An investigator you built is in no printed set, so its class comes off its
+  // own def rather than the table above.
+  if (isCustomCardCode(code)) {
+    const symbol = customCardDef(code)?.classSymbols?.[0]?.toLowerCase()
+    return symbol && symbol in CLASS_TO_CODES ? { [symbol as InvestigatorClass]: true } : {}
+  }
+
   const flags: CssClassFlags = {}
   for (const cls of Object.keys(CLASS_TO_CODES) as InvestigatorClass[]) {
     if (CLASS_TO_CODES[cls].has(code)) {

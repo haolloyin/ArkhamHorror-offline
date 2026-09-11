@@ -1,14 +1,13 @@
 module Arkham.Homebrew.CircusExMortis.Campaign (circusExMortis) where
 
-import Arkham.Ability
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Campaign.Import.Lifted
+import Arkham.Campaign.Overlay
 import Arkham.CampaignLogKey (recorded)
-import Arkham.Card
 import Arkham.Classes.HasGame (getGame)
 import Arkham.Decklist.Type (investigator_name)
 import Arkham.Game.Base (gamePerformTarotReadings)
-import Arkham.Helpers.Campaign (getCompletedSteps, getOwner)
+import Arkham.Helpers.Campaign (getOwner)
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Modifiers (ModifierType (..), modifySelectWith, setActiveDuringSetup)
 import Arkham.Helpers.Query (getInvestigators, getLeadPlayer)
@@ -22,61 +21,47 @@ import Arkham.Homebrew.CircusExMortis.Key
 import Arkham.Homebrew.CircusExMortis.Tokens (pattern MoonToken)
 import Arkham.Investigator.Types (Field (..))
 import Arkham.Matcher
-import Arkham.Message (pattern UseThisAbility)
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
 import Arkham.Name (toTitle)
 import Arkham.Projection
 import Arkham.Question (DestinyDrawing (..), Question (PickDestiny))
 import Arkham.Source
-import Arkham.Target (Target (GameTarget))
 import Arkham.Tarot (TarotCard (..), TarotCardArcana (..), TarotCardFacing (Upright))
 import Arkham.Trait (Trait (Believer, Chosen, Clairvoyant, Miskatonic, Scholar))
-import Arkham.Treachery.CardDefs.CurseOfTheRougarou qualified as Treacheries
 import Data.Text qualified as T
 
 newtype CircusExMortis = CircusExMortis CampaignAttrs
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
-
-{- | The grants Scenario IV hands out (guide p14) live on the campaign, so they
-must survive into later scenarios. Each is anchored onto the card it is granted
-to with a matcher proxy, so the ability exists only while that card is in play
-and reads, in the UI, as an ability of that card.
--}
-data GrantedOn = GrantedOn Source CardCode
-
-instance Sourceable GrantedOn where
-  toSource (GrantedOn source _) = source
-
-instance HasCardCode GrantedOn where
-  toCardCode (GrantedOn _ cardCode) = cardCode
-
-grantedOn :: (HasCardCode def, Sourceable matcher) => def -> matcher -> GrantedOn
-grantedOn def matcher = GrantedOn (proxy matcher CampaignSource) (toCardCode def)
-
-releaseAMoonTokenReaction :: AbilityType
-releaseAMoonTokenReaction = freeReaction $ ChaosTokenReleased #after You moonToken
 
 circusExMortis :: Difficulty -> CircusExMortis
 circusExMortis = campaign CircusExMortis (CampaignId ":circus-ex-mortis") "Circus Ex Mortis"
 
 instance IsCampaign CircusExMortis where
   campaignTokens = chaosBagContents
-  campaignAbilities (CircusExMortis attrs)
-    | HarmsWay `notElem` attrs.completedSteps = []
-    | otherwise =
-        [ restricted
-            (grantedOn Treacheries.curseOfTheRougarou $ treacheryIs Treacheries.curseOfTheRougarou)
-            1
-            (TreacheryExists $ treacheryIs Treacheries.curseOfTheRougarou <> TreacheryInThreatAreaOf You)
-            releaseAMoonTokenReaction
-        , playerLimit PerRound
-            $ restricted
-              (grantedOn Assets.ladyEsprit $ assetIs Assets.ladyEsprit)
-              2
-              ControlsThis
-              releaseAMoonTokenReaction
-        ]
+
+  {- | Guide p14: Curse of the Rougarou is offered free immediately after Harm's
+  Way. The side story itself is played with its own printed cards; All Points
+  West is where its two reward cards are upgraded to their Circus printings.
+  -}
+  campaignOverlays (CircusExMortis attrs) =
+    [ CampaignOverlay
+        { id = "circus-ex-mortis:rougarou"
+        , name = "Circus Ex Mortis"
+        , scenario = curseOfTheRougarouId
+        , available = discounted
+        , xpCost = if discounted then 0 else 1
+        }
+    ]
+   where
+    {- Completed steps are most-recent-first, but they also accumulate the
+    bookkeeping steps the continue screen pushes (a ContinueCampaignStep is
+    prepended on every answer), so the head is not the last scenario played.
+    Read the scenarios only -- the same way 'playedCurseOfTheRougarouEnRoute'
+    does -- or the discount is gone by the time the cost is charged. -}
+    discounted = case mapMaybe (.scenario) attrs.completedSteps of
+      (sid : _) -> ScenarioStep sid == HarmsWay
+      _ -> False
   nextStep a = case (toAttrs a).normalizedStep of
     PrologueStep -> continue OneNightOnly
     OneNightOnly -> continue ThePrimrosePath
@@ -107,23 +92,12 @@ instance HasModifiersFor CircusExMortis where
 
 instance RunMessage CircusExMortis where
   runMessage msg c = runQueueT $ campaignI18n $ case msg of
-    -- "Curse of the Rougarou gains '[reaction] After you release a {moon}
-    -- token: Discard Curse of the Rougarou.'" (guide p14)
-    UseThisAbility iid source 1 | isProxySource (toAttrs c) source -> do
-      for_ source.treachery $ toDiscardBy iid source
-      pure c
-    -- "Lady Esprit gains '[reaction] After you release a {moon} token: Discover
-    -- a clue. (Limit once per round.)'" (guide p14)
-    UseThisAbility iid source 2 | isProxySource (toAttrs c) source -> do
-      discoverAtYourLocation NotInvestigate iid source 1
-      pure c
     CampaignStep PrologueStep -> do
       scope "additionalRules" $ flavor $ setTitle "title" >> p "moonTokens"
       scope "prologue" do
-        flavor $ setTitle "title" >> p "body"
         flavor do
           setTitle "title"
-          p "minnie"
+          p "body"
           ul $ li "addMoonTokens"
       replicateM_ 3 $ addChaosToken MoonToken
       whenM (gamePerformTarotReadings <$> getGame) $ scope "campaignReading" do
@@ -356,19 +330,6 @@ instance RunMessage CircusExMortis where
           record TheNewMoonCircusWasNeverSeenAgain
       push GameOver
       pure c
-    -- Curse of the Rougarou between Harm's Way and All Points West costs each
-    -- investigator 1 fewer experience (guide p13). Its base side-story cost is
-    -- 1, so it is free: mirror the default runner minus the XP spend.
-    CampaignStep (StandaloneScenarioStep sid _) | sid == curseOfTheRougarouId -> do
-      afterHarmsWay <- isAfterHarmsWay
-      if afterHarmsWay
-        then startRougarouWithoutXp sid Nothing
-        else lift $ defaultCampaignRunner msg c
-    CampaignStep (StandaloneScenarioStepWithOptions sid _ opts) | sid == curseOfTheRougarouId -> do
-      afterHarmsWay <- isAfterHarmsWay
-      if afterHarmsWay
-        then startRougarouWithoutXp sid (Just opts)
-        else lift $ defaultCampaignRunner msg c
     -- Moon tokens, end of round (guide p1): for each moon token sealed on
     -- your investigator card, you must choose to keep it sealed or take 1
     -- damage or 1 horror and release it.
@@ -402,18 +363,3 @@ instance RunMessage CircusExMortis where
           recordSetReplace Destinies (recorded $ String entry) (recorded $ String $ newName <> ": " <> word)
       lift $ defaultCampaignRunner msg c
     _ -> lift $ defaultCampaignRunner msg c
-   where
-    isAfterHarmsWay = do
-      completed <- getCompletedSteps
-      -- completed steps are most-recent-first; the head scenario must be
-      -- Harm's Way for the discount to apply
-      pure $ listToMaybe (filter (isJust . (.scenario)) completed) == Just HarmsWay
-    startRougarouWithoutXp sid opts = do
-      pushAll
-        [ ResetInvestigators
-        , ResetGame
-        , ForTarget GameTarget ResetGame
-        , ForInvestigators [] ResetGame
-        , StartScenario sid opts
-        ]
-      pure c

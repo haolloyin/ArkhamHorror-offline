@@ -26,7 +26,7 @@ newtype TheDrownedCity = TheDrownedCity CampaignAttrs
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
 
 {- | Walk in Faith's failure: "For the remainder of the campaign, you must treat
-the {elderThing} token as if it were a {tablet} token, instead."
+the {elderThing} token as if it were an {autoFail} token, instead."
 
 The substitution has to land on the chaos tokens that investigator reveals, not on
 the investigator: skill test resolution reads 'ForcedChaosTokenChange' off
@@ -40,7 +40,7 @@ instance HasModifiersFor TheDrownedCity where
     modifySelect
       CampaignSource
       (ChaosTokenRevealedBy $ investigatorWithRecord LostTheirFaith)
-      [ForcedChaosTokenChange ElderThing [Tablet]]
+      [ForcedChaosTokenChange ElderThing [AutoFail]]
 
 theDrownedCity :: Difficulty -> TheDrownedCity
 theDrownedCity = campaign TheDrownedCity (CampaignId "11") "The Drowned City"
@@ -202,7 +202,7 @@ instance RunMessage TheDrownedCity where
       play it re-enters via @CampaignSpecific "beginSepulchreOfTheSleeper"@ so the
       real scenario start stays in one place, in 'defaultCampaignRunner'.
       -}
-      CampaignStep step | step == SepulchreOfTheSleeper -> scope "sepulchreOfTheSleeper" do
+      CampaignStep step | step.unwrapScenario == SepulchreOfTheSleeper -> scope "sepulchreOfTheSleeper" do
         artifacts <- countM getHasRecord rlyehArtifacts
         glyphs <- getTranslatedGlyphCount
         -- "If at least 1 artifact is checked under 'Artifacts Earned,' and at least
@@ -218,7 +218,7 @@ instance RunMessage TheDrownedCity where
               li.validate (not prepared) "proceedToTheAwakening"
         if prepared then doStep 2 msg else setNextCampaignStep TheAwakening
         pure c
-      DoStep 2 (CampaignStep step) | step == SepulchreOfTheSleeper -> scope "sepulchreOfTheSleeper" do
+      DoStep 2 (CampaignStep step) | step.unwrapScenario == SepulchreOfTheSleeper -> scope "sepulchreOfTheSleeper" do
         artifacts <- countM getHasRecord rlyehArtifacts
         glyphs <- getTranslatedGlyphCount
         innerSanctumUnsealed <- getHasRecord TheInnerSanctumWasUnsealed
@@ -241,7 +241,7 @@ instance RunMessage TheDrownedCity where
             addChaosToken Zero
             setNextCampaignStep TheAwakening
         pure c
-      DoStep 3 (CampaignStep step) | step == SepulchreOfTheSleeper -> scope "sepulchreOfTheSleeper" do
+      DoStep 3 (CampaignStep step) | step.unwrapScenario == SepulchreOfTheSleeper -> scope "sepulchreOfTheSleeper" do
         scope "intro" do
           storyWithChooseOneM
             ( do
@@ -260,10 +260,10 @@ instance RunMessage TheDrownedCity where
                   for_ taskKeys \(key, _, _) -> incrementRecordCountForInvestigator iid key 1
                 record TheInvestigatorsDidNotConfrontTheNightmare
                 setNextCampaignStep TheAwakening
-              labeled "layItToRest" $ campaignSpecific_ "beginSepulchreOfTheSleeper"
+              labeled "layItToRest" $ campaignSpecific "beginSepulchreOfTheSleeper" step
         pure c
-      CampaignSpecific "beginSepulchreOfTheSleeper" _ ->
-        lift $ defaultCampaignRunner (CampaignStep SepulchreOfTheSleeper) c
+      CampaignSpecific "beginSepulchreOfTheSleeper" v ->
+        lift $ defaultCampaignRunner (CampaignStep $ toResultDefault SepulchreOfTheSleeper v) c
       -- Interlude III: The Awakening — the Sleeper rises; both expeditions reunite.
       CampaignStep (InterludeStep 3 _) -> scope "theAwakening" do
         hasArtifact <- anyM getHasRecord rlyehArtifacts
@@ -378,7 +378,7 @@ instance RunMessage TheDrownedCity where
                     $ addCampaignCardToDeck iid DoNotShuffleIn
                 DreamsOfDestruction -> do
                   sufferMentalTrauma iid 1
-                  removeChaosToken AutoFail
+                  removeChaosToken ElderSign
                 -- The trauma choice is part of this Task's story entry above.
                 NoPlaceLikeHome -> addChaosToken Cultist
                 DoNoHarm -> do

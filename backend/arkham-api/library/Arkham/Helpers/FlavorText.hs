@@ -52,6 +52,13 @@ resolutionFlavor builder = story do
         , flavorBody = [ModifyEntry [ResolutionEntry] $ CompositeEntry flavorBody]
         }
 
+-- | A token-result panel using the Predation layout without haunted effects.
+tokenReveal :: FlavorTextBuilder () -> FlavorTextBuilder ()
+tokenReveal builder = do
+  let FlavorText title body = buildFlavor builder
+  modify \s -> s {flavorTitle = title}
+  addEntry $ ModifyEntry [TokenRevealEntry] $ CompositeEntry body
+
 hauntedFlavor :: (HasI18n, ReverseQueue m) => (HasI18n => FlavorTextBuilder ()) -> m ()
 hauntedFlavor builder = story do
   case buildFlavor builder of
@@ -76,6 +83,12 @@ setTitle t = modify \s -> s {flavorTitle = Just ("$" <> FT.ikey t)}
 -- | Builder form of 'Arkham.Text.i18nWithTitle': the @.title@ heading plus the @.body@ paragraph.
 withTitle :: HasI18n => Scope -> FlavorTextBuilder ()
 withTitle t = setTitle (t <> ".title") >> p (t <> ".body")
+
+{- | 'withTitle' with the title also shown as a heading in the body, the way a
+scenario intro is presented.
+-}
+withHeading :: HasI18n => Scope -> FlavorTextBuilder ()
+withHeading t = h (t <> ".title") >> p (t <> ".body")
 
 h :: HasI18n => Scope -> FlavorTextBuilder ()
 h t = setTitle t >> h_ t

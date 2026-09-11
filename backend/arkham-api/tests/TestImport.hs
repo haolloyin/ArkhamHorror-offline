@@ -727,6 +727,7 @@ chooseFirstOption _reason = do
   questionMap <- gameQuestion <$> getGame
   case mapToList questionMap of
     [(_, question)] -> case stripQuestionWrappers question of
+      Read _ (BasicReadChoices (msg : _)) _ -> push (uiToRun msg) >> runMessages
       ChooseOne (msg : _) -> push (uiToRun msg) >> runMessages
       PlayerWindowChooseOne (msg : _) -> push (uiToRun msg) >> runMessages
       ChooseOneAtATime (msg : _) -> push (uiToRun msg) >> runMessages
@@ -749,6 +750,7 @@ chooseOptionMatching _reason f = do
   notFound msgs =
     liftIO $ expectationFailure $ "could not find a matching message in: " <> show msgs
   go iid question = case stripQuestionWrappers question of
+    Read _ (BasicReadChoices msgs) _ -> go iid (ChooseOne msgs)
     ChooseOne msgs -> case find f msgs of
       Just msg -> push (uiToRun msg) <* runMessages
       Nothing -> notFound msgs
@@ -925,6 +927,7 @@ newGame scenario' investigator = do
         , gameActionSnapshot = Transient Nothing
         , gameInAction = False
         , gameCards = mempty
+        , gameCustomCards = mempty
         , gameActiveCost = mempty
         , gameActiveAbilities = mempty
         , gameInSetup = False

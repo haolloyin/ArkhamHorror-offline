@@ -8,7 +8,8 @@
     "admin": "Admin",
     "cards": "Cards",
     "myDecks": "Decks",
-    "support": "Patreon"
+    "support": "Patreon",
+    "cardBuilder": "Card Builder"
   },
   "activeGames": "Active Games",
   "checkCampaignLog": "Check your Campaign Log.",
@@ -361,6 +362,7 @@
   },
   "sideStory": {
     "selectSideScenario": "Select a side scenario to add",
+    "variant": "Some gameplay for this campaign may be altered",
     "requiresInvestigator": "Requires {name}",
     "xpAsymmetric": "({signatureXp} XP for {name}, {otherXp} XP each other investigator)"
   },
@@ -447,7 +449,9 @@
     "grouped": "Grouped"
   },
   "player": {
-    "viewDeck": "View Deck"
+    "viewDeck": "View Deck",
+    "silenceCard": "Silence — skip this card's free triggers and reactions while it is hidden",
+    "unsilenceCard": "Unsilence — offer this card's triggers again"
   },
   "enemy": {
     "debug": "Debug"
@@ -536,7 +540,18 @@
     "cannotBeUndone": "This cannot be undone.",
     "deleteAccount": "Delete Account",
     "deleteConfirm": "Are you sure? All your games, decks, and account data will be permanently lost and cannot be recovered.",
-    "confirmPermanentDelete": "Yes, permanently delete my account"
+    "confirmPermanentDelete": "Yes, permanently delete my account",
+    "customCards": "Custom cards",
+    "account": "Account settings",
+    "features": "Features",
+    "experiments": "Experiments",
+    "betaHelp": "Try upcoming features before they are released to everyone.",
+    "experimentsWarning": "Experimental features may change, stop working, or be removed at any time. They can break games in progress or leave them unrecoverable. Enable them only if you are comfortable with these risks and willing to provide feedback.",
+    "usedRevisedCoreArt": "Use revised core art in Encounter sets",
+    "revisedCoreArtDescription": "Shows the Revised Core Set artwork for supported encounter cards, including enemies, treacheries, locations, and agendas. Only artwork changes—not card rules or player cards. This preference applies only to your view; other players keep their own art settings.",
+    "customCardsWarning": "Experimental. This feature can stop working, break a game in progress, or be removed at any time. Custom cards are only ever as correct as the definition behind them, and the builder can express things the engine will happily run but no printed card would ever do.",
+    "customCardsHelp": "Adds a Card Builder to the menu, where you can make your own cards and add them to a game from the debug menu. It also lets you lay an overlay over a deck, from the {icon} button on a deck or beside a deck when you pick one for a game: swap in a custom investigator (their signatures come with them, and the old ones go), and add or remove cards. An overlay applied on the deck page sticks to that deck until you remove it; one applied when you choose a deck for a game applies to that game only, leaving the deck and every other copy of it untouched.",
+    "openCardBuilder": "Open the card builder"
   },
   "campaignLogTooltip": {
     "rememberedTitle": "Remembered",
@@ -632,9 +647,7 @@
       "reset": "Reset"
     },
     "story": {
-      "title": "Debug Story",
-      "inspectBag": "Inspect Bag",
-      "empty": "No bag contents to display."
+      "title": "Debug Story"
     },
     "common": {
       "place": "Place",
@@ -643,6 +656,18 @@
       "removeAllTokens": "Remove All Tokens",
       "modifiers": "Modifiers",
       "close": "Close"
+    },
+    "victoryDisplay": {
+      "title": "Move card",
+      "removeFromGame": "Remove from game",
+      "setAside": "Set aside",
+      "discard": "Discard"
+    },
+    "cardMove": {
+      "onTop": "Place on top",
+      "onBottom": "Place on bottom",
+      "shuffleIn": "Shuffle in",
+      "wrongDeck": "Wrong back for this deck"
     }
   },
   "customizations": {

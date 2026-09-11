@@ -8,23 +8,29 @@ module Api.Handler.Arkham.Game.Debug (
   getApiV1ArkhamGameReloadR,
   getApiV1ArkhamGameOpenSeatsR,
   postApiV1ArkhamGameClaimSeatR,
+  getApiV1ArkhamGameCustomCardsR,
 ) where
 
 import Api.Arkham.Export
 import Api.Arkham.Helpers
 import Api.Arkham.Types.MultiplayerVariant
 import Arkham.Card.CardCode
+import Arkham.Card.CardDef (cdCardCode)
+import Arkham.Card.CustomCard
 import Arkham.Game
 import Arkham.Id
 import Codec.Compression.GZip qualified as GZip
 import Conduit
 import Control.Exception (evaluate)
+import Data.Aeson.Types (parseMaybe)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time.Clock
 import Database.Esqueleto.Experimental hiding (update)
 import Database.Persist qualified as Persist
+import Entity.Arkham.CustomCard
 import Entity.Arkham.LogEntry
 import Entity.Arkham.Player
 import Entity.Arkham.Step
@@ -311,3 +317,22 @@ postApiV1ArkhamGameClaimSeatR gameId = do
       lift $ permissionDenied "You already have a seat in this game"
     newPlayerId <- insert $ ArkhamPlayer userId gameId investigatorId
     remapInvestigatorUUID gameId investigatorId newPlayerId
+
+{- | The debug-authored cards defined in this game.
+
+Served on its own rather than folded into the game payload: a custom card
+carries its art inline (a data URI for a dropped image), which has no business
+riding every websocket update.
+-}
+getApiV1ArkhamGameCustomCardsR :: ArkhamGameId -> Handler [CustomCard]
+getApiV1ArkhamGameCustomCardsR gameId = do
+  userId <- getRequestUserId
+  ge <- runDB $ get404 gameId
+  rows <- runDB $ Persist.selectList [ArkhamCustomCardUserId Persist.==. userId] []
+  -- Your own library wins over the copy recorded on the game, so editing a card
+  -- shows through at the table without having to re-add it.
+  let library = Map.fromList do
+        Entity _ row <- rows
+        def <- maybeToList $ parseMaybe parseJSON (arkhamCustomCardDef row)
+        pure (cdCardCode def, CustomCard def (arkhamCustomCardArt row))
+  pure $ toList $ library <> gameCustomCards ge.currentData

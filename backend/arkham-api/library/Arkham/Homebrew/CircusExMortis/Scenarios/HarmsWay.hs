@@ -89,12 +89,47 @@ instance HasChaosTokenValue HarmsWay where
 
 instance RunMessage HarmsWay where
   runMessage msg s@(HarmsWay attrs) = runQueueT $ scenarioI18n "harmsWay" $ case msg of
-    PreScenarioSetup -> scope "intro" do
-      storyWithChooseOneM (setTitle "title" >> p "body") do
-        labeled "faster" $ addChaosToken Cultist
-        labeled "caution" $ addChaosToken Tablet
+    PreScenarioSetup -> do
+      scope "intro" do
+        storyWithChooseOneM (h "title" >> p "body") do
+          labeled "faster" $ addChaosToken Cultist
+          labeled "caution" $ addChaosToken Tablet
+      -- Opening hands and mulligans finish before Setup. Reserve these cards
+      -- now so AdditionalStartingCards can actually add them to the hand.
+      owners <- catMaybes <$> sequence [getAmaltheaWeaverOwner, getDeCultusBestiaeOwner]
+      scope "startingCards" do
+        for_ owners \(iid, def) -> do
+          deck <- field InvestigatorDeck iid
+          for_ (find ((== def) . toCardDef) (unDeck deck)) \card -> do
+            focusCards [card] do
+              investigatorStoryWithChooseOneM' iid (ul $ li "instructions") do
+                labeled "take" do
+                  push $ ObtainCard (toCardId card)
+                  setupModifier ScenarioSource iid (AdditionalStartingCards [toCard card])
+                labeled "leave" nothing
       pure s
     Setup -> runScenarioSetup HarmsWay attrs do
+      bypassedIllusions <- getHasRecord TheInvestigatorsBypassedTheIllusions
+      eyeOnYou <- getHasRecord TheRingmasterHasHisEyeOnYou
+
+      setup $ ul do
+        li "gatherSets"
+        li.nested "placeLocations" do
+          li "startAt"
+        li "toweringDarkYoung"
+        li "furyBag"
+        li "darkYoungStir"
+        li "kidnappedCitizens"
+        li.nested "checkCampaignLogIllusions" do
+          li.validate bypassedIllusions "bypassedTheIllusions"
+          li.validate (not bypassedIllusions) "lostInTheArkhamWoods"
+        li.nested "checkCampaignLogAct" do
+          li.validate eyeOnYou "eyeOnYou"
+          li.validate (not eyeOnYou) "doesNotSuspectYou"
+        li "setAside"
+        li "startingCards"
+        unscoped $ li "shuffleRemainder"
+
       gather Set.HarmsWay
       gather Set.CultOfShubNiggurath
       gather Set.LunaticNight
@@ -132,29 +167,18 @@ instance RunMessage HarmsWay where
         push $ StoryMessage $ PlaceStory card (AtLocation lid)
 
       -- "Place 2 doom on agenda 1a. This doom ignores the forced effect."
-      whenM (getHasRecord TheInvestigatorsBypassedTheIllusions) do
+      when bypassedIllusions do
         scenarioSetupModifier
           attrs.id
           attrs
           (AgendaId $ toCardCode Agendas.theCircusSleeps)
           (EntersPlayWithDoom 2)
 
-      eyeOnYou <- getHasRecord TheRingmasterHasHisEyeOnYou
       let (act1, unusedAct1) =
             if eyeOnYou then (Acts.escapeActVI, Acts.escapeActVII) else (Acts.escapeActVII, Acts.escapeActVI)
       removeEvery [unusedAct1]
 
       setAside [Locations.campOutskirtsGuardedClosely, Locations.campOutskirtsQuietForNow]
-
-      -- "The investigators with Amalthea Weaver and De Cultus Bestiae in their
-      -- decks may begin the game with those cards in their opening hands as
-      -- additional cards."
-      owners <- catMaybes <$> sequence [getAmaltheaWeaverOwner, getDeCultusBestiaeOwner]
-      for_ owners \(iid, def) -> do
-        deck <- field InvestigatorDeck iid
-        for_ (find ((== def) . toCardDef) (unDeck deck)) \card -> do
-          push $ ObtainCard (toCardId card)
-          setupModifier ScenarioSource iid (AdditionalStartingCards [toCard card])
 
       setAgendaDeck [Agendas.theCircusSleeps, Agendas.treadingOnEggshells, Agendas.sleepWhenYoureDead]
       setActDeck [act1, Acts.overdueDeparture]
@@ -181,8 +205,9 @@ instance RunMessage HarmsWay where
           resolution "resolution1"
           -- "Remove 2 copies of Kidnapped Citizen from the victory display, if
           -- possible", so they neither count for X nor pay out their Victory 1.
-          for_ (take 2 $ mapMaybe (preview _EncounterCard) citizens) (push . AddToEncounterDiscard)
-          recordCount GroupsOfCitizensWereSavedFromTheCircus $ max 0 (length citizens - 2)
+          let (freed, stillCaptive) = splitAt 2 citizens
+          for_ freed removeCardFromGame
+          recordCount GroupsOfCitizensWereSavedFromTheCircus (length stillCaptive)
           push R3
         Resolution 2 -> do
           resolution "resolution2"

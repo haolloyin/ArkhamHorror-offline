@@ -29,6 +29,7 @@ library
       Api.Handler.Arkham.Achievements
       Api.Handler.Arkham.Admin.Metrics
       Api.Handler.Arkham.Cards
+      Api.Handler.Arkham.CustomCards
       Api.Handler.Arkham.Decks
       Api.Handler.Arkham.Events
       Api.Handler.Arkham.Game.Bug
@@ -2294,6 +2295,7 @@ library
       Arkham.Campaign.Campaigns.TheScarletKeys.Achievements
       Arkham.Campaign.Import.Lifted
       Arkham.Campaign.Option
+      Arkham.Campaign.Overlay
       Arkham.Campaign.Runner
       Arkham.Campaign.Types
       Arkham.CampaignLog
@@ -2411,6 +2413,7 @@ library
       Arkham.Card.CardType
       Arkham.Card.Class
       Arkham.Card.Cost
+      Arkham.Card.CustomCard
       Arkham.Card.EncounterCard
       Arkham.Card.Id
       Arkham.Card.PlayerCard
@@ -2445,10 +2448,31 @@ library
       Arkham.Cost.Status
       Arkham.Criteria
       Arkham.Criteria.Override
+      Arkham.Custom.Ability
+      Arkham.Custom.Asset
+      Arkham.Custom.Enemy
+      Arkham.Custom.Env
+      Arkham.Custom.Event
+      Arkham.Custom.Expr
+      Arkham.Custom.Investigator
+      Arkham.Custom.Location
+      Arkham.Custom.Overlay
+      Arkham.Custom.Schema
+      Arkham.Custom.Schema.Fields
+      Arkham.Custom.Schema.TH
+      Arkham.Custom.Schema.Types
+      Arkham.Custom.Schema.Windows
+      Arkham.Custom.Schema.Windows.Check
+      Arkham.Custom.Schema.Windows.Table
+      Arkham.Custom.Skill
+      Arkham.Custom.Steps
+      Arkham.Custom.Story
+      Arkham.Custom.Treachery
       Arkham.Customization
       Arkham.Damage
       Arkham.DamageEffect
       Arkham.Debug
+      Arkham.Debug.CardDestination
       Arkham.Deck
       Arkham.DeckBuilding.Adjustment
       Arkham.Decklist
@@ -4044,6 +4068,7 @@ library
       Arkham.Helpers.CombatTarget
       Arkham.Helpers.Cost
       Arkham.Helpers.Criteria
+      Arkham.Helpers.CustomChaosBag
       Arkham.Helpers.Customization
       Arkham.Helpers.Damage
       Arkham.Helpers.Deck
@@ -4145,6 +4170,7 @@ library
       Arkham.Homebrew.CircusExMortis.Assets.DeCultusBestiaeProphecyOfTheEternal
       Arkham.Homebrew.CircusExMortis.Assets.DeCultusBestiaeProphecyOfTheHorde
       Arkham.Homebrew.CircusExMortis.Assets.IllusoryLocus
+      Arkham.Homebrew.CircusExMortis.Assets.LadyEsprit
       Arkham.Homebrew.CircusExMortis.Assets.RalphDykstra
       Arkham.Homebrew.CircusExMortis.Assets.TerrifiedCaptives
       Arkham.Homebrew.CircusExMortis.Campaign
@@ -4263,6 +4289,7 @@ library
       Arkham.Homebrew.CircusExMortis.Traits
       Arkham.Homebrew.CircusExMortis.Treacheries.BrokenCouplings
       Arkham.Homebrew.CircusExMortis.Treacheries.CloseWatch
+      Arkham.Homebrew.CircusExMortis.Treacheries.CurseOfTheRougarou
       Arkham.Homebrew.CircusExMortis.Treacheries.DenseTangle
       Arkham.Homebrew.CircusExMortis.Treacheries.EndlessSpawn
       Arkham.Homebrew.CircusExMortis.Treacheries.FeralImpulses
@@ -6232,6 +6259,7 @@ library
       Arkham.Matcher.Location
       Arkham.Matcher.Patterns
       Arkham.Matcher.Phase
+      Arkham.Matcher.Placement
       Arkham.Matcher.Scenario
       Arkham.Matcher.Skill
       Arkham.Matcher.SkillTest
@@ -7054,6 +7082,7 @@ library
       Arkham.Text
       Arkham.Timing
       Arkham.Token
+      Arkham.TokenBag
       Arkham.TokenStrategy
       Arkham.Trait
       Arkham.Treachery
@@ -8117,7 +8146,9 @@ library
       Entity.Answer
       Entity.Arkham.Achievement
       Entity.Arkham.ArkhamDBDecklist
+      Entity.Arkham.CustomCard
       Entity.Arkham.Deck
+      Entity.Arkham.DeckOverlay
       Entity.Arkham.Epic
       Entity.Arkham.Game
       Entity.Arkham.GameRaw
@@ -8179,6 +8210,7 @@ library
     , async
     , base
     , base16-bytestring
+    , base64-bytestring
     , bcrypt
     , bugsnag
     , bugsnag-hs
@@ -8398,6 +8430,7 @@ test-suite spec
       Arkham.Asset.Assets.DendromorphosisSpec
       Arkham.Asset.Assets.DigDeep2Spec
       Arkham.Asset.Assets.DigDeepSpec
+      Arkham.Asset.Assets.DirtyFighting2Spec
       Arkham.Asset.Assets.DiscOfItzamna2Spec
       Arkham.Asset.Assets.DreamersChronicleSpec
       Arkham.Asset.Assets.DreamsOfDestructionSpec
@@ -8495,6 +8528,7 @@ test-suite spec
       Arkham.Asset.Assets.ZoeysCrossSpec
       Arkham.Asset.RunnerSpec
       Arkham.Campaign.NightOfTheZealot.ScenariosSpec
+      Arkham.Campaign.OverlaySpec
       Arkham.Campaign.RelicOfAgesSpec
       Arkham.Campaign.ReloadDecksSpec
       Arkham.Campaign.TheCircleUndone.ScenariosSpec
@@ -8600,6 +8634,7 @@ test-suite spec
       Arkham.Helpers.EnemySpec
       Arkham.Helpers.InvestigatorSpec
       Arkham.Helpers.QuerySpec
+      Arkham.Homebrew.CircusExMortis.HarmsWaySpec
       Arkham.Homebrew.DarkMatter.Agendas.TheQuantumMaelstromSpec
       Arkham.Homebrew.DarkMatter.FacedownThreatAreaSpec
       Arkham.Homebrew.DarkMatter.Treacheries.ReminiscenceCovenantSpec
@@ -8668,6 +8703,7 @@ test-suite spec
       Arkham.Skill.Cards.WatchThisSpec
       Arkham.Story.Cards.UnfinishedBusinessSpec
       Arkham.Story.CardsSpec
+      Arkham.TokenBagSpec
       Arkham.TraitSpec
       Arkham.Treachery.Cards.AbandonedAndAloneSpec
       Arkham.Treachery.Cards.AmnesiaSpec

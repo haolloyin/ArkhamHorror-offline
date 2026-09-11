@@ -74,6 +74,7 @@ import Arkham.Helpers.Playable (
   getOtherPlayersPlayableCards,
   getPlayableDiscards,
  )
+import Arkham.Helpers.Ref (sourceToMaybeCard)
 import Arkham.Helpers.SkillTest
 import Arkham.Helpers.Slot (
   canPutIntoSlot,
@@ -378,11 +379,28 @@ getWindowSkippable attrs ws (windowType -> Window.WouldPayCardCost iid _ _ card@
     ]
 getWindowSkippable _ _ _ = pure True
 
+{- | Abilities the investigator has silenced from the hidden-cards stack. Only
+non-forced triggers are dropped -- a forced ability on a silenced card still
+fires, since the game would be wrong without it.
+-}
+dropSilencedAbilities :: HasGame m => InvestigatorAttrs -> [Ability] -> m [Ability]
+dropSilencedAbilities attrs abilities
+  | null silenced = pure abilities
+  | otherwise = flip filterM abilities \ability ->
+      isForcedAbility attrs.id ability >>= \case
+        True -> pure True
+        False ->
+          maybe True ((`notMember` silenced) . toCardCode)
+            <$> sourceToMaybeCard ability.source
+ where
+  silenced = silencedCardCodes attrs.settings
+
 runWindow
   :: (HasGame m, HasQueue Message m)
   => InvestigatorAttrs -> [Window] -> [Ability] -> [Card] -> m ()
-runWindow attrs windows actions playableCards = do
+runWindow attrs windows allActions playableCards = do
   let iid = toId attrs
+  actions <- dropSilencedAbilities attrs allActions
   unless (null playableCards && null actions) $ do
     anyForced <- anyM (isForcedAbility iid) actions
     player <- getPlayer iid
@@ -491,6 +509,14 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     pure $ a & settingsL %~ updateCardSetting cCode s
   SetCardOption iid cCode k v | iid == a.id -> do
     pure $ a & settingsL %~ setCardOption cCode k v
+  SetCardSilenced iid cCode v | iid == a.id -> do
+    let attrs' = a & settingsL %~ setCardSilenced cCode v
+    -- Same reasoning as UpdateGlobalSetting: silencing a card while its window
+    -- is the open question should drop the prompt now, not next window.
+    currentWindows <- concat <$> getWindowStack
+    when (any (\w -> Window.windowType w == Window.FastPlayerWindow) currentWindows) do
+      push $ Do (CheckWindows currentWindows)
+    pure attrs'
   EndOfGame _ -> do
     -- Transfiguration (and Hank Samson's resolute flip) last "until the end
     -- of the game", so the form must revert before interludes check traits
@@ -570,10 +596,13 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     -- card that would otherwise start in play in the deck instead.
     setupModifiers <- getModifiers a
     let cannotPutIntoPlay c = any (\case CannotPutIntoPlay m -> cardMatch c m; _ -> False) setupModifiers
+    -- The defs are a snapshot persisted with the save, so they go stale as soon as the
+    -- card's definition changes; re-look them up and match on card code (#5611).
+    let startsWithDefs = map (\def -> fromMaybe def (lookupCardDef def)) investigatorStartsWith
     (startsWithMsgs, deck') <-
       foldM
         ( \(msgs, currentDeck) cardDef -> do
-            let (before, after) = break ((== cardDef) . toCardDef) (unDeck currentDeck)
+            let (before, after) = break ((== toCardCode cardDef) . toCardCode) (unDeck currentDeck)
             case after of
               (card : rest)
                 | cannotPutIntoPlay (toCard card) -> pure (msgs, currentDeck)
@@ -611,7 +640,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
               _ -> pure (msgs, currentDeck)
         )
         ([], Deck shuffled)
-        investigatorStartsWith
+        startsWithDefs
     let (permanentCards, deck'') =
           partition (\c -> cdPermanent (toCardDef c) && not (cannotPutIntoPlay (toCard c))) (unDeck deck')
 
@@ -651,6 +680,18 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
           cs <- replicateM n (genCard def)
           traverse (Arkham.Card.setTaboo investigatorTaboo <=< setOwner iid) cs
 
+    -- A card that always starts the game on its front side can have been
+    -- persisted flipped (the flip is synced to the campaign's story cards), so
+    -- put its other side into play instead.
+    startingInPlayCards <- for (map PlayerCard permanentCards <> encounterPermanentCards) \card -> do
+      let def = toCardDef card
+      case cdOtherSide def of
+        Just otherSide | startsOnOtherSideTag `elem` cdTags def -> do
+          let card' = lookupCard otherSide (toCardId card)
+          push $ ReplaceCard (toCardId card') card'
+          pure card'
+        _ -> pure card
+
     pushAll
       $ startsWithMsgs
       <> [ PutCardIntoPlay
@@ -659,7 +700,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
              Nothing
              NoPayment
              (Window.defaultWindows investigatorId)
-         | card <- map PlayerCard permanentCards <> encounterPermanentCards
+         | card <- startingInPlayCards
          ]
       <> [TakeStartingResources investigatorId]
     pure $ a & (deckL .~ Deck deck''') & bondedCardsL .~ bondedCards
@@ -987,11 +1028,12 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     -- Targets that are merely attackable "as if an enemy" (Mist-Pylons, Key Loci) are not
     -- real enemies. Only offer them when the fight is unrestricted; a fight narrowed by
     -- the card's matcher (e.g. Toe to Toe's @EnemyCanAttack You@) must not include them.
-    -- The Runic Axe (Inscription of the Hunt) fight uses a CanFightEnemyWithOverride
-    -- matcher, which coveredByAnyInPlayEnemy treats as "restricted". That override widens
-    -- the fight rather than narrowing it, so it must still offer as-if-enemy targets
-    -- (Mist-Pylons, Key Loci). canMoveToConnected is exactly this Hunt-source case.
-    let includeAsIfEnemy = coveredByAnyInPlayEnemy enemyMatcher || canMoveToConnected
+    -- fightOffersAsIfEnemyTargets looks through a CanFightEnemyWithOverride, since such a
+    -- matcher replaces the standard fight criteria rather than narrowing the enemy set --
+    -- that is how Longbow (3) and British Bull Dog (2) spell "ignore Aloof". Runic Axe's
+    -- Hunt override is the same shape, but canMoveToConnected is still needed for it: it
+    -- also widens where we look for as-if-enemy targets.
+    let includeAsIfEnemy = fightOffersAsIfEnemyTargets enemyMatcher || canMoveToConnected
     let asIfEnemyLocations =
           if canMoveToConnected
             then orConnected ForMovement (locationWithInvestigator investigatorId)
@@ -1016,7 +1058,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
             $ asIfTurn investigatorId
             $ select
             $ AssetWithModifier CanBeAttackedAsIfEnemy
-            <> at_ (locationWithInvestigator investigatorId)
+            <> at_ asIfEnemyLocations
         else pure []
     player <- getPlayer investigatorId
     let choices = enemyIds <> map coerce locationIds <> map coerce concealed <> map coerce assetIds
@@ -1863,9 +1905,17 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     push $ RefillSlots a.id []
     pure $ a & slotsL . ix slotType %~ deleteFirstMatch (isSource source . slotSource)
   RefillSlots iid xs | iid == investigatorId && not investigatorEliminated -> do
+    -- An asset can be controlled by an investigator while its card sits on a location
+    -- (Summoned Servitor). It still fills that investigator's slots, so it has to be part of
+    -- the requirements -- otherwise the refill empties every slot and never gives this one
+    -- back (#5660).
+    atLocation <-
+      select (AssetControlledBy (InvestigatorWithId iid))
+        >>= filterM (fieldMap AssetPlacement (isJust . preview _AtLocation))
     assetIds <-
-      select
-        $ oneOf [AssetInPlayAreaOf (InvestigatorWithId iid), AssetInThreatAreaOf (InvestigatorWithId iid)]
+      (<> atLocation)
+        <$> select
+          (oneOf [AssetInPlayAreaOf (InvestigatorWithId iid), AssetInThreatAreaOf (InvestigatorWithId iid)])
     mods <- getModifiers a
     requirements <- concatForM assetIds \assetId -> do
       assetCard <- field AssetCard assetId

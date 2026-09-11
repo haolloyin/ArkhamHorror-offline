@@ -115,6 +115,7 @@ hasSkillTestCost = \case
   AsIfAtLocationCost _ x -> hasSkillTestCost x
   NonBlankedCost x -> hasSkillTestCost x
   LabeledCost _ x -> hasSkillTestCost x
+  SourcedCost _ x -> hasSkillTestCost x
   XCost x -> hasSkillTestCost x
   OneOfDistanceCost _ x -> hasSkillTestCost x
   _ -> False
@@ -191,6 +192,8 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
                 then pure True
                 else getCanAffordCost_ iid source actions windows' canModify $ fold @[Cost] (replicate dist c)
       LabeledCost _ inner -> getCanAffordCost_ iid source actions windows' canModify inner
+      SourcedCost costSource inner ->
+        getCanAffordCost_ iid costSource actions windows' canModify inner
       ShuffleTopOfScenarioDeckIntoYourDeck n deckKey -> do
         cs <- take n <$> getScenarioDeck deckKey
         andM [pure (length cs >= n), getCanShuffleIn iid cs]
@@ -589,6 +592,7 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
       DoomCost _ (AgendaMatcherTarget agendaMatcher) _ -> selectAny agendaMatcher
       DoomCost {} -> pure True -- TODO: Make better
       EnemyDoomCost _ enemyMatcher -> selectAny enemyMatcher
+      AssetDoomCost _ assetMatcher -> selectAny (Matcher.replaceYouMatcher iid assetMatcher)
       SkillIconCostMatching n skillTypes matcher -> do
         cards <- mapMaybe (preview _PlayerCard) <$> select matcher
         let countF = if null skillTypes then const True else (`member` insertSet WildIcon skillTypes)
@@ -618,6 +622,9 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
         let total = unionsWith (+) $ map (frequencies . cdSkills . toCardDef) cards
         let wildCount = total ^. at #wild . non 0
         pure $ foldr (\x y -> y || x + wildCount >= n) False $ toList $ deleteMap #wild total
+      CalculatedDiscardCombinedCost calc -> do
+        n <- calculate (Matcher.replaceYouMatcher iid calc)
+        getCanAffordCost_ iid source actions windows' canModify (DiscardCombinedCost n)
       DiscardCombinedCost n -> do
         handCards <-
           mapMaybe (preview _PlayerCard)

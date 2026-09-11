@@ -5,6 +5,7 @@ module Arkham.Campaign.Types where
 
 import Arkham.Ability.Types (Ability)
 import Arkham.Ability.Used
+import Arkham.Campaign.Overlay (CampaignOverlay)
 import Arkham.CampaignLog
 import Arkham.CampaignLogKey
 import Arkham.CampaignStep
@@ -60,6 +61,8 @@ class
   campaignTokens :: Difficulty -> [ChaosTokenFace]
   campaignAbilities :: a -> [Ability]
   campaignAbilities _ = []
+  campaignOverlays :: a -> [CampaignOverlay]
+  campaignOverlays _ = []
 
 data instance Field Campaign :: Type -> Type where
   CampaignCompletedSteps :: Field Campaign [CampaignStep]
@@ -409,7 +412,7 @@ instance Show Campaign where
   show (Campaign a) = show a
 
 instance ToJSON Campaign where
-  toJSON (Campaign a) = toJSON a
+  toJSON (Campaign a) = toJSON (With a $ Envelope @"overlays" $ campaignOverlays a)
 
 instance HasModifiersFor Campaign where
   getModifiersFor (Campaign a) = getModifiersFor a

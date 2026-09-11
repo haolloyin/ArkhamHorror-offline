@@ -637,6 +637,9 @@ spawnEnemyAt_ card location = do
 addChaosToken :: ReverseQueue m => ChaosTokenFace -> m ()
 addChaosToken = push . AddChaosToken
 
+addChaosTokenForGame :: ReverseQueue m => ChaosTokenFace -> m ()
+addChaosTokenForGame = push . AddChaosTokenForGame
+
 removeChaosToken :: ReverseQueue m => ChaosTokenFace -> m ()
 removeChaosToken = push . RemoveChaosToken
 
@@ -1143,6 +1146,20 @@ chooseAssetAmounts iid label maxAmount assets target = do
     name <- field Field.AssetName aid
     pure $ AmountChoice (unAssetId aid) (toTitle name) 0 maxAmount
   push $ Ask player $ ChooseAmounts label (TotalAmountTarget maxAmount) choices (toTarget target)
+
+{- | Like 'chooseAssetAmounts', but for enemies, distributing *up to* @maxAmount@.
+Keyed by enemy id so the answer maps back to a specific enemy even when two
+copies share a name.
+-}
+chooseEnemyAmounts
+  :: (ReverseQueue m, Targetable target)
+  => InvestigatorId -> Text -> Int -> [EnemyId] -> target -> m ()
+chooseEnemyAmounts iid label maxAmount enemies target = do
+  player <- getPlayer iid
+  choices <- for enemies \eid -> do
+    name <- field EnemyName eid
+    pure $ AmountChoice (unEnemyId eid) (toTitle name) 0 maxAmount
+  push $ Ask player $ ChooseAmounts label (MaxAmountTarget maxAmount) choices (toTarget target)
 
 withInvestigatorAmounts
   :: ReverseQueue m => [(NamedUUID, Int)] -> (InvestigatorId -> Int -> m ()) -> m ()
@@ -3451,6 +3468,12 @@ cancelMovement source investigator = do
 
 sendMessage :: (ReverseQueue m, Targetable target) => target -> Message -> m ()
 sendMessage target msg = push $ SendMessage (toTarget target) msg
+
+-- | An enemy resolves the enemy phase again: its hunter keyword, then its attack.
+resolveEnemyPhaseOf :: (ReverseQueue m, Targetable target) => target -> m ()
+resolveEnemyPhaseOf enemy = do
+  sendMessage enemy HuntersMove
+  sendMessage enemy (Do EnemiesAttack)
 
 sendMessage' :: (ReverseQueue m, Targetable target) => target -> QueueT Message m () -> m ()
 sendMessage' target body = do

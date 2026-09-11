@@ -3,7 +3,8 @@ import type { CardContents } from '@/arkham/types/Card';
 import * as CardT from '@/arkham/types/Card';
 import gsap from 'gsap';
 import { computed, inject, Ref, ref, ComputedRef, reactive, watch, onMounted, onBeforeUnmount } from 'vue';
-import { useDebug } from '@/arkham/debug';
+import { useDebug } from '@/arkham/debug'
+import * as DebugMove from '@/arkham/debugCardMove';
 import { Game } from '@/arkham/types/Game';
 import { toCardContents } from '@/arkham/types/Card';
 import { imgsrc } from '@/arkham/helpers';
@@ -19,6 +20,7 @@ import Skill from '@/arkham/components/Skill.vue';
 import HandCard from '@/arkham/components/HandCard.vue';
 import CardRow from '@/arkham/components/CardRow.vue';
 import CardsUnderIndicator from '@/arkham/components/CardsUnderIndicator.vue';
+import CustomCardPicker from '@/arkham/components/debug/CustomCardPicker.vue';
 import Investigator from '@/arkham/components/Investigator.vue';
 import ChoiceModal from '@/arkham/components/ChoiceModal.vue';
 import { TarotCard, tarotCardImage } from '@/arkham/types/TarotCard';
@@ -29,11 +31,12 @@ import { IsMobile } from '@/arkham/isMobile';
 import { Modifier } from '@/arkham/types/Modifier';
 import { Enemy } from '@/arkham/types/Enemy';
 import type { Source } from '@/arkham/types/Source';
-import { XMarkIcon, EyeSlashIcon } from '@heroicons/vue/20/solid';
+import { XMarkIcon, EyeSlashIcon, SpeakerWaveIcon, SpeakerXMarkIcon } from '@heroicons/vue/20/solid';
 import * as Api from '@/arkham/api';
 import type { CardDef } from '@/arkham/types/CardDef';
 import { fullName } from '@/arkham/types/Name';
 import { isCthulhuBoardEnemy } from '@/arkham/components/TheDrownedCity/cthulhuBoard'
+import { storeToRefs } from 'pinia';
 import { useSettings } from '@/stores/settings';
 import { useCardStore } from '@/stores/cards';
 import { getGameLocalStorageItem, setGameLocalStorageItem } from '@/arkham/localStorage';
@@ -226,6 +229,46 @@ function showDraggedAsset(event: DragEvent) {
     manuallyShown.value = [...manuallyShown.value, card.id]
   }
 }
+
+// Silencing drops a card's free triggers and reactions from the windows it
+// would otherwise interrupt; forced abilities still fire. Unlike the stack
+// itself it is real game state (`cardSilenced` in PerCardSettings), because the
+// engine is the one that has to stop offering the ability.
+const controlsInvestigator = computed(() => props.playerId === props.investigator.playerId)
+
+const perCardSettings = computed(() => props.investigator.settings.perCardSettings ?? {})
+
+const isSilenced = (cardCode: string) => perCardSettings.value[cardCode]?.cardSilenced === true
+
+function setSilenced(cardCode: string, silenced: boolean) {
+  if (!controlsInvestigator.value || isSilenced(cardCode) === silenced) return
+  Api.setCardSilenced(props.game.id, investigatorId.value, cardCode, silenced)
+}
+
+const silenceCodeOf = (card: CardT.Card | CardContents) => toCardContents(card).cardCode
+const cardIsSilenced = (card: CardT.Card | CardContents) => isSilenced(silenceCodeOf(card))
+
+function toggleSilenced(card: CardT.Card | CardContents) {
+  setSilenced(silenceCodeOf(card), !cardIsSilenced(card))
+}
+
+// A card is only silenced for as long as it is hidden, so dragging one back out
+// of the stack — or losing it from play — turns its triggers back on. Left
+// alone while the stack is off entirely, so toggling the view setting doesn't
+// throw the choices away, and held off until the card defs land, since the
+// inert tags they carry are half of what decides the stack's contents.
+const hiddenCardCodes = computed(() => new Set(inertCards.value.map(silenceCodeOf)))
+
+const reconcileSilenced = computed(
+  () => tuckInertCards.value && controlsInvestigator.value && cardStore.loaded
+)
+
+watch([hiddenCardCodes, perCardSettings, reconcileSilenced], () => {
+  if (!reconcileSilenced.value) return
+  for (const [cardCode, setting] of Object.entries(perCardSettings.value)) {
+    if (setting.cardSilenced && !hiddenCardCodes.value.has(cardCode)) setSilenced(cardCode, false)
+  }
+}, { immediate: true })
 
 const currentTreacheries = computed(() => {
   return Object.
@@ -523,6 +566,8 @@ const asIfInHandPhantomCards = computed<CardT.Card[]>(() => {
 })
 
 const showDebugAddCard = ref(false)
+const showCustomCardPicker = ref(false)
+const { customCardsEnabled } = storeToRefs(settings)
 const debugPlayerCards = ref<CardDef[]>([])
 const debugCardSearch = ref('')
 const debugAddCardError = ref<string | null>(null)
@@ -813,7 +858,7 @@ function onDropHand(event: DragEvent) {
     if (data) {
       const json = JSON.parse(data)
       if (json.tag === "CardTarget") {
-        debug.send(props.game.id, {tag: 'DebugAddToHand', contents: [id.value, json.contents]})
+        DebugMove.debugMoveCard(props.game.id, json.contents, DebugMove.toHand(id.value))
       }
     }
   }
@@ -828,6 +873,7 @@ function startHandDrag(event: DragEvent, card: (CardContents | CardT.Card)) {
     event.dataTransfer.effectAllowed = 'copy'
     const cardId = CardT.toCardContents(card).id
     event.dataTransfer.setData('text/plain', JSON.stringify({ "tag": "CardTarget", "contents": cardId }))
+    DebugMove.beginCardDrag(cardId)
   }
 }
 
@@ -1096,6 +1142,8 @@ function closeHand() {
         draggableCards
         label="Hidden"
         placement="left"
+        allowInPlayAbilities
+        autoShowWhenOnlyChoice
         :cards="inertCards"
         :game="game"
         :playerId="playerId"
@@ -1104,6 +1152,20 @@ function closeHand() {
         @cardDragStart="startHiddenCardDrag"
       >
         <template #icon><EyeSlashIcon /></template>
+        <template v-if="controlsInvestigator" #cardOverlay="{ card }">
+          <button
+            type="button"
+            class="silence-toggle"
+            :class="{ 'silence-toggle--on': cardIsSilenced(card) }"
+            :aria-pressed="cardIsSilenced(card)"
+            :aria-label="cardIsSilenced(card) ? t('player.unsilenceCard') : t('player.silenceCard')"
+            v-tooltip="cardIsSilenced(card) ? t('player.unsilenceCard') : t('player.silenceCard')"
+            @click.stop.prevent="toggleSilenced(card)"
+          >
+            <SpeakerXMarkIcon v-if="cardIsSilenced(card)" />
+            <SpeakerWaveIcon v-else />
+          </button>
+        </template>
       </CardsUnderIndicator>
     </div>
 
@@ -1147,6 +1209,13 @@ function closeHand() {
         <button type="button" @click="showDebugAddCard = false">{{ $t('close') }}</button>
       </div>
     </div>
+
+    <CustomCardPicker
+      v-if="debug.active && customCardsEnabled && showCustomCardPicker"
+      :game="game"
+      :investigatorId="investigator.id"
+      @close="showCustomCardPicker = false"
+    />
 
     <div class="player">
       <div v-if="hunchDeck" class="hunch-deck">
@@ -1261,6 +1330,7 @@ function closeHand() {
         </transition-group>
         <div class="hand-debug-actions" v-if="debug.active">
           <button type="button" @click="openDebugAddCard">+ Card to hand</button>
+          <button v-if="customCardsEnabled" type="button" @click="showCustomCardPicker = true">+ Custom card</button>
         </div>
         <div v-if="investigator.handSize" class="hand-size" :class="handSizeClasses" :current-length="totalHandSize">{{ t('handSize') }}: {{totalHandSize}}/{{investigator.handSize}}</div>
       </div>
@@ -1457,6 +1527,44 @@ function closeHand() {
   background: var(--background-dark);
   border-top: 1px solid var(--background);
   border-bottom: 1px solid var(--background);
+}
+
+/* Overlaid on each card in the Hidden popover. Muted grey while the card still
+   speaks, teal once it is silenced — the same "you changed a default" teal the
+   card-options gear uses, never the magenta that means the game wants you. */
+.silence-toggle {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  z-index: var(--z-index-3);
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  color: rgba(255, 255, 255, 0.62);
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.silence-toggle :deep(svg) {
+  width: 13px;
+  height: 13px;
+}
+
+.silence-toggle:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.38);
+}
+
+.silence-toggle--on {
+  color: var(--highlight);
+  border-color: color-mix(in srgb, var(--highlight) 60%, transparent);
+  background: color-mix(in srgb, var(--highlight) 22%, rgba(0, 0, 0, 0.72));
 }
 
 .in-play {
@@ -1876,7 +1984,7 @@ function closeHand() {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: var(--z-index-1000);
+  z-index: var(--z-index-max);
 }
 
 .debug-add-card-modal {

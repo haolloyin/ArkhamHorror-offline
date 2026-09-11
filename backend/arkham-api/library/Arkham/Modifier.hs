@@ -112,6 +112,8 @@ data ModifierType
   | AsIfNotEngagedWith EnemyId
   | AsIfInHand Card
   | AsIfInHandFor ForPlay CardId
+  | -- out-of-play effects only, never treated as in hand
+    AsIfInHandForEffects CardId
   | AsIfResourcePool AssetId
   | AsIfUnderControlOf InvestigatorId
   | AsIfTurn InvestigatorId
@@ -308,6 +310,10 @@ data ModifierType
   | DoubleDifficulty
   | DoubleNegativeModifiersOnChaosTokens
   | DoubleModifiersOnChaosTokens
+  | {- | Notify the card this many extra times when a chaos token it is waiting
+    on is revealed, so its "when/if/after you reveal" effect resolves again.
+    -}
+    ResolveEffectsAdditionalTimes Int
   | DoubleSkillIcons
   | {- | Double only the listed icons on a committed card, leaving the rest
     (notably @WildIcon@) counted once.
@@ -585,6 +591,9 @@ instance IsLabel "alert" ModifierType where
 
 instance IsLabel "aloof" ModifierType where
   fromLabel = AddKeyword Aloof
+
+instance IsLabel "hunter" ModifierType where
+  fromLabel = AddKeyword Arkham.Keyword.Hunter
 
 data Modifier = Modifier
   { modifierSource :: Source
