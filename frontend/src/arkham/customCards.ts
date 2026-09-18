@@ -42,6 +42,59 @@ export function stripCardCodePrefix(code: string): string {
   return code.replace(/^c(?=\*)/, '')
 }
 
+/* The engine's own convention, mirrored from `FromJSON CardCode`: a code on the
+ * wire carries a leading `c` that is not part of the code. Both sides of a
+ * comparison have to go through this, because a code minted locally is bare and
+ * one that came back from the server is prefixed. */
+export const bareCardCode = (code: string) => code.replace(/^c+/, '')
+
+export type SignatureSummary = {
+  /* One entry per investigator that has signatures, for display. */
+  owners: { name: string; count: number }[]
+  /* Distinct signature cards spoken for by an investigator in this same group. */
+  linked: number
+  /* Cards restricted to an investigator that is not in this group. The
+   * restriction still stands -- only they can take it -- but nothing here
+   * brings it along, because the investigator that would is somewhere else. */
+  orphans: number
+}
+
+/* Who brings what. Read off the investigators' `_signatures` -- the direction
+ * this app treats as the link, and the one a deck follows to pick the cards up
+ * -- and off the signatures' own `deckRestrictions` for the ones whose
+ * investigator is not here to do it.
+ *
+ * Read-only: `linkSignatures` is what writes `_signatures` for an arkham.build
+ * import, which records the link the other way round. */
+export function summarizeSignatures(cards: CustomCard[]): SignatureSummary {
+  const present = new Set(cards.map((c) => bareCardCode(c.def.cardCode)))
+  const linked = new Set<string>()
+  const owners: { name: string; count: number }[] = []
+
+  for (const card of cards) {
+    const def = card.def as any
+    if (def.cardType !== 'InvestigatorType') continue
+    const mine = ((def.meta?._signatures ?? []) as string[])
+      .map(bareCardCode)
+      .filter((code) => present.has(code))
+    if (!mine.length) continue
+    for (const code of mine) linked.add(code)
+    owners.push({ name: def.name.title, count: mine.length })
+  }
+
+  const orphans = cards.filter((card) => {
+    const def = card.def as any
+    if (def.cardType === 'InvestigatorType') return false
+    if (linked.has(bareCardCode(def.cardCode))) return false
+    return ((def.deckRestrictions ?? []) as any[]).some(
+      (r) => r?.tag === 'Signature' && typeof r.contents === 'string',
+    )
+  }).length
+
+  owners.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+  return { owners, linked: linked.size, orphans }
+}
+
 export function isCustomCardCode(code: string): boolean {
   return stripCardCodePrefix(code).startsWith(CUSTOM_CARD_PREFIX)
 }
@@ -51,6 +104,33 @@ export function isCustomCardCode(code: string): boolean {
 // would compare equal. Always end in a digit.
 export function mintCustomCardCode(): string {
   return `${CUSTOM_CARD_PREFIX}${crypto.randomUUID().replace(/-/g, '')}0`
+}
+
+/* The ids arkham.build names a custom card by, and not always a dashed UUID: a
+ * pack's cards come through with a bare 32-hex or short 8-hex id instead.
+ *
+ * Lives here, beside the derivation it gates, because the two have to be the
+ * same question asked once. The importer derives a code from whatever id it is
+ * handed; the deck side rewrites a code only when it recognises the id as one
+ * of these. If they ever disagree, a card imports under a code no deck will
+ * ever name, and the deck fails validation as UnimplementedCard with the card
+ * sitting right there in the library -- which is exactly what happened while
+ * the deck side gated on the dashed form alone.
+ *
+ * ArkhamDB codes are five or six digits and match none of these. */
+const ARKHAM_BUILD_ID_RE =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}|[0-9a-f]{8})$/i
+
+export function isArkhamBuildCardId(id: string): boolean {
+  return ARKHAM_BUILD_ID_RE.test(id)
+}
+
+/* Same shape as `mintCustomCardCode`, but derived from an arkham.build card's
+ * own id rather than a fresh random one. Importing a card and later reading a
+ * deck that names it by that id need to land on the same code, so this has to
+ * be deterministic -- a random mint would never match up with itself. */
+export function arkhamBuildCustomCardCode(uuid: string): string {
+  return `${CUSTOM_CARD_PREFIX}${uuid.replace(/-/g, '').toLowerCase()}0`
 }
 
 /* A def written by the builder only carries the fields that card needed, and a

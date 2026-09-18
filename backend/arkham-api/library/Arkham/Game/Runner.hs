@@ -575,6 +575,18 @@ runGameMessage msg g = case msg of
       & (playersL %~ \ps -> if pid `elem` ps then ps else ps <> [pid])
       & (playerCountL %~ (+ 1))
   Run msgs -> g <$ pushAll msgs
+  -- The main loop unwraps 'Priority' before 'runMessage' ever sees it, so this
+  -- only fires for a 'Priority' running inside a 'Simultaneously' branch (which
+  -- calls 'runMessage' directly). Without it the wrapped message -- every
+  -- 'Priority $ EarnAchievement' or 'Priority $ SetGlobal' pushed from a
+  -- simultaneous defeat -- was silently dropped. Jumping the queue is
+  -- meaningless inside a branch, so degrade to a plain push.
+  Priority msg' -> g <$ push msg'
+  -- Only the main loop can run a 'Simultaneously' (it needs to capture each
+  -- branch's queue), so one that itself ends up as a branch -- the interleave
+  -- splices branch output verbatim -- reached 'runMessage' and was dropped
+  -- along with everything inside it. Push it back so the loop picks it up.
+  Simultaneously {} -> g <$ push msg
   If wType _ -> do
     window <- checkWindows [mkWindow Timing.AtIf wType]
     g <$ pushAll [window, Do msg]
@@ -1418,12 +1430,16 @@ runGameMessage msg g = case msg of
       Just enemy -> do
         swarms <- select $ SwarmOf eid
 
+        -- a swarm card can itself have swarm cards, so this must happen even
+        -- when the enemy leaving play is a swarm card, otherwise they are
+        -- orphaned with a host that no longer exists
+        pushAll $ map RemoveEnemy swarms
+
         case attr enemyPlacement enemy of
           AsSwarm _ c -> case toCardOwner c of
             Just owner -> push $ PutCardOnBottomOfDeck owner (Deck.InvestigatorDeck owner) c
             Nothing -> unlessM (hasCampaignOption UseSwarmPlaceholders) $ error "Missing owner"
-          _ -> do
-            pushAll $ map RemoveEnemy swarms
+          _ -> pure ()
 
         zone <-
           case attr enemyPlacement enemy of

@@ -9,6 +9,7 @@ import Arkham.Card
 import Arkham.EncounterSet qualified as Set
 import Arkham.Enemy.CardDefs.TheInnsmouthConspiracy.AgentsOfHydra qualified as Enemies
 import Arkham.Enemy.CardDefs.TheInnsmouthConspiracy.IntoTheMaelstrom qualified as Enemies
+import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Location (getLocationOf, withLocationOf)
 import Arkham.Helpers.Query
 import Arkham.Helpers.Xp (toBonus)
@@ -67,6 +68,32 @@ instance RunMessage IntoTheMaelstrom where
       pure s
     Setup -> runScenarioSetup IntoTheMaelstrom attrs do
       setUsesGrid
+
+      possessTheKey <- getHasRecord TheInvestigatorsPossessTheKeyToYhaNthlei
+      possessAMap <- getHasRecord TheInvestigatorsPossessAMapOfYhaNthlei
+      guardianDispatched <- getHasRecord TheGuardianOfYhanthleiIsDispatched
+      recognized <- getHasRecord TheGatewayToYhanthleiRecognizesYouAsTheRightfulKeeper
+
+      setup $ ul do
+        li "gatherSets"
+        li.nested "placeKeys" do
+          li.validate possessTheKey "blueKey"
+          li.validate possessAMap "redKey"
+          li.validate guardianDispatched "greenKey"
+          li.validate recognized "yellowKey"
+          li "fewerThanFour"
+          li "shuffleKeys"
+        li.nested "placeLocations" do
+          li "startAt"
+          li "setAsideOtherLocations"
+        li.nested "checkCampaignLog" do
+          li "divingSuits"
+          li "removeUnusedDivingSuits"
+        li "actDeck"
+        li "setAsideCards"
+        li "floodTokens"
+        unscoped $ li "shuffleRemainder"
+
       gather Set.IntoTheMaelstrom
       gather Set.AgentsOfHydra
       gather Set.CreaturesOfTheDeep
@@ -77,11 +104,6 @@ instance RunMessage IntoTheMaelstrom where
 
       setAgendaDeck [Agendas.underTheSurface, Agendas.celestialAlignment, Agendas.theFlood]
       setActDeck [Acts.backIntoTheDepths, Acts.cityOfTheDeepV1]
-
-      possessTheKey <- getHasRecord TheInvestigatorsPossessTheKeyToYhaNthlei
-      possessAMap <- getHasRecord TheInvestigatorsPossessAMapOfYhaNthlei
-      guardianDispatched <- getHasRecord TheGuardianOfYhanthleiIsDispatched
-      recognized <- getHasRecord TheGatewayToYhanthleiRecognizesYouAsTheRightfulKeeper
 
       lead <- getLead
       investigators <- allInvestigators
@@ -157,7 +179,7 @@ instance RunMessage IntoTheMaelstrom where
               chooseOrRunOneM iid do
                 when canIncrease do
                   labeledI "increaseFloodLevelOfYourLocation" $ increaseThisFloodLevel lid
-                withI18n $ countVar 1 $ labeledI "takeDamage" $ assignDamage iid Tablet 1
+                withI18n $ countVar 1 $ labeled "takeDamage" $ assignDamage iid Tablet 1
         ElderThing -> do
           withLocationOf iid \lid -> do
             whenM (lid <=~> LocationWithAnyKeys) $ assignHorror iid ElderThing 1
