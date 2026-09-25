@@ -15,7 +15,7 @@ import Arkham.Campaigns.TheScarletKeys.Meta hiding (Standard)
 import Arkham.Card
 import Arkham.EncounterSet qualified as Set
 import Arkham.Enemy.CardDefs.FortuneAndFolly qualified as Enemies
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers
 import Arkham.Helpers.Campaign (campaignField)
 import Arkham.Helpers.FlavorText
@@ -506,10 +506,10 @@ instance RunMessage FortuneAndFolly where
       when (alarm || notNull roles) do
         lead <- getLead
         storyWithChooseOneM (p "choices") do
-          labeledValidate' alarm "alarm" do
+          labeledValidate alarm "alarm" do
             eachInvestigator $ reduceAlarmLevel attrs
             doStep (n - 1) msg'
-          labeledValidate' (notNull roles) "flipRole" do
+          labeledValidate (notNull roles) "flipRole" do
             storyWithChooseOneM (p.basic "chooseRoleToFlip") do
               for_ roles \(roleAsset, roleCard) -> do
                 flippableCardLabeled roleCard $ flipOver lead roleAsset

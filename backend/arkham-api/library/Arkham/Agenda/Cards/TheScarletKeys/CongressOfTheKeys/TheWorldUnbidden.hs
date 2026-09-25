@@ -37,23 +37,30 @@ instance RunMessage TheWorldUnbidden where
         unstableKeys <- select $ UnstableScarletKey <> ScarletKeyWithBearer (InvestigatorWithId iid)
         stableKeys <- select $ StableScarletKey <> ScarletKeyWithBearer (InvestigatorWithId iid)
         chooseOrRunOneM iid $ scenarioI18n do
-          labeledValidate' (notNull unstableKeys) "theWorldUnbidden.unstable" do
+          labeledValidate (notNull unstableKeys) "theWorldUnbidden.unstable" do
             chooseTargetM iid unstableKeys \k ->
               temporaryModifier k attrs CannotBeFlipped $ shift k
             pushAll [CancelDamage iid dmg, CancelHorror iid hrr]
-          labeledValidate' (notNull stableKeys) "theWorldUnbidden.stable" do
+          labeledValidate (notNull stableKeys) "theWorldUnbidden.stable" do
             doStep dmg $ DoStep hrr msg
           unscoped skip_
 
       pure a
-    DoStep dmg (DoStep hrr (UseThisAbility iid (isSource attrs -> True) 1)) | dmg > 0 || hrr > 0 -> do
+    -- "Flip any number of Stable keys" — each flip cancels one more point, so the
+    -- step re-enters itself with the remaining damage/horror until the investigator
+    -- runs out of either stable keys or damage to cancel.
+    DoStep dmg (DoStep hrr inner@(UseThisAbility iid (isSource attrs -> True) 1)) | dmg > 0 || hrr > 0 -> do
       stableKeys <- select $ StableScarletKey <> ScarletKeyWithBearer (InvestigatorWithId iid)
       chooseOrRunOneM iid $ scenarioI18n do
         targets stableKeys \k -> do
           flipOver iid k
           chooseOneM iid do
-            labeled "theWorldUnbidden.damage" $ push $ CancelDamage iid 1
-            labeled "theWorldUnbidden.horror" $ push $ CancelHorror iid 1
+            labeledValidate (dmg > 0) "theWorldUnbidden.damage" do
+              push $ CancelDamage iid 1
+              doStep (dmg - 1) $ DoStep hrr inner
+            labeledValidate (hrr > 0) "theWorldUnbidden.horror" do
+              push $ CancelHorror iid 1
+              doStep dmg $ DoStep (hrr - 1) inner
         unscoped skip_
       pure a
     _ -> TheWorldUnbidden <$> liftRunMessage msg attrs

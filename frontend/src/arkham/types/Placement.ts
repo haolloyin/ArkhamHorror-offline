@@ -19,13 +19,14 @@ export type Placement
   | { tag: "InVehicle", contents: string }
   | { tag: "InPosition", contents: Position }
   | { tag: "AttachedToLocation", contents: string }
+  | { tag: "BetweenLocations", contents: [string, string] }
   | { tag: "AttachedToAsset", contents: [string, Placement | null] }
   | { tag: "AsSwarm", swarmHost: string, swarmCard: Card }
   | { tag: "Limbo" }
   | { tag: "NextToAgenda" }
   | { tag: "NextToAct" }
   | { tag: "NextToScenarioReference" }
-  | { tag: "AttachedToAgenda" }
+  | { tag: "AttachedToAgenda", contents: string }
   | { tag: "InTheShadows" }
   | { tag: "OtherPlacement", contents: string }
 
@@ -45,11 +46,12 @@ export const placementDecoder = JsonDecoder.oneOf<Placement>([
   JsonDecoder.object<Placement>({ tag: JsonDecoder.literal("NextToAgenda")}, 'NextToAgenda'),
   JsonDecoder.object<Placement>({ tag: JsonDecoder.literal("NextToAct")}, 'NextToAct'),
   JsonDecoder.object<Placement>({ tag: JsonDecoder.literal("NextToScenarioReference")}, 'NextToScenarioReference'),
-  JsonDecoder.object<Placement>({ tag: JsonDecoder.literal("AttachedToAgenda")}, 'AttachedToAgenda'),
+  JsonDecoder.object<Placement>({ tag: JsonDecoder.literal("AttachedToAgenda"), contents: JsonDecoder.string() }, 'AttachedToAgenda'),
   JsonDecoder.object<Placement>({ tag: JsonDecoder.literal("Limbo")}, 'Limbo'),
   JsonDecoder.object<Placement>({ tag: JsonDecoder.literal("AtLocation"), contents: JsonDecoder.string() }, 'AtLocation'),
   JsonDecoder.object<Placement>({ tag: JsonDecoder.literal("InVehicle"), contents: JsonDecoder.string() }, 'InVehicle'),
   JsonDecoder.object<Placement>({ tag: JsonDecoder.literal("AttachedToLocation"), contents: JsonDecoder.string() }, 'AttachedToLocation'),
+  JsonDecoder.object<Placement>({ tag: JsonDecoder.literal("BetweenLocations"), contents: JsonDecoder.tuple([JsonDecoder.string(), JsonDecoder.string()], 'BetweenLocationsContents') }, 'BetweenLocations'),
   JsonDecoder.object<Placement>({ tag: JsonDecoder.literal("AttachedToAsset"), contents: attachedToAssetContentsDecoder }, 'AttachedToAsset'),
   JsonDecoder.object<Placement>({ tag: JsonDecoder.literal("InThreatArea"), contents: JsonDecoder.string() }, 'InThreatArea'),
   JsonDecoder.object<Placement>({ tag: JsonDecoder.literal("FacedownInThreatArea"), contents: JsonDecoder.string() }, 'FacedownInThreatArea'),

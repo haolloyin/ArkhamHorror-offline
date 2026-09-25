@@ -115,7 +115,7 @@ import Arkham.Scenario.Options
 import Arkham.ScenarioLogKey
 import Arkham.Scenarios.TheCircleUndone.BeforeTheBlackThrone.Cosmos.Types
 import Arkham.Search
-import {-# SOURCE #-} Arkham.SkillTest.Base
+import Arkham.SkillTest.Base
 import Arkham.SkillTest.Type
 import Arkham.SkillTestResult qualified as SkillTest
 import Arkham.SkillType
@@ -187,6 +187,10 @@ instance QueueWrapper Message where
   stripQueueWrappers (Priority msg) = stripQueueWrappers msg
   stripQueueWrappers (Retain msg) = stripQueueWrappers msg
   stripQueueWrappers msg = msg
+
+  queueGroup (Simultaneously msgs) = Just (msgs, Simultaneously)
+  queueGroup (Run msgs) = Just (msgs, Run)
+  queueGroup _ = Nothing
 
 resolve :: Message -> [Message]
 resolve msg = [When msg, msg, After msg]
@@ -521,6 +525,13 @@ data TokenLoss = AllLost | AllLostBut Int | Lose Int
 
 data Message
   = UseAbility InvestigatorId Ability [Window]
+  | {- | The rest of a materialised forced-initiation queue: one entry per initiation,
+    with the windows that initiation covers and the pending effect messages it holds
+    back (a When window's Damaged/CheckDefeated wait for their own initiation to
+    resolve). Carried as data and rebuilt into an ask one round at a time: nesting
+    pre-built follow-up asks instead encodes every permutation of the set, #5743.
+    -}
+    ResolveWindowInitiations InvestigatorId [Window] [(Ability, [Window], [Message])]
   | ResolvedAbility Ability -- INTERNAL, See Arbiter of Fates
   | SkillTestMessage SkillTestMessage
   | ChaosBagMessage ChaosBagMessage
@@ -946,6 +957,10 @@ data Message
     Investigate Investigate
   | UpdateEventMeta EventId Value
   | UpdateEventTarget EventId (Maybe Target)
+  | {- | A target the player picked while an event was resolving. Recorded as
+    that event's target (first choice wins) so "targets an X" matchers work.
+    -}
+    ChoseTarget Target
   | LoadDeck InvestigatorId (Deck PlayerCard) -- used to reset the deck of the investigator
   | LookAtRevealed InvestigatorId Source Target
   | LookAtTopOfDeck InvestigatorId Target Int
@@ -2798,9 +2813,9 @@ uiToRun = \case
   TooltipLabel _ _ msgs -> Run msgs
   CardLabel _ _ msgs -> Run msgs
   ChaosTokenLabel _ msgs -> Run msgs
-  PortraitLabel _ msgs -> Run msgs
+  PortraitLabel iid msgs -> Run (ChoseTarget (InvestigatorTarget iid) : msgs)
   KeyLabel _ msgs -> Run msgs
-  TargetLabel _ msgs -> Run msgs
+  TargetLabel t msgs -> Run (ChoseTarget t : msgs)
   GridLabel _ msgs -> Run msgs
   ConnectionLabel _ msgs -> Run msgs
   TarotLabel _ msgs -> Run msgs

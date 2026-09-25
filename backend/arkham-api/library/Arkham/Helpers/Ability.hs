@@ -12,7 +12,7 @@ import Arkham.Classes.Query
 import Arkham.Customization
 import Arkham.ForMovement
 import Arkham.Game.Settings
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import {-# SOURCE #-} Arkham.Helpers.Cost (getAdditionalActionCost, getCanAffordCost)
 import {-# SOURCE #-} Arkham.Helpers.Criteria (passesCriteria)
 import Arkham.Helpers.Location (getLocationOf)
@@ -37,6 +37,18 @@ import Arkham.Window qualified as Window
 getAbility :: HasGame m => AbilityRef -> m (Maybe Ability)
 getAbility ref = selectOne (Matcher.AbilityIs ref.source ref.index)
 
+{- | An ability's window matcher with `ThisLocation` resolved against its source.
+
+`getActionsWith` expands a `LocationMatcherSource` proxy into one source per matching
+location but leaves the ability's own window untouched, and a bare `ThisLocation`
+selects nothing. So anything re-matching that window outside `getActions` must resolve
+it first or the ability is admitted and then silently fails to match. #5764
+-}
+abilityWindowFor :: Ability -> Matcher.WindowMatcher
+abilityWindowFor ability = case ability.source.location of
+  Nothing -> ability.window
+  Just lid -> Matcher.replaceThisLocation lid ability.window
+
 getCanPerformAbility
   :: (HasCallStack, HasGame m) => InvestigatorId -> [Window] -> Ability -> m Bool
 getCanPerformAbility !iid !ws !ability = do
@@ -52,9 +64,7 @@ getCanPerformAbility !iid !ws !ability = do
     setCriteria = \case
       SetAbilityCriteria (CriteriaOverride c) -> const c
       _ -> id
-    abWindow = case ability.source.location of
-      Nothing -> ability.window
-      Just lid -> Matcher.replaceThisLocation lid ability.window
+    abWindow = abilityWindowFor ability
 
   runValidT do
     when ability.skipForAll do
@@ -64,9 +74,14 @@ getCanPerformAbility !iid !ws !ability = do
     -- abilities for any given check; meetsActionRestrictions (~2ms) and
     -- passesCriteria (~15ms) are 90×–700× more expensive per call, so we
     -- only evaluate them on the survivors.
-    liftGuardM $ anyM (\window -> windowMatches iid (toSource ability) window abWindow) ws
+    matching <- lift $ filterM (\window -> windowMatches iid (toSource ability) window abWindow) ws
+    guard $ notNull matching
     liftGuardM $ not <$> preventedByInvestigatorModifiers iid ability
-    liftGuardM $ getCanAffordAbility iid ability ws
+    -- An ability initiates once per matching window, so it stays available while ANY of
+    -- them is unconsumed. Asking about the whole list instead would let the first use --
+    -- recorded against its own window -- exhaust a PerWindow limit that `countInWs` then
+    -- reads across every window in the batch, hiding the rest. #5743
+    liftGuardM $ anyM (\window -> getCanAffordAbility iid ability [window]) matching
     liftGuardM $ meetsActionRestrictions iid ws ability
     liftGuardM do
       -- When the active investigator is already iid (e.g. inside a cached
@@ -319,7 +334,7 @@ getCanAffordAbilityCost iid a@Ability {..} ws = do
       then do
         case abilityMetadata of
           Just (InvestigateTargets matcher) -> do
-            ls <- select (matcher <> Matcher.InvestigatableLocation)
+            ls <- select matcher
             costs <- for ls $ \lid -> do
               -- These costs may be delayed until after choosing the target,
               -- but affordability still depends on at least one target being

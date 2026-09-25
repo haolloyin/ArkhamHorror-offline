@@ -87,7 +87,7 @@ import Arkham.Target
 import Arkham.Token qualified as Token
 import Arkham.Window (Window (..), mkAfter, mkWhen)
 import Arkham.Window qualified as Window
-import Control.Lens (non, over, transform)
+import Control.Lens (non, over, transform, universe)
 import Data.Data.Lens (biplate)
 import Data.List.Extra (nubOrd)
 import Data.List.NonEmpty.Extra (minimum1)
@@ -475,7 +475,7 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
       pure c
     UpTo calc cost' -> do
       n <- calculate calc
-      if n == 0
+      if n <= 0
         then pure c
         else do
           canAfford <- andM $ map (\a -> getCanAffordCost iid c.source [a] [] cost') actions
@@ -647,11 +647,21 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
         [ FocusChaosTokens tokens
         , chooseN player n $ targetLabels tokens $ only . pay . ReturnChaosTokenToPoolCost
         , UnfocusChaosTokens
+        , pay ReturnChosenChaosTokensToPoolCost
         ]
       pure c
-    ReturnChaosTokenToPoolCost t -> do
-      push $ ReturnChaosTokensToPool [t]
-      withPayment $ ReturnChaosTokenToPoolPayment t
+    ReturnChaosTokenToPoolCost t -> withPayment $ ReturnChaosTokenToPoolPayment t
+    ReturnChosenChaosTokensToPoolCost -> do
+      -- the tokens leave the bag as one batch so they open a single removal window
+      let chosen = [t | ReturnChaosTokenToPoolPayment t <- universe c.payments]
+      let collapse = \case
+            ReturnChaosTokenToPoolPayment _ -> NoPayment
+            other -> other
+      unless (null chosen) $ push $ ReturnChaosTokensToPool chosen
+      pure
+        $ c
+        & costPaymentsL
+        %~ \p -> Payments [transform collapse p, ReturnChaosTokensToPoolPayment chosen]
     SupplyCost matcher supply -> do
       iid' <- selectJust $ InvestigatorWithSupply supply <> InvestigatorAt matcher
       push $ UseSupply iid' supply
@@ -1034,14 +1044,19 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
                             (SpendUses source (toTarget assetId) uType 1)
                       )
                       (zip rs2 resourcesFromAssets)
-      extra <- case activeCostTarget c of
+      payment <- case activeCostTarget c of
         ForCard _ card -> do
           ucost <- fromMaybe 0 <$> getUnboundedModifiedCardCost iid card
-          if ucost < 0
-            then pure (-ucost)
-            else pure 0
-        _ -> pure 0
-      withPayment $ ResourcePayment $ x + extra
+          let paidSoFar = totalResourcePayment c.payments
+          -- a reduction past zero still counts toward X, but only once per play
+          let extra = if paidSoFar > 0 then 0 else max 0 (negate ucost)
+          case maxDynamic card of
+            Nothing -> pure $ x + extra
+            Just calc -> do
+              limit <- calculate calc
+              pure $ max 0 $ min (x + extra) (limit - paidSoFar)
+        _ -> pure x
+      withPayment $ ResourcePayment payment
     AdditionalActionsCost -> do
       actionRemainingCount <- field InvestigatorRemainingActions iid
       let currentlyPaid = countAdditionalActionPayments c.payments

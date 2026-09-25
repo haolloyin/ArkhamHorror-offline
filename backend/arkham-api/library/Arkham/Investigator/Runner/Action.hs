@@ -54,7 +54,7 @@ import Arkham.Event.Types (Field (..))
 import Arkham.Fight.Types
 import {-# SOURCE #-} Arkham.Game (asIfTurn, withoutCanModifiers)
 import Arkham.Game.Settings (settingsStrictAsIfAt)
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers
 import Arkham.Helpers.Ability (
   getAbilityLimit,
@@ -624,6 +624,21 @@ handleUseAbility a@InvestigatorAttrs {..} ab msg = do
   pure a
 
 handleDoUseAbility a@InvestigatorAttrs {..} iid ability windows = do
+  -- A When window's pending effect (the Damaged/CheckDefeated a damage window stands in
+  -- front of) has to wait for this initiation to finish resolving, even when that
+  -- resolution is a nested skill test deferred past EndSkillTestWindow. Wrapping the
+  -- messages IN PLACE in MoveWithSkillTest does exactly that: handleSkillTestNesting
+  -- glues them behind a deferred test, and every other path unwraps them where they
+  -- stand, changing nothing.
+  lift
+    $ wrapMessagesMatchingNested
+      (\queued -> any (`Helpers.pendingWindowEffect` queued) windows)
+      MoveWithSkillTest
+  -- an initiation resolved out of a materialised queue holds its pending effects in the
+  -- queued ResolveWindowInitiations marker instead; hand them back to the queue, behind
+  -- this use, or behind the marker on the last initiation so the window's optional
+  -- reactions still get to change the damage (#5751)
+  lift $ releaseInitiationEffects iid ability windows
   activeInvestigator <- selectOne ActiveInvestigator
   mods <- filter (\m -> m.kind == MayIgnoreLocationEffectsAndKeywords) <$> getFullModifiers iid
   -- mayIgnoreLocationEffectsAndKeywords <- hasModifier iid MayIgnoreLocationEffectsAndKeywords

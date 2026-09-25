@@ -10,7 +10,7 @@ import Arkham.ChaosToken.Types
 import Arkham.Classes
 import Arkham.Classes.HasGame
 import Arkham.Game.Settings (activeUltimatumsAndBoons)
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.ChaosToken (matchChaosToken)
 import Arkham.Helpers.Message
 import Arkham.Helpers.Modifiers (ModifierType (..), getModifiers, hasModifier)
@@ -661,6 +661,10 @@ instance RunMessage ChaosBag where
         & (tokenPoolL .~ pool)
     ReturnChaosTokensToPool tokensToPool -> do
       let toPool = and . sequence [isJust . chaosTokenFacePool . (.face), not . (.cancelled)]
+      -- only tokens leaving the bag itself count as "removed from the chaos bag"
+      let fromBag = filter (`elem` chaosBagChaosTokens) tokensToPool
+      unless (null fromBag) do
+        push =<< checkWindows [mkWhen $ Window.TokensWouldBeRemovedFromChaosBag fromBag]
       pure
         $ c
         & (chaosTokensL %~ filter (`notElem` tokensToPool))

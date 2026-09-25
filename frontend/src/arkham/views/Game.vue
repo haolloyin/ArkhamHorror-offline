@@ -11,6 +11,7 @@ import {
   watch,
 } from 'vue'
 import { useToast } from 'vue-toastification'
+import { storeToRefs } from 'pinia'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import confetti from '@/effects/confetti'
@@ -51,6 +52,7 @@ import {
 } from '@/arkham/api'
 import * as Api from '@/arkham/api'
 import { useCardStore } from '@/stores/cards'
+import { useSettings } from '@/stores/settings'
 import { useUserStore } from '@/stores/user'
 import { useEventStore } from '@/arkham/stores/event'
 import { useEventTimer } from '@/arkham/composables/useEventTimer'
@@ -73,6 +75,7 @@ import { buildGameIndexes, gameIndexesKey } from '@/arkham/composables/useGameIn
 import { Card, asCardCode, cardDecoder, toCardContents } from '@/arkham/types/Card'
 import { customCardDef, isCustomCardCode } from '@/arkham/customCards'
 import * as Message from '@/arkham/types/Message'
+import type { Phase } from '@/arkham/types/Phase'
 import { type Question } from '@/arkham/types/Question'
 import type { Source } from '@/arkham/types/Source'
 import { TarotCard, tarotCardDecoder, tarotCardImage } from '@/arkham/types/TarotCard'
@@ -117,6 +120,7 @@ type ServerResult =
   | { tag: 'GameCard'; contents: string }
   | { tag: 'GameCardOnly'; contents: string }
   | { tag: 'GameUpdate'; contents: string }
+  | { tag: 'PhaseChanged'; contents: Phase }
   | { tag: 'GameShowDiscard'; contents: string }
   | { tag: 'GameShowUnder'; contents: string }
   | { tag: 'GameUI'; contents: string }
@@ -137,6 +141,7 @@ const router = useRouter()
 const route = useRoute()
 const store = useCardStore()
 const userStore = useUserStore()
+const { inlineModals } = storeToRefs(useSettings())
 const eventStore = useEventStore()
 const { addEntry, menuItems } = useMenu()
 const toast = useToast()
@@ -417,6 +422,44 @@ const storyAnswerPending = ref(false)
 const oldQuestion = ref<Record<string, Question> | null>(null)
 const skipAllPending = ref<Set<string>>(new Set())
 const { t } = useI18n()
+const phaseNotification = ref<Phase | null>(null)
+const phaseNotificationQueue = ref<Phase[]>([])
+const phaseNotificationPlaying = ref(false)
+const phaseNotificationColor = computed(() => ({
+  MythosPhase: '#7b4b91',
+  InvestigationPhase: '#a87532',
+  EnemyPhase: '#9f2929',
+  UpkeepPhase: '#315b70',
+  CampaignPhase: '#5b5b5b',
+}[phaseNotification.value ?? 'CampaignPhase']))
+
+function showPhaseNotification(phase: Phase) {
+  if (!userStore.currentUser?.phaseTransitionNotifications) return
+
+  // The server sends one PhaseChanged per phase actually entered, so announce
+  // exactly what arrives. Extrapolating forward from it invented phases the
+  // game had not reached, and ran backwards undos through the cycle.
+  if (phaseNotification.value === phase || phaseNotificationQueue.value.includes(phase)) return
+  phaseNotificationQueue.value.push(phase)
+  if (!uiLock.value) void drainPhaseNotificationQueue()
+}
+
+const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
+async function drainPhaseNotificationQueue() {
+  if (phaseNotificationPlaying.value) return
+  phaseNotificationPlaying.value = true
+  try {
+    while (phaseNotificationQueue.value.length > 0) {
+      phaseNotification.value = phaseNotificationQueue.value.shift() ?? null
+      await wait(1300)
+      phaseNotification.value = null
+      await nextTick()
+    }
+  } finally {
+    phaseNotificationPlaying.value = false
+  }
+}
 
 const format = (str: string) => {
   return handleEmbeddedI18n(str, t)
@@ -1205,6 +1248,9 @@ const handleResult = (result: ServerResult) => {
       if (eid) void eventStore.load(eid).catch((e) => console.error(e))
       return
     }
+    case 'PhaseChanged':
+      showPhaseNotification(result.contents as Phase)
+      return
     case 'GameUpdate':
       // Flush the latest state onto the board even while a revelation/modal holds
       // the UI lock, so the table behind it reflects the current situation instead
@@ -1218,13 +1264,15 @@ const handleResult = (result: ServerResult) => {
 
 watch(uiLock, async () => {
   if (uiLock.value) return
-  // drain result queue
+  // Drain queued revelation/effect results first. Phase notifications start only
+  // after the last blocking result has finished, so they cannot race the overlay.
   for (;;) {
     const r = qPop()
     if (!r) break
     handleResult(r)
     if (uiLock.value) break
   }
+  if (!uiLock.value) void drainPhaseNotificationQueue()
 })
 
 const confirmingUndoScenario = ref(false)
@@ -1695,7 +1743,10 @@ function shouldPreserveFocusedChaosWindow() {
 // returns a new question after each card, and clearing the old one eagerly makes
 // the modal disappear and reappear between those responses.
 function shouldPreserveFocusedCardChoice() {
-  if (!game.value || !playerId.value || game.value.focusedCards.length === 0) return false
+  if (!game.value || !playerId.value) return false
+  // Not just `focusedCards`: a look that leaves its cards in the search results
+  // (putting them back in any order) is the same one-at-a-time modal.
+  if (ArkhamGame.revealedCards(game.value, playerId.value).length === 0) return false
   return Boolean(game.value.question[playerId.value])
 }
 
@@ -1730,6 +1781,29 @@ async function choose(idx: number) {
       }),
     )
   }
+}
+
+/* Answer a one-at-a-time question in one go, in the order given. The engine
+ * resolves every choice in a single pass, so the whole sequence is one action
+ * and one undo step -- answering them one at a time leaves a step per choice,
+ * and undoing into the middle of a sequence strands the rest of it. Provided
+ * rather than emitted: the components between here and the panel that needs it
+ * would otherwise each have to relay an event they have no use for. */
+async function chooseOrdered(choices: number[]) {
+  if (processing.value || choices.length === 0) return
+  if (!game.value || props.spectate) return
+
+  oldQuestion.value = game.value.question
+  const questionVersion = game.value.scenarioSteps
+  if (!shouldPreserveFocusedChaosWindow() && !shouldPreserveFocusedCardChoice()) {
+    setGameQuestion({})
+  }
+  sendAnswer(
+    JSON.stringify({
+      tag: 'OrderedAnswer',
+      contents: { choices, playerId: playerId.value, questionVersion },
+    }),
+  )
 }
 
 /* An overlay chosen at deck selection applies to this game only -- it is sent
@@ -1834,6 +1908,7 @@ provide('switchInvestigator', switchInvestigator)
 provide('solo', solo)
 provide('spectate', computed(() => props.spectate))
 provide('processing', processing)
+provide('chooseOrdered', chooseOrdered)
 provide('storyAnswerPending', storyAnswerPending)
 provide('uiLock', uiLock)
 provide('skipAllTriggers', skipAllTriggers)
@@ -1842,6 +1917,8 @@ provide('skipAllInProgress', skipAllInProgress)
 provide('showOtherPlayersHands', showOtherPlayersHands)
 
 function updateFocusLight() {
+  if (!realityAcidLightActive.value) return
+
   const highlighted = [...document.querySelectorAll<HTMLElement>(
     '.source-highlight, .ability-target, .card-frame-inner.highlighted, .cards-under-indicator--highlighted',
   )].find((el) => {
@@ -1863,6 +1940,7 @@ function updateFocusLight() {
 }
 
 function scheduleFocusLightUpdate() {
+  if (!realityAcidLightActive.value) return
   if (focusLightAnimationFrame !== null) return
   focusLightAnimationFrame = requestAnimationFrame(() => {
     focusLightAnimationFrame = null
@@ -1870,9 +1948,36 @@ function scheduleFocusLightUpdate() {
   })
 }
 
+// One scenario renders this light, but the observer is a body-wide subtree
+// watch on every class change and the sweep it schedules reads a rect per
+// match. Arm it only when something is actually drawing from it.
+function connectFocusLightObserver() {
+  if (focusLightObserver) return
+  focusLightObserver = new MutationObserver(scheduleFocusLightUpdate)
+  focusLightObserver.observe(document.body, { attributes: true, attributeFilter: ['class'], subtree: true })
+  scheduleFocusLightUpdate()
+}
+
+function disconnectFocusLightObserver() {
+  focusLightObserver?.disconnect()
+  focusLightObserver = null
+  if (focusLightAnimationFrame !== null) {
+    cancelAnimationFrame(focusLightAnimationFrame)
+    focusLightAnimationFrame = null
+  }
+  focusLightX.value = -1000
+  focusLightY.value = -1000
+}
+
+watch(realityAcidLightActive, (active) => {
+  if (active) connectFocusLightObserver()
+  else disconnectFocusLightObserver()
+})
+
 const onMove = (event: MouseEvent) => {
   mouseX = event.clientX
   mouseY = event.clientY
+  if (!realityAcidLightActive.value) return
   flashlightX.value = event.clientX
   flashlightY.value = event.clientY
   scheduleFocusLightUpdate()
@@ -1898,9 +2003,7 @@ onMounted(() => {
   ;(window as any).undo = undo
   ;(window as any).debugChoose = choose
   document.addEventListener('mousemove', onMove, { passive: true })
-  focusLightObserver = new MutationObserver(scheduleFocusLightUpdate)
-  focusLightObserver.observe(document.body, { attributes: true, attributeFilter: ['class'], subtree: true })
-  scheduleFocusLightUpdate()
+  if (realityAcidLightActive.value) connectFocusLightObserver()
   document.addEventListener('keydown', handleKeyPress)
   window.addEventListener('arkham-setting-change', handleSettingChange)
 })
@@ -1932,7 +2035,7 @@ onUnmounted(() => {
       </section>
     </div>
   </div>
-  <div id="game" v-else-if="ready && game && playerId" :style="{ '--epic-bar-height': epicBarHeight + 'px' }">
+  <div id="game" v-else-if="ready && game && playerId" :class="{ 'game--inline-modals': inlineModals }" :style="{ '--epic-bar-height': epicBarHeight + 'px' }">
     <dialog v-if="error" class="error-dialog">
       <h2>{{ $t('error') }}</h2>
       <p class="error-message">{{ error }}</p>
@@ -1944,6 +2047,17 @@ onUnmounted(() => {
         <button @click="error = null">{{ $t('close') }}</button>
       </div>
     </dialog>
+    <Transition name="phase-notification">
+      <div
+        v-if="phaseNotification"
+        class="phase-notification"
+        :style="{ '--phase-color': phaseNotificationColor }"
+        role="status"
+        aria-live="polite"
+      >
+        <span :key="phaseNotification" class="phase-notification__name">{{ $t(`phaseTransition.${phaseNotification}`) }}</span>
+      </div>
+    </Transition>
     <div v-if="showProcessing" class="processing">
       <LottieAnimation
         :animation-data="processingJSON"
@@ -2256,6 +2370,7 @@ onUnmounted(() => {
         </button>
       </div>
     </div>
+    <div id="inline-modal-container" :class="{ 'inline-modal-container--active': inlineModals }" aria-live="polite"></div>
     <div v-if="hasEventBar" ref="epicBarRef" class="epic-bar-slot">
       <OrganizerBar
         v-if="organizerEventId"
@@ -2688,6 +2803,39 @@ onUnmounted(() => {
 }
 
 #game {
+  &.game--inline-modals {
+    // Keep the board's viewport-sized height, then add the modal stack above it.
+    // The surrounding router container owns the page scroll instead of shrinking
+    // the board to make room for the dialogs.
+    flex: 0 0 auto;
+    min-height: 100%;
+    height: auto;
+    overflow: visible;
+  }
+
+  .inline-modal-container--active {
+    flex: 0 0 auto;
+    width: 100%;
+    max-height: min(70dvh, 720px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: max(8px, env(safe-area-inset-top)) 8px 8px;
+    scrollbar-gutter: stable;
+    background: color-mix(in srgb, var(--background-dark) 88%, transparent);
+    border-bottom: 1px solid var(--box-border);
+  }
+
+  .inline-modal-container--active:empty {
+    display: none;
+  }
+
+  @media (max-width: 600px) {
+    .inline-modal-container--active {
+      max-height: 65dvh;
+      padding-inline: max(6px, env(safe-area-inset-left)) max(6px, env(safe-area-inset-right));
+    }
+  }
+
   width: 100vw;
   display: flex;
   flex-direction: column;
@@ -2710,6 +2858,10 @@ onUnmounted(() => {
   height: calc(100vh - 80px - var(--epic-bar-height, 0px));
   display: flex;
   flex: 1;
+}
+
+#game.game--inline-modals .game-main {
+  flex: 0 0 auto;
 }
 
 .socketWarning {
@@ -3854,6 +4006,52 @@ dialog {
     margin-top: 1rem;
   }
 }
+
+.phase-notification {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  height: clamp(4.5rem, 9vw, 7rem);
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--phase-color) 54%, rgba(8, 11, 13, 0.88));
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.42);
+  animation: phase-notification-bloom 1.2s ease-out both;
+}
+
+.phase-notification__name {
+  color: rgba(242, 232, 207, 0.94);
+  font-family: Teutonic, serif;
+  font-size: clamp(1.8rem, 4vw, 3.8rem);
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-align: center;
+  text-shadow: 0 0 35px color-mix(in srgb, var(--phase-color) 80%, transparent), 0 5px 26px rgba(0, 0, 0, 0.8);
+  animation: phase-notification-title 1.2s ease-out both;
+}
+
+@keyframes phase-notification-bloom {
+  0% { opacity: 0; }
+  14%, 78% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes phase-notification-title {
+  0% { opacity: 0; transform: translateX(-110%); filter: blur(8px); }
+  22% { opacity: 1; transform: translateX(0); filter: blur(0); }
+  72% { opacity: 1; transform: translateX(0); filter: blur(0); }
+  100% { opacity: 0; transform: translateX(110%); filter: blur(8px); }
+}
+
+.phase-notification-enter-active,
+.phase-notification-leave-active { transition: opacity 0.35s ease; }
+.phase-notification-enter-from,
+.phase-notification-leave-to { opacity: 0; }
 
 .debug-playability-content {
   display: flex;

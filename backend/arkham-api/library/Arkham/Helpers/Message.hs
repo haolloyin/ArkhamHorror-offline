@@ -6,6 +6,7 @@ import Arkham.Classes.HasQueue as X hiding (push, pushAll)
 import Arkham.Helpers.Message.Discard as X
 import Arkham.Message as X
 
+import Arkham.Ability.Types (Ability, abilitySource)
 import Arkham.Capability
 import Arkham.Card
 import Arkham.Classes.HasGame
@@ -700,7 +701,10 @@ handleSkillTestNesting sid msg a action = do
   if inSkillTestWindow
     then do
       lift do
-        msgs <- popMessagesMatching \case
+        -- nested-aware: a suspended window effect ('pendingWindowEffect') can sit inside
+        -- a Simultaneously batch, out of a flat scan's reach. Already-glued messages are
+        -- inside MovedWithSkillTest, which is not a group, so they stay with their test.
+        msgs <- popMessagesMatchingNested \case
           MoveWithSkillTest _ -> True
           _ -> False
         insertAfterMatching (msg : map (MovedWithSkillTest sid) msgs) (== EndSkillTestWindow)
@@ -718,6 +722,103 @@ handleSkillTestNesting_
   -> t m ()
   -> t m ()
 handleSkillTestNesting_ sid msg action = handleSkillTestNesting sid msg () action
+
+{- | Sources of every ability a queued 'ResolveWindowInitiations' still has to resolve.
+The ResolvedAbility sweep keeps their parked entities alive: a materialised
+initiation is an in-flight ability, and its source must still be able to claim
+'UseAbility' after leaving play (Caught in the Crossfire discards itself on its
+first resolution). #5743
+-}
+queuedInitiationSources :: HasQueue Message m => m [Source]
+queuedInitiationSources = fromQueue (concatMap go)
+ where
+  go = \case
+    Priority inner -> go inner
+    Retain inner -> go inner
+    MoveWithSkillTest inner -> go inner
+    MovedWithSkillTest _ inner -> go inner
+    Simultaneously inner -> concatMap go inner
+    Run inner -> concatMap go inner
+    ResolveWindowInitiations _ _ pending -> [abilitySource ability | (ability, _, _) <- pending]
+    _ -> []
+
+{- | Windows the queue still owes a check. A window's 'EndCheckWindow' can fire while one
+of its initiations is still in flight -- 'handleSkillTestNesting' glues the continuation
+behind 'EndSkillTestWindow', but not the window's close -- and that close depth-filters
+the recorded use away, so the trailing @Do (CheckWindows ws)@ re-derives a Forced ability
+that already initiated (Evil Past asked for its 2 horror twice, #5772).
+-}
+queuedWindowChecks :: HasQueue Message m => m [Window]
+queuedWindowChecks = fromQueue (concatMap go)
+ where
+  go = \case
+    Priority inner -> go inner
+    Retain inner -> go inner
+    MoveWithSkillTest inner -> go inner
+    MovedWithSkillTest _ inner -> go inner
+    Simultaneously inner -> concatMap go inner
+    Run inner -> concatMap go inner
+    CheckWindows ws -> ws
+    Do (CheckWindows ws) -> ws
+    ResolveWindowInitiations _ ws _ -> ws
+    _ -> []
+
+{- | Consume this initiation out of the queued 'ResolveWindowInitiations' marker and
+give the pending effects it was holding back to the queue.
+
+Removing the entry is what marks the initiation as done -- the recorded ability use
+cannot be relied on for that, because the continuation fires after the window has
+closed, where the use is depth-filtered away. The marker may already be glued to a test
+('MoveWithSkillTest'/'MovedWithSkillTest') or travelling in an ordinary transport
+wrapper; the rewrite preserves whatever carries it. Does nothing when no marker holds
+this initiation -- initiations outside a materialised queue keep their effects in the
+queue itself. #5743
+
+Where they go back depends on whether the marker still owes initiations. While others
+remain they resolve right behind this use, so each initiation resolves IN FULL before the
+next is offered (Caught in the Crossfire reduces each enemy's damage behind its own
+test). On the last one they go behind the marker instead: a window holding a Forced
+ability is worked through in two rounds, and the marker's @Do (CheckWindows ws)@ still
+owes the OPTIONAL reactions a look. Releasing there landed the damage first, so a
+reaction that changes the amount was ignored whenever the damaged entity also had a
+Forced trigger on the same window -- Nathaniel Cho's extra damage went missing against a
+Guardian Elder Thing (#5751).
+
+Either way they ride 'MoveWithSkillTest' so 'handleSkillTestNesting' keeps gluing them
+behind a nested test.
+-}
+releaseInitiationEffects
+  :: HasQueue Message m => InvestigatorId -> Ability -> [Window] -> m ()
+releaseInitiationEffects iid ability ws = pushAll . map MoveWithSkillTest =<< withQueue go
+ where
+  go [] = ([], [])
+  go (msg : rest) = case rewrite msg of
+    Just (msg', effects)
+      | exhausted msg' -> (msg' : map MoveWithSkillTest effects <> rest, [])
+      | otherwise -> (msg' : rest, effects)
+    Nothing -> let (rest', effects) = go rest in (msg : rest', effects)
+  exhausted = \case
+    Priority inner -> exhausted inner
+    Retain inner -> exhausted inner
+    MoveWithSkillTest inner -> exhausted inner
+    MovedWithSkillTest _ inner -> exhausted inner
+    ResolveWindowInitiations _ _ pending -> null pending
+    _ -> False
+  chosen (ability', ws', _) = ability' == ability && ws' == ws
+  rewrite = \case
+    Priority inner -> rewrap Priority inner
+    Retain inner -> rewrap Retain inner
+    MoveWithSkillTest inner -> rewrap MoveWithSkillTest inner
+    MovedWithSkillTest sid inner -> rewrap (MovedWithSkillTest sid) inner
+    ResolveWindowInitiations iid' initiationWindows pending
+      | iid == iid'
+      , any chosen pending ->
+          Just
+            ( ResolveWindowInitiations iid' initiationWindows (filter (not . chosen) pending)
+            , concat [effs | entry@(_, _, effs) <- pending, chosen entry]
+            )
+    _ -> Nothing
+  rewrap f inner = (\(inner', effects) -> (f inner', effects)) <$> rewrite inner
 
 createAssetAt :: MonadRandom m => Card -> Placement -> m (AssetId, Message)
 createAssetAt c placement = do

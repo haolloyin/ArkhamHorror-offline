@@ -61,6 +61,7 @@ import Arkham.Investigator.Types (Investigator, investigatorPlacement, investiga
 import Arkham.Location.CardDefs.TheBlobThatAteEverythingELSE qualified as Locations
 import Arkham.Message
 import Arkham.Name
+import Arkham.Phase (Phase)
 import Arkham.Placement (
   Placement (AtLocation, AttachedToInvestigator, InPlayArea, InThreatArea, StillInHand),
  )
@@ -372,6 +373,19 @@ data EpicOrganizerGateBlocked = EpicOrganizerGateBlocked
   deriving stock Show
   deriving anyclass Exception
 
+{- | The phases to announce, in the order the action actually entered them.
+@entered@ holds every phase whose @Begin@ ran, so an answer that carries the
+game through a whole round announces each phase instead of nothing; the final
+phase is appended for the paths that set it without a @Begin@.
+-}
+phaseTransitions :: Phase -> Phase -> [Phase] -> [Phase]
+phaseTransitions oldPhase newPhase entered = go oldPhase (entered <> [newPhase])
+ where
+  go _ [] = []
+  go prev (p : ps)
+    | p == prev = go prev ps
+    | otherwise = p : go p ps
+
 updateGame :: Map CardCode CustomCard -> Answer -> ArkhamGameId -> Maybe Room -> Handler ()
 updateGame customCards response gameId mRoom = do
   let broadcast :: Broadcast
@@ -381,7 +395,7 @@ updateGame customCards response gameId mRoom = do
   let rejectOrganizerGate action =
         action `catch` \EpicOrganizerGateBlocked ->
           permissionDenied "This event is waiting for the organizer's clue allocation"
-  (ArkhamGame {..}, oldLogEntries, updatedLog, mSharedUpdate, actAdvanced, newAchievements) <- rejectOrganizerGate $ runDB $ atomicallyWithGame gameId \g@ArkhamGame {..} -> do
+  (ArkhamGame {..}, oldLogEntries, updatedLog, mSharedUpdate, actAdvanced, newAchievements, mPhaseChanged) <- rejectOrganizerGate $ runDB $ atomicallyWithGame gameId \g@ArkhamGame {..} -> do
     -- Read the prior log from the per-room cache when it's in sync with
     -- the just-locked game's step; otherwise fall back to the DB. Avoids
     -- the 217-row-avg getGameLog read on every action in the common case.
@@ -392,7 +406,7 @@ updateGame customCards response gameId mRoom = do
 
     mLastStep <- getBy $ UniqueStep gameId arkhamGameStep
     let
-      gameJson@Game {..} = arkhamGameCurrentData
+      gameJson@Game {gamePhase = oldPhase, ..} = arkhamGameCurrentData
       currentQueue =
         maybe [] (choiceMessages . arkhamStepChoice . entityVal) mLastStep
 
@@ -408,7 +422,7 @@ updateGame customCards response gameId mRoom = do
     logRef <- newIORef []
     reply <- handleAnswer gameJson playerId response
     case reply of
-      Unhandled _ -> pure (g, oldLogEntries, [], Nothing, False, [])
+      Unhandled _ -> pure (g, oldLogEntries, [], Nothing, False, [], [])
       Handled answerMessages -> do
         -- Epic Multiplayer: if this game is a group within an event, build an
         -- EpicEnv so Shared* messages emitted during the action are captured as
@@ -454,17 +468,19 @@ updateGame customCards response gameId mRoom = do
         achievementsByRef <- newIORef []
         achievementProgressRef <- newIORef []
         achievementProgressByRef <- newIORef []
+        enteredPhasesRef <- newIORef []
         let
-          collectAchievements = \case
+          collectFromRun = \case
             EarnAchievement a -> modifyIORef' achievementsRef (a :)
             EarnAchievementBy iid a -> modifyIORef' achievementsByRef ((iid, a) :)
             AchievementProgress a items -> modifyIORef' achievementProgressRef ((a, items) :)
             AchievementProgressBy iid a items ->
               modifyIORef' achievementProgressByRef ((iid, a, items) :)
+            Begin phase -> modifyIORef' enteredPhasesRef (phase :)
             _ -> pure ()
         mResult <- liftIO $ timeout runMessagesTimeoutMicros do
           runGameApp (GameApp gameRef queueRef genRef (handleMessageLog logRef broadcast) mEpicEnv) do
-            runMessages (gameIdToText gameId) (Just collectAchievements)
+            runMessages (gameIdToText gameId) (Just collectFromRun)
         case mResult of
           Just () -> pure ()
           Nothing -> liftIO $ throwIO $ RunMessagesTimeout gameId runMessagesTimeoutMicros
@@ -482,6 +498,7 @@ updateGame customCards response gameId mRoom = do
         updatedQueue <- readIORef $ queueToRef queueRef
         -- handleMessageLog conses for O(1) inserts; reverse here to restore order.
         updatedLog <- reverse <$> readIORef logRef
+        enteredPhases <- reverse <$> readIORef enteredPhasesRef
 
         now <- liftIO getCurrentTime
         -- A one-player game is created WithFriends, but its player adding a second
@@ -593,7 +610,16 @@ updateGame customCards response gameId mRoom = do
                 pure [achievement | or completions]
               pure $ ordNub $ directEarns <> soloEarns <> progressEarns <> soloProgressEarns
 
-        pure (g', oldLogEntries, updatedLog, mSharedUpdate, actAdvanced, newAchievements)
+        pure
+          ( g'
+          , oldLogEntries
+          , updatedLog
+          , mSharedUpdate
+          , actAdvanced
+          , newAchievements
+          , case ge of
+              Game {gamePhase = newPhase} -> phaseTransitions oldPhase newPhase enteredPhases
+          )
 
   -- Update the per-room cache after the DB transaction has committed,
   -- so the cache is never ahead of durably-stored state.
@@ -622,6 +648,8 @@ updateGame customCards response gameId mRoom = do
       arkhamGameCurrentData
 
   -- Achievement unlock toasts, after the rows are durably committed.
+  for_ mPhaseChanged \phase -> publishToRoom gameId $ PhaseChanged phase
+
   for_ newAchievements \achievement ->
     publishToRoom gameId $ GameAchievement (achievementName achievement)
 

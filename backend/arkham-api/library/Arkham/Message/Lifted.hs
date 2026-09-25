@@ -46,7 +46,7 @@ import Arkham.Evade qualified as Evade
 import Arkham.Exhaust qualified as Exhaust
 import Arkham.Fight
 import Arkham.Fight qualified as Fight
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.Act
 import Arkham.Helpers.Agenda
 import Arkham.Helpers.Campaign qualified as Msg
@@ -2875,6 +2875,18 @@ cancelAttack source details = when details.canBeCanceled do
 changeAttackDetails :: (ReverseQueue m, AsId a, IdOf a ~ EnemyId) => a -> EnemyAttackDetails -> m ()
 changeAttackDetails eid details = push $ ChangeEnemyAttackDetails (asId eid) details
 
+{- | Patch the attack in flight. Callers hold the copy of 'EnemyAttackDetails'
+frozen into the window they triggered from, which predates anything @Do
+(EnemyAttack)@ or another card in the same window has since written; this reads
+the live record off the enemy so those edits survive. Falls back to the frozen
+copy for a coerced enemy id with no entity behind it ('EnemyLocation').
+-}
+updateAttackDetails
+  :: ReverseQueue m => EnemyAttackDetails -> (EnemyAttackDetails -> EnemyAttackDetails) -> m ()
+updateAttackDetails details f = do
+  live <- fromMaybe details <$> fieldMayJoin EnemyAttacking details.enemy
+  push $ ChangeEnemyAttackDetails details.enemy (f live)
+
 cancelAssetLeavePlay
   :: (MonadTrans t, HasQueue Message m, AsId asset, IdOf asset ~ AssetId)
   => asset
@@ -3597,7 +3609,7 @@ priority body = do
 simultaneously :: ReverseQueue m => QueueT Message m () -> m ()
 simultaneously body = do
   msgs <- capture body
-  push $ Simultaneously msgs
+  push $ Run [Simultaneously msgs]
 
 flipCluesToDoom :: (ReverseQueue m, Targetable target) => target -> Int -> m ()
 flipCluesToDoom target n = push $ FlipClues (toTarget target) n

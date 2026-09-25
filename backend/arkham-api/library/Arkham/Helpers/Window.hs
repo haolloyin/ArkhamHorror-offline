@@ -21,7 +21,7 @@ import Arkham.Enemy.Types (Field (EnemyAttacking))
 import Arkham.Event.Types qualified as Field
 import {-# SOURCE #-} Arkham.Game (abilityMatches)
 import Arkham.Game.Settings (settingsStrictAsIfAt)
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.Act (actMatches)
 import {-# SOURCE #-} Arkham.Helpers.Action (actionMatches)
 import Arkham.Helpers.Card (cardListMatches, extendedCardMatch)
@@ -32,7 +32,7 @@ import Arkham.Helpers.Deck (deckMatch)
 import Arkham.Helpers.Defeat (defeatedByMatches)
 import {-# SOURCE #-} Arkham.Helpers.Enemy (enemyAttackMatches)
 import Arkham.Helpers.GameValue (gameValueMatches)
-import {-# SOURCE #-} Arkham.Helpers.Investigator (matchWho)
+import Arkham.Helpers.Investigator (matchWho)
 import Arkham.Helpers.Location (locationMatches, placementLocation)
 import Arkham.Helpers.Phase (matchPhase)
 import {-# SOURCE #-} Arkham.Helpers.Playable (getIsPlayable)
@@ -107,6 +107,31 @@ card entering play in between can't react to a condition it wasn't around for.
 -}
 checkWindowsAt :: HasGame m => Int -> [Window] -> m Message
 checkWindowsAt tick windows' = checkWindows (map (setWindowConditionTick tick) windows')
+
+{- | The queued messages a still-open @When@ window is standing in front of.
+
+A "when X" window resolves between an effect being determined and it applying, so its
+pending effect sits behind the window check in the queue. An initiation that resolves
+asynchronously (a nested skill test) needs those messages glued to its resolution --
+'Arkham.Helpers.Message.handleSkillTestNesting' moves anything in 'MoveWithSkillTest'
+along with a deferred test -- or the window would close and the effect apply first.
+
+Only windows listed here suspend anything; extend as further "when" windows grow
+asynchronous responders. For enemy damage the defeat check must ride along too: it is
+what applies the damage tokens ('Arkham.Enemy.Runner', delayed damage has no check of
+its own, the source queues one behind the batch).
+-}
+pendingWindowEffect :: Window -> Message -> Bool
+pendingWindowEffect window = case (windowTiming window, windowType window) of
+  (Timing.When, Window.WouldTakeDamage _ target _ _) -> damageFor target
+  (Timing.When, Window.DealtDamage _ _ target _) -> damageFor target
+  (Timing.When, Window.TakeDamage _ _ target _) -> damageFor target
+  _ -> const False
+ where
+  damageFor target = \case
+    Damaged target' _ -> target == target'
+    CheckDefeated _ target' -> target == target'
+    _ -> False
 
 windows :: [WindowType] -> [Message]
 windows windows' = [CheckWindows $ map (mkWindow timing) windows' | timing <- [#when, #at, #after]]
@@ -349,30 +374,35 @@ replaceWindow f wf = do
       Do (CheckWindows ws) -> [Do (CheckWindows $ map (\w -> if f w then wf w else w) ws)]
       _ -> error "replaceWindow: impossible"
 
+{- | Rewrite the open windows wherever the queue still holds them.
+
+'CheckWindows' is not the only carrier: the materialised forced-initiation set
+('ResolveWindowInitiations', #5743) keeps its own copy of the window list, and by the time
+an ability resolving out of it runs, that marker is sitting behind a 'MoveWithSkillTest' --
+which 'QueueWrapper Message' deliberately neither strips nor groups. Rewriting only
+'CheckWindows' desyncs the pending set from 'rewriteUsedAbilityWindows', and a PerWindow
+limit intersects the two, so it can never bite: Diving Suit reassigned the same damage onto
+itself forever. #5769
+-}
 replaceWindowMany
-  :: (HasCallStack, HasQueue Message m) => (WindowType -> Bool) -> (WindowType -> [WindowType]) -> m ()
-replaceWindowMany f wf = do
-  replaceAllMessagesMatching
-    \case
-      CheckWindows ws -> any (f . windowType) ws
-      Do (CheckWindows ws) -> any (f . windowType) ws
-      _ -> False
-    \case
-      CheckWindows ws ->
-        [ CheckWindows
-            $ concatMap
-              (\w -> if f w.kind then map (`replaceWindowType` w) (wf w.kind) else [w])
-              ws
-        ]
-      Do (CheckWindows ws) ->
-        [ Do
-            ( CheckWindows
-                $ concatMap
-                  (\w -> if f w.kind then map (`replaceWindowType` w) (wf w.kind) else [w])
-                  ws
-            )
-        ]
-      _ -> error "replaceWindowMany: impossible"
+  :: HasQueue Message m => (WindowType -> Bool) -> (WindowType -> [WindowType]) -> m ()
+replaceWindowMany f wf = mapQueue go
+ where
+  rewrite = concatMap \w -> if f w.kind then map (`replaceWindowType` w) (wf w.kind) else [w]
+  go = \case
+    CheckWindows ws -> CheckWindows (rewrite ws)
+    ResolveWindowInitiations iid ws pending ->
+      ResolveWindowInitiations
+        iid
+        (rewrite ws)
+        [(ability, rewrite ws', msgs) | (ability, ws', msgs) <- pending]
+    Do msg -> Do (go msg)
+    MoveWithSkillTest msg -> MoveWithSkillTest (go msg)
+    Priority msg -> Priority (go msg)
+    Retain msg -> Retain (go msg)
+    Run msgs -> Run (map go msgs)
+    Simultaneously msgs -> Simultaneously (map go msgs)
+    other -> other
 
 windowSkillTest :: [Window] -> Maybe SkillTest
 windowSkillTest = \case
@@ -2078,8 +2108,9 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
             ]
         _ -> noMatch
     Matcher.EnemyDealsDamage timing enemyMatcher -> guardTiming timing $ \case
-      Window.DealtDamage source' _ _ _ | not (isBasicActionSource source') ->
-        sourceMatches source' (Matcher.SourceIsEnemy enemyMatcher)
+      Window.DealtDamage source' _ _ _
+        | not (isBasicActionSource source') ->
+            sourceMatches source' (Matcher.SourceIsEnemy enemyMatcher)
       _ -> noMatch
     Matcher.EnemyDealtDamage timing damageEffectMatcher enemyMatcher sourceMatcher ->
       guardTiming timing $ \case

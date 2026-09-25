@@ -13,7 +13,7 @@ import Arkham.Enemy.Creation (EnemyCreation (..))
 import Arkham.Enemy.Helpers
 import Arkham.Enemy.Types
 import Arkham.ForMovement
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.GameValue
 import Arkham.Helpers.Calculation
 import Arkham.Helpers.Damage (damageEffectMatches)
@@ -129,6 +129,17 @@ noSpawn attrs miid = do
   pushAll $ noSpawnMsg
     : [ Surge iid (toSource attrs) | enemySurgeIfUnableToSpawn attrs, iid <- toList miid
       ]
+
+{- | The damage and horror an enemy's attack deals, the way 'PerformEnemyAttack'
+computes it: the modified 'EnemyHealthDamage'\/'EnemySanityDamage', except that
+an attack in flight can have its damage switched off ('attackDealDamage').
+-}
+getEnemyAttackDamageAndHorror :: HasGame m => EnemyId -> m (Int, Int)
+getEnemyAttackDamageAndHorror eid = do
+  mdetails <- field EnemyAttacking eid
+  damage <- if all attackDealDamage mdetails then field EnemyHealthDamage eid else pure 0
+  horror <- field EnemySanityDamage eid
+  pure (damage, horror)
 
 getModifiedDamageAmount :: (HasGame m, Targetable target) => target -> DamageAssignment -> m Int
 getModifiedDamageAmount target damageAssignment = do

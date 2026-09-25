@@ -249,12 +249,20 @@ investigateAbilityAt entity matcher idx cost criteria =
     }
 
 withInvestigationTargets :: LocationMatcher -> Ability -> Ability
-withInvestigationTargets matcher =
+withInvestigationTargets matcher = withInvestigationTargetsMatching (matcher <> InvestigatableLocation)
+
+{- | Like 'withInvestigationTargets', but the matcher already says which locations
+count as targets. Needed when investigatability differs per target, e.g. Duke,
+which may move you to a location before investigating it, so an unrevealed
+connecting location is a legal target even though it can't be investigated yet.
+-}
+withInvestigationTargetsMatching :: LocationMatcher -> Ability -> Ability
+withInvestigationTargetsMatching matcher =
   delayAdditionalCostsWhen criterion
     . restrict criterion
     . (abilityMetadataL ?~ InvestigateTargets matcher)
  where
-  criterion = exists $ matcher <> InvestigatableLocation
+  criterion = exists matcher
 
 investigateAbilityWith
   :: (Sourceable a, HasCardCode a) => a -> Int -> SkillType -> Cost -> Criterion -> Ability
@@ -550,11 +558,19 @@ isSilentForcedAbilityType = \case
   ConstantAbility {} -> False
 defaultAbilityLimit :: AbilityType -> AbilityLimit
 defaultAbilityLimit = \case
+  -- Every Forced default is a GROUP limit: `Do (CheckWindows ws)` fans out to every
+  -- investigator and each queues its own ResolveWindowInitiations, so the group limit is
+  -- the cross-seat dedupe -- the later seats' initiations drop out of the re-filter once
+  -- the first seat's use is recorded (#5756). A `You` window only ever matches one seat,
+  -- so group and player agree there; on a shared source with an `Anyone` window they do
+  -- not, and the act's Objective was offered once per seat (#5761). The period still
+  -- scopes the bucket: PerWindow intersects `usedAbilityWindows`, PerTest is cleared at
+  -- SkillTestEnds, and PerMove is rewritten to PerMovement by `upgradePerMove`.
   ForcedAbility window' -> case window' of
-    SkillTestResult {} -> PlayerLimit PerTest 1
-    Moves {} -> PlayerLimit PerMove 1
-    Enters timing _ _ | timing /= #after -> PlayerLimit PerMove 1
-    Enters timing _ _ | timing == #after -> PlayerLimit PerWindow 1
+    SkillTestResult {} -> GroupLimit PerTest 1
+    Moves {} -> GroupLimit PerMove 1
+    Enters timing _ _ | timing /= #after -> GroupLimit PerMove 1
+    Enters timing _ _ | timing == #after -> GroupLimit PerWindow 1
     EnemySpawns {} -> GroupLimit PerSpawn 1
     _ -> GroupLimit PerWindow 1
   SilentForcedAbility _ -> GroupLimit PerWindow 1

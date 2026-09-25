@@ -59,7 +59,7 @@ import Arkham.Game.Settings (
  )
 import Arkham.Game.State
 import Arkham.Game.Utils
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers
 import Arkham.Helpers.Criteria
 import Arkham.Helpers.Customization
@@ -226,6 +226,44 @@ removeSeat departure iid g = case Map.lookup iid (g ^. entitiesL . investigators
     heirPid = fromMaybe pid (headMay remainingPlayers)
     replaceIid x = if x == iid then heir else x
     replacePid x = if x == pid then heirPid else x
+
+-- fight/evade choices coerce as-if-enemy locations and assets into EnemyId, so
+-- only a real enemy counts as the event's target
+setEventEnemyTarget :: HasGame m => EventId -> EnemyId -> Game -> m Game
+setEventEnemyTarget eid enemyId g = do
+  isEnemy <- selectAny $ EnemyWithId enemyId
+  pure $ if isEnemy then setEventTarget eid (EnemyTarget enemyId) g else g
+
+{- | First target an event picks sticks, later choices are not what it targeted.
+A card in hand or discard is skipped: no "targets an X" matcher reads
+'CardIdTarget', and recording it would hide the real target behind an earlier
+discard\/play choice (Blood Rite picks the card to discard before its enemy).
+-}
+setEventTarget :: EventId -> Target -> Game -> Game
+setEventTarget _ (CardIdTarget _) = id
+setEventTarget eid target =
+  entitiesL . eventsL . ix eid %~ overAttrs \attrs ->
+    if isJust attrs.target then attrs else attrs {eventTarget = Just target}
+
+{- | The innermost event still resolving, i.e. the first pending 'FinishedEvent'
+in the queue. An event played during another event's resolution pushes its own
+'FinishedEvent' in front, so the first one found is the one whose messages are
+running now.
+-}
+resolvingEventId :: [Message] -> Maybe EventId
+resolvingEventId = go
+ where
+  go [] = Nothing
+  go (m : ms) = case m of
+    FinishedEvent eid -> Just eid
+    Run xs -> go (xs <> ms)
+    Simultaneously xs -> go (xs <> ms)
+    Would _ xs -> go (xs <> ms)
+    MoveWithSkillTest x -> go (x : ms)
+    Do x -> go (x : ms)
+    Priority x -> go (x : ms)
+    Retain x -> go (x : ms)
+    _ -> go ms
 
 runGameMessage :: Runner Game
 runGameMessage msg g = case msg of
@@ -1854,6 +1892,15 @@ runGameMessage msg g = case msg of
             %~ insertEntity (overAttrs (\e -> e {eventPlacement = Unplaced}) event')
         else pure id
     pure $ g & entitiesL . eventsL %~ deleteMap eventId & removedEntitiesF
+  -- fight/evade events pick their enemy during resolution, so record it as the
+  -- event's target for "targets an enemy" matchers
+  ChoseEnemy _ _ ((.event) -> Just eid) enemyId -> setEventEnemyTarget eid enemyId g
+  -- an event's costs are paid before its 'FinishedEvent' is queued, so payment
+  -- choices find no resolving event and are skipped
+  ChoseTarget target -> do
+    queue <- peekQueue
+    pure $ maybe g (\eid -> setEventTarget eid target g) (resolvingEventId queue)
+  ChosenEvadeEnemy _ ((.event) -> Just eid) enemyId -> setEventEnemyTarget eid enemyId g
   After (ShuffleIntoDeck _ (AssetTarget aid)) -> do
     runMessage (RemoveAsset aid) g
   After (ShuffleIntoDeck _ (EventTarget eid)) ->
@@ -1896,17 +1943,8 @@ runGameMessage msg g = case msg of
       isPlayAction = if isFast then NotPlayAction else IsPlayAction
     activeCost <- createActiveCostForCard iid card isPlayAction windows'
 
-    let historyItem = HistoryItem HistoryPlayedCards [card]
-        turn = isJust $ view turnPlayerInvestigatorIdL g
-        setTurnHistory = if turn then turnHistoryL %~ insertHistory iid historyItem else id
-
     push $ CreatedCost $ activeCostId activeCost
-    pure
-      $ g
-      & activeCostL
-      %~ insertMap (activeCostId activeCost) activeCost
-      & (phaseHistoryL %~ insertHistory iid historyItem)
-      & setTurnHistory
+    pure $ g & activeCostL %~ insertMap (activeCostId activeCost) activeCost
   WindowAsk ws pid q -> do
     -- get all other asks for these windows and combine into an AskMap
     others <- popMessagesMatching \case
@@ -1947,7 +1985,15 @@ runGameMessage msg g = case msg of
             MaxPerTraitPerRound _ _ -> g'' & cardUsesL . at (toCardCode card) . non [] %~ (iid :)
             LimitPerRound _ -> g'' & cardUsesL . at (toCardCode card) . non [] %~ (iid :)
             _ -> g''
-        pure $ foldl' recordLimit g' (cdLimits $ toCardDef card)
+        mlid <- getMaybeLocation iid
+        let
+          historyItem = HistoryItem HistoryPlayedCards [PlayedCard card mlid mtarget payment]
+          turn = isJust $ view turnPlayerInvestigatorIdL g'
+          setTurnHistory = if turn then turnHistoryL %~ insertHistory iid historyItem else id
+        pure
+          $ foldl' recordLimit g' (cdLimits $ toCardDef card)
+          & (phaseHistoryL %~ insertHistory iid historyItem)
+          & setTurnHistory
       else do
         debugOut InfoLevel
           $ "Tried to play "
@@ -3899,8 +3945,19 @@ runGameMessage msg g = case msg of
       _ -> error "Unhandle remove card entity type"
   UseAbility _ a _ -> pure $ g & activeAbilitiesL %~ (a :)
   ResolvedAbility ab -> do
-    let remainingEvents = Map.filter (attr eventWaiting) $ entitiesEvents (gameActionRemovedEntities g)
-    let remainingTreacheries = Map.filter (attr treacheryWaiting) $ entitiesTreacheries (gameActionRemovedEntities g)
+    -- a queued ResolveWindowInitiations is a set of in-flight abilities: their sources
+    -- must survive this sweep to claim UseAbility, even after leaving play (Caught in
+    -- the Crossfire discards itself on its first resolution). #5743
+    pendingSources <- queuedInitiationSources
+    let
+      stillInitiating :: Sourceable a => a -> Bool
+      stillInitiating source = toSource source `elem` pendingSources
+    let remainingEvents =
+          Map.filter (\e -> attr eventWaiting e || stillInitiating e)
+            $ entitiesEvents (gameActionRemovedEntities g)
+    let remainingTreacheries =
+          Map.filter (\t -> attr treacheryWaiting t || stillInitiating t)
+            $ entitiesTreacheries (gameActionRemovedEntities g)
     let removedEntitiesF =
           if length (gameActiveAbilities g) <= 1
             then

@@ -26,7 +26,12 @@ import Arkham.Helpers.Investigator (getMaybeLocation)
 import Arkham.Helpers.Modifiers
 import Arkham.Id
 import Arkham.Investigator (promoInvestigators)
-import Arkham.Investigator.Types (Field (..), Investigator, investigatorResources)
+import Arkham.Investigator.Types (
+  Field (..),
+  Investigator,
+  InvestigatorAttrs,
+  investigatorResources,
+ )
 import Arkham.Keyword (Sealing (..))
 import Arkham.Keyword qualified as Keyword
 import Arkham.Location.Types (Location)
@@ -35,6 +40,7 @@ import Arkham.Prelude
 import Arkham.Projection
 import Arkham.Scenario.Types hiding (scenario)
 import Arkham.Skill.Types (Skill)
+import Arkham.Source
 import Arkham.Story.Types (Story)
 import Arkham.Target
 import Arkham.Treachery.Types (Treachery)
@@ -300,20 +306,31 @@ getCostForCard iid card isPlayAction = do
                   EnemyRemainingHealthField -> EnemyRemainingHealth
             values <- mapMaybeM (field enemyField) enemies
             pure $ Cost.OrCost $ map Cost.ResourceCost $ nubOrd values
-          _ ->
-            pure
-              $ if isDynamic card
-                then
-                  let
-                    availableForX = max 0 (investigatorResources (toAttrs investigator') - resources)
-                    dynamicPart = case maxDynamic card of
-                      Nothing -> Cost.UpTo (Fixed availableForX) (Cost.ResourceCost 1)
-                      Just c -> Cost.UpTo (MaxCalculation c (Fixed availableForX)) (Cost.ResourceCost 1)
-                   in
-                    if resources == 0
-                      then dynamicPart
-                      else Cost.ResourceCost resources <> dynamicPart
-                else if resources == 0 then Cost.Free else Cost.ResourceCost resources
+          _
+            | isDynamic card -> do
+                -- a reduction past zero is credited to X when the cost is paid, so the player
+                -- should not be offered resources to spend on it as well
+                ucost <- fromMaybe 0 <$> getUnboundedModifiedCardCost iid card
+                let discount = max 0 (negate ucost)
+                let availableForX = max 0 (investigatorResources (toAttrs investigator') - resources)
+                let
+                  dynamicPart = case maxDynamic card of
+                    Nothing -> Cost.UpTo (Fixed availableForX) (Cost.ResourceCost 1)
+                    -- NB. MaxCalculation is min and MinCalculation is max, so this is
+                    -- min (max 0 (cap - discount)) availableForX
+                    Just c ->
+                      Cost.UpTo
+                        ( MaxCalculation
+                            (MinCalculation (Fixed 0) (SubtractCalculation c (Fixed discount)))
+                            (Fixed availableForX)
+                        )
+                        (Cost.ResourceCost 1)
+                -- keep a resource cost around when discounted so the discount still gets credited
+                pure
+                  $ if resources == 0 && discount == 0
+                    then dynamicPart
+                    else Cost.ResourceCost resources <> dynamicPart
+          _ -> pure $ if resources == 0 then Cost.Free else Cost.ResourceCost resources
 
       investigateCosts <- runDefaultMaybeT [] do
         guard isInvestigate
@@ -411,6 +428,52 @@ maybeEnemyLocation lid = do
   g <- getGame
   pure $ EnemyLocationId . toId <$> preview (entitiesL . enemyLocationsL . ix lid) g
 
+{- | Will any entity still claim a 'UseAbility' for this source? Each entity runner's
+@UseAbility _ ab _ | isSource a ab.source@ arm is the ONLY converter to
+@Do (UseAbility ...)@, so an ability whose source has left every map the dispatch reaches
+is silently swallowed -- and a materialised initiation holding it is then re-offered
+forever, because neither the recorded use nor 'releaseInitiationEffects' can mark it done
+(#5761). Anything not entity-backed answers True, so nothing else changes.
+
+The kinds the ResolvedAbility sweep parks (events, treacheries -- Caught in the Crossfire
+discards itself on its first resolution, #5743) go through the @maybe*@ lookups, which
+already consult 'actionRemovedEntitiesL' and the in-hand/in-discard/in-search maps, so
+they keep answering True. Acts, agendas, stories, concealed cards and scarlet keys have no
+such lookup -- theirs are @entitiesL@-only even though 'Arkham.Entities' does fan the
+message over the removed map -- so they are checked against both here.
+-}
+sourceCanClaimUseAbility :: HasGame m => Source -> m Bool
+sourceCanClaimUseAbility = \case
+  AbilitySource s _ -> sourceCanClaimUseAbility s
+  UseAbilitySource _ s _ -> sourceCanClaimUseAbility s
+  PaymentSource s -> sourceCanClaimUseAbility s
+  IndexedSource _ s -> sourceCanClaimUseAbility s
+  -- the runners compare against ProxySource's ORIGINAL source (`isProxySource`)
+  ProxySource _ s -> sourceCanClaimUseAbility s
+  BothSource s1 s2 -> orM [sourceCanClaimUseAbility s1, sourceCanClaimUseAbility s2]
+  AssetSource aid -> isJust <$> maybeAsset aid
+  EventSource eid -> isJust <$> getEventMaybe eid
+  TreacherySource tid -> isJust <$> maybeTreachery tid
+  SkillSource sid -> isJust <$> maybeSkill sid
+  EnemySource eid -> isJust <$> maybeEnemy eid
+  LocationSource lid -> isJust <$> maybeLocation lid
+  EffectSource eid -> isJust <$> maybeEffect eid
+  InvestigatorSource iid -> isJust <$> getInvestigatorMaybe iid
+  ActSource aid -> livesIn actsL aid
+  AgendaSource aid ->
+    orM [livesIn agendasL aid, livesIn actsL (coerce aid :: ActId)]
+  StorySource sid -> livesIn storiesL sid
+  ConcealedCardSource cid -> livesIn concealedL cid
+  ScarletKeySource kid -> livesIn scarletKeysL kid
+  _ -> pure True
+ where
+  livesIn
+    :: (HasGame m, entityId ~ EntityId entity, Ord entityId)
+    => Lens' Entities (EntityMap entity) -> entityId -> m Bool
+  livesIn l eid = do
+    g <- getGame
+    pure $ isJust (preview (entitiesL . l . ix eid) g) || isJust (getRemovedEntity l eid g)
+
 modeScenario :: GameMode -> Maybe Scenario
 modeScenario = \case
   That s -> Just s
@@ -465,3 +528,9 @@ gameAssets = entitiesAssets . gameEntities
 
 gameTreacheries :: Game -> EntityMap Treachery
 gameTreacheries = entitiesTreacheries . gameEntities
+
+withInvestigatorEdit
+  :: HasGame m => InvestigatorId -> (InvestigatorAttrs -> InvestigatorAttrs) -> ReaderT Game m a -> m a
+withInvestigatorEdit iid f body = do
+  game <- getGame
+  runReaderT body $ game & entitiesL . investigatorsL . ix iid %~ overAttrs f

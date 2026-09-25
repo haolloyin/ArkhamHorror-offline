@@ -55,7 +55,7 @@ instance RunMessage WealdOfEffigiesB where
                 chooseOneM iid $ for assets \(aid, card) -> targeting aid $ hollow iid card
       pure l
     UseThisAbility iid (isSource attrs -> True) 1 -> do
-      lookAt iid (attrs.ability 1) iid [fromTopOfDeck 1] #any (defer attrs IsNotDraw)
+      lookAt iid (attrs.ability 1) iid [peekTopOfDeck 1] #any (defer attrs IsNotDraw)
       pure l
     SearchFound iid (isTarget attrs -> True) _ cards | notNull cards -> do
       focusCards cards do
@@ -67,7 +67,7 @@ instance RunMessage WealdOfEffigiesB where
       miniCards <- select ConcealedCardAny
       locations <- select $ LocationWithPlacement InTheShadows
       chooseOneM iid $ campaignI18n do
-        labeledValidate' (notNull miniCards) "wealdOfEffigies.miniCards" do
+        labeledValidate (notNull miniCards) "wealdOfEffigies.miniCards" do
           chooseOneM iid do
             for_ (eachWithRest miniCards) \(card, rest) -> do
               targeting card do

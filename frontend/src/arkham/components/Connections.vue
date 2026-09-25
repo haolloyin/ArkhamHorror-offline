@@ -3,12 +3,14 @@ import { onMounted, onBeforeUnmount, computed, ref, nextTick, watch } from 'vue'
 import type {Game} from '@/arkham/types/Game'
 import { createLaserBeam, COSMIC_EMISSARY_STOPS, type LaserBeamInstance } from '@/arkham/laserBeam'
 import { useSettings } from '@/stores/settings'
+import Treachery from '@/arkham/components/Treachery.vue'
 
 export interface Props {
   game: Game
   playerId: string
   allowCurvedPaths?: boolean
   enableCosmicEmissaryAnimation?: boolean
+  zoom?: number
 }
 
 // The laser layer is a sibling of the SVG rather than part of it, so this
@@ -16,7 +18,16 @@ export interface Props {
 defineOptions({ inheritAttrs: false })
 
 const props = defineProps<Props>()
+const emits = defineEmits<{ choose: [value: number] }>()
 const settings = useSettings()
+
+// The location grid is scaled with a CSS transform but the SVG is its sibling,
+// drawn in screen pixels from bounding rects. Endpoints follow the cards on
+// their own; everything sized in px -- stroke, dashes, chevrons, the bow on a
+// curved route -- has to be scaled by hand or the lines stay hairline-thin on a
+// zoomed-in board.
+const mapZoom = computed(() => (props.zoom && props.zoom > 0 ? props.zoom : 1))
+const scaled = (px: number) => px * mapZoom.value
 const allLocations = computed(() => Object.values(props.game.locations))
 
 const locations = computed(() =>
@@ -116,6 +127,33 @@ function connectionKey(id1: string, id2: string): string {
   return `${left}:${right}`
 }
 
+// Cards placed *between* two locations (Broken Couplings) hang off the
+// connection, not off either location, so they are drawn here rather than in
+// Location.vue. Midpoints come from the same geometry pass that draws the
+// lines; they are only measured when something actually needs them.
+const midpoints = ref<Record<string, { x: number; y: number }>>({})
+
+const betweenTreacheries = computed(() =>
+  Object.values(props.game.treacheries)
+    .filter(t => t.placement.tag === 'BetweenLocations')
+    .map(t => {
+      const [a, b] = (t.placement as { contents: [string, string] }).contents
+      return { treachery: t, connection: connectionKey(a, b) }
+    })
+)
+
+const trackedConnections = computed(() => new Set(betweenTreacheries.value.map(t => t.connection)))
+
+function midpointStyle(connection: string) {
+  const point = midpoints.value[connection]
+  if (!point) return { display: 'none' }
+  return {
+    left: `${point.x}px`,
+    top: `${point.y}px`,
+    transform: `translate(-50%, -50%) scale(${mapZoom.value})`,
+  }
+}
+
 function mineCartNextConnection(): string | null {
   const cart = mineCart.value
   if ((props.game.scenario?.id !== 'c10501' && props.game.scenario?.id !== 'c10502') || cart?.placement.tag !== 'AtLocation') {
@@ -202,7 +240,7 @@ function segmentsConflict(a: ConnectionCandidate, b: ConnectionCandidate): boole
     const aMax = Math.max(useX ? a.x1 : a.y1, useX ? a.x2 : a.y2)
     const bMin = Math.min(useX ? b.x1 : b.y1, useX ? b.x2 : b.y2)
     const bMax = Math.max(useX ? b.x1 : b.y1, useX ? b.x2 : b.y2)
-    return Math.min(aMax, bMax) - Math.max(aMin, bMin) > 8
+    return Math.min(aMax, bMax) - Math.max(aMin, bMin) > scaled(8)
   }
 
   return false
@@ -230,7 +268,7 @@ function curveOffsets(candidates: ConnectionCandidate[]): Map<string, number> {
   const result = new Map<string, number>()
   for (const [connection, count] of conflictCounts) {
     const sign = Array.from(connection).reduce((sum, char) => sum + char.charCodeAt(0), 0) % 2 === 0 ? 1 : -1
-    result.set(connection, sign * Math.min(34 + (count - 1) * 10, 64))
+    result.set(connection, sign * scaled(Math.min(34 + (count - 1) * 10, 64)))
   }
 
   if (!svgEl) return result
@@ -241,10 +279,10 @@ function curveOffsets(candidates: ConnectionCandidate[]): Map<string, number> {
     const rect = element.getBoundingClientRect()
     return [{
       id: location.id,
-      x: rect.left - svgRect.left - 6,
-      y: rect.top - svgRect.top - 6,
-      width: rect.width + 12,
-      height: rect.height + 12,
+      x: rect.left - svgRect.left - scaled(6),
+      y: rect.top - svgRect.top - scaled(6),
+      width: rect.width + scaled(12),
+      height: rect.height + scaled(12),
     }]
   })
   const boardCenter = locationRects.reduce(
@@ -282,7 +320,7 @@ function curveOffsets(candidates: ConnectionCandidate[]): Map<string, number> {
     if (straightIntersections === 0) continue
     // Give longer routes crossing several cards a distinctly wider lane so
     // nested connections do not continue to sit on top of one another.
-    const magnitude = Math.min(90 + (straightIntersections - 1) * 75, 165)
+    const magnitude = scaled(Math.min(90 + (straightIntersections - 1) * 75, 165))
     const positiveIntersections = intersectionsForOffset(candidate, magnitude)
     const negativeIntersections = intersectionsForOffset(candidate, -magnitude)
     if (positiveIntersections !== negativeIntersections) {
@@ -377,6 +415,11 @@ function makeOrUpdateConnectionPath(candidate: ConnectionCandidate, curveOffset 
     const controlY = (y1 + y2) / 2 + (dx / distance) * curveOffset
     path.setAttribute('d', `M ${x1} ${y1} Q ${controlX} ${controlY} ${x2} ${y2}`)
     path.classList.add('curved')
+  }
+
+  if (trackedConnections.value.has(connection)) {
+    const point = path.getPointAtLength(path.getTotalLength() / 2)
+    nextMidpoints[connection] = { x: point.x, y: point.y }
   }
 
   if (connection === mineCartNextConnection()) path.classList.add('mine-cart-next-line')
@@ -515,8 +558,8 @@ function makeOrUpdateMineCartInvalidLine(locationDiv: HTMLElement, direction: Gr
     chevronsByConn.set(xConnection, xMark)
   }
 
-  const size = 7
-  const thickness = 3
+  const size = scaled(7)
+  const thickness = scaled(3)
   xMark.setAttribute('d', [
     `M${xMarkCenter - size},${yMarkCenter - size + thickness}`,
     `L${xMarkCenter - size + thickness},${yMarkCenter - size}`,
@@ -634,7 +677,7 @@ function updateFateSmokeFilter(connection: string, x1: number, y1: number, x2: n
     defsEl.appendChild(filter)
   }
 
-  const pad = 96
+  const pad = scaled(96)
   setSvgAttr(filter, 'x', String(Math.min(x1, x2) - pad))
   setSvgAttr(filter, 'y', String(Math.min(y1, y2) - pad))
   setSvgAttr(filter, 'width', String(Math.abs(x2 - x1) + pad * 2))
@@ -693,7 +736,7 @@ function updateFateOfTheValeEnemyLineGradient(line: SVGLineElement, connection: 
   if (dist < 1) return
   const ux = dx / dist
   const uy = dy / dist
-  const patternLength = 96
+  const patternLength = scaled(96)
 
   setSvgAttr(gradient, 'x1', String(x1))
   setSvgAttr(gradient, 'y1', String(y1))
@@ -743,21 +786,23 @@ function makeOrUpdateChevrons(srcDiv: HTMLElement, dstDiv: HTMLElement, connecti
   }
   // Straight chevrons stop outside the card edges. Curved routes continue to
   // each card's center and are naturally hidden underneath the location cards.
-  const startD = curveOffset === 0 ? exitDist(sRect.width / 2, sRect.height / 2) + CHEVRON_EDGE_PAD : 0
-  const endD = curveOffset === 0 ? dist - exitDist(dRect.width / 2, dRect.height / 2) - CHEVRON_EDGE_PAD : dist
+  const edgePad = scaled(CHEVRON_EDGE_PAD)
+  const spacing = scaled(CHEVRON_SPACING)
+  const startD = curveOffset === 0 ? exitDist(sRect.width / 2, sRect.height / 2) + edgePad : 0
+  const endD = curveOffset === 0 ? dist - exitDist(dRect.width / 2, dRect.height / 2) - edgePad : dist
   const span = endD - startD
   if (span < 0) return // cards overlap or are flush
 
   // Fixed spacing, centered in the visible band — never stretches chevrons
   // to the boundary.
-  const count = Math.max(1, Math.round(span / CHEVRON_SPACING) + 1)
-  const usedSpan = (count - 1) * CHEVRON_SPACING
+  const count = Math.max(1, Math.round(span / spacing) + 1)
+  const usedSpan = (count - 1) * spacing
   const offset = (span - usedSpan) / 2
   const segments: string[] = []
   const controlX = (x1 + x2) / 2 - uy * curveOffset
   const controlY = (y1 + y2) / 2 + ux * curveOffset
   for (let i = 0; i < count; i++) {
-    const d = startD + offset + i * CHEVRON_SPACING
+    const d = startD + offset + i * spacing
     if (curveOffset === 0) {
       const cx = x1 + ux * d
       const cy = y1 + uy * d
@@ -805,8 +850,8 @@ function chevronPath(cx: number, cy: number, ux: number, uy: number, px: number,
   // reference SVG. Going clockwise from the tip:
   //   F (tip) -> A (top wing) -> B (top outer back) -> C (notch tip)
   //   -> D (bottom outer back) -> E (bottom wing) -> close.
-  const L = CHEVRON_LEN
-  const H = CHEVRON_HEIGHT / 2
+  const L = scaled(CHEVRON_LEN)
+  const H = scaled(CHEVRON_HEIGHT) / 2
   // Local-to-world projection: lx along (ux,uy), ly perpendicular along (px,py).
   const toWorld = (lx: number, ly: number) =>
     `${(cx + lx * ux + ly * px).toFixed(1)},${(cy + lx * uy + ly * py).toFixed(1)}`
@@ -819,9 +864,12 @@ function chevronPath(cx: number, cy: number, ux: number, uy: number, px: number,
   return `M${f} L${a} L${b} L${c} L${d} L${e} Z`
 }
 
+let nextMidpoints: Record<string, { x: number; y: number }> = {}
+
 function handleConnections(includeFateOfTheVale = true) {
   if(!svgEl) return
   const live = new Set<string>()
+  nextMidpoints = {}
 
   // Build directed edge set so we can detect one-way connections by absence of
   // the reverse edge. connectedLocations is symmetric for normal connections
@@ -951,6 +999,12 @@ function handleConnections(includeFateOfTheVale = true) {
       chevronsByConn.delete(conn)
     }
   }
+
+  // This runs every animation frame while the board is settling, so only commit
+  // when a midpoint actually moved -- otherwise the overlay re-renders forever.
+  if (JSON.stringify(nextMidpoints) !== JSON.stringify(midpoints.value)) {
+    midpoints.value = nextMidpoints
+  }
 }
 
 const requestId = ref<number | null>(null)
@@ -966,13 +1020,40 @@ function stopTransientTracking() {
   requestId.value = null
 }
 
+// The burst exists to follow location cards while they move, but most of what
+// wakes it is a --can-interact class landing on a card, which moves nothing.
+// So redraw only on frames where the geometry actually changed, and end the
+// burst once the cards have come to rest. Sub-pixel and five frames: anything
+// still animating moves the rect every frame, easing tail included.
+const TRANSIENT_STABLE_FRAMES = 5
+
+function locationGeometrySignature(): string {
+  const cards = document.querySelector('.location-cards')
+  if (!cards) return ''
+  let sig = ''
+  for (const el of cards.querySelectorAll<HTMLElement>('[data-id]')) {
+    const r = el.getBoundingClientRect()
+    sig += `${el.dataset.id}:${r.left.toFixed(2)},${r.top.toFixed(2)},${r.width.toFixed(2)},${r.height.toFixed(2)};`
+  }
+  return sig
+}
+
 function requestTransientConnectionTracking(durationMs = 260) {
   transientTrackingUntil = Math.max(transientTrackingUntil, performance.now() + durationMs)
   if (requestId.value !== null) return
+  let lastSignature = locationGeometrySignature()
+  let stableFrames = 0
   const tick = (ts: number) => {
     requestId.value = null
     if (ts >= transientTrackingUntil) return
-    handleConnections(false)
+    const signature = locationGeometrySignature()
+    if (signature === lastSignature) {
+      if (++stableFrames >= TRANSIENT_STABLE_FRAMES) return
+    } else {
+      lastSignature = signature
+      stableFrames = 0
+      handleConnections(false)
+    }
     requestId.value = window.requestAnimationFrame(tick)
   }
   requestId.value = window.requestAnimationFrame(tick)
@@ -1029,6 +1110,8 @@ watch(mineCart, ()=> { requestConnectionUpdate() }, { flush: 'post' })
 watch(isWrittenInRockAct2, ()=> { requestConnectionUpdate() }, { flush: 'post' })
 watch(enemies, ()=> { requestConnectionUpdate() }, { flush: 'post' })
 watch(() => props.enableCosmicEmissaryAnimation, () => { requestConnectionUpdate() }, { flush: 'post' })
+watch(mapZoom, () => { requestConnectionUpdate() }, { flush: 'post' })
+watch(trackedConnections, () => { requestConnectionUpdate() }, { flush: 'post' })
 // Turning the beams off has to tear the canvases down, not just stop drawing
 // them; the redraw then rebuilds the SVG lines in their place.
 watch(useLaserBeams, (enabled) => {
@@ -1070,7 +1153,12 @@ onBeforeUnmount(()=> {
 </script>
 
 <template>
-  <svg ref="svgRef" class="connections-svg" :class="{ 'cosmic-emissary-animation-disabled': props.enableCosmicEmissaryAnimation === false }">
+  <svg
+    ref="svgRef"
+    class="connections-svg"
+    :class="{ 'cosmic-emissary-animation-disabled': props.enableCosmicEmissaryAnimation === false }"
+    :style="{ '--map-zoom': mapZoom }"
+  >
     <defs>
     </defs>
     <line ref="protoRef" class="line original" stroke-dasharray="5, 5"/>
@@ -1078,6 +1166,16 @@ onBeforeUnmount(()=> {
     <path ref="chevronProtoRef" class="chevrons original"/>
   </svg>
   <div ref="laserLayerRef" class="connections-lasers" aria-hidden="true"></div>
+  <div class="connections-between">
+    <div
+      v-for="{ treachery, connection } in betweenTreacheries"
+      :key="treachery.id"
+      class="between-card"
+      :style="midpointStyle(connection)"
+    >
+      <Treachery :game="game" :treachery="treachery" :playerId="playerId" @choose="emits('choose', $event)" />
+    </div>
+  </div>
 </template>
 
 <style scoped>
@@ -1113,9 +1211,39 @@ onBeforeUnmount(()=> {
   pointer-events: none;
 }
 
+/* .location-cards is a later sibling at z-index 1 and its interactable cells go
+   to 20, so anything lower than this gets painted over -- which swallows clicks
+   on the coupling's ability button where it overlaps a neighbouring car. */
+.connections-between{
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: var(--z-index-30);
+}
+
+.connections-between > *{
+  position: absolute;
+  pointer-events: auto;
+  transform-origin: 50% 50%;
+}
+
+.between-card{
+  width: 70px;
+}
+
+.between-card :deep(img.card){
+  width: 100%;
+  border-radius: 4px;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.6);
+}
+
 .line{
   fill: none;
-  stroke-width: 6px;
+  stroke-width: max(1px, calc(6px * var(--map-zoom, 1)));
+  stroke-dasharray: calc(5px * var(--map-zoom, 1)) calc(5px * var(--map-zoom, 1));
   stroke: rgba(255, 255, 255, 0.2);
 }
 .line.active:not(.mine-cart-next-line){
@@ -1137,31 +1265,31 @@ onBeforeUnmount(()=> {
 
 .mine-cart-next-line{
   stroke: rgba(74 190 111 / 0.85);
-  filter: drop-shadow(0 0 2px rgba(74 190 111 / 0.35));
+  filter: drop-shadow(0 0 calc(2px * var(--map-zoom, 1)) rgba(74 190 111 / 0.35));
 }
 
 .mine-cart-invalid-line{
   stroke: rgba(220 48 48 / 0.85);
-  filter: drop-shadow(0 0 2px rgba(220 48 48 / 0.45));
+  filter: drop-shadow(0 0 calc(2px * var(--map-zoom, 1)) rgba(220 48 48 / 0.45));
 }
 
 .mine-cart-invalid-x{
   fill: rgba(220 48 48 / 0.95);
   stroke: none;
-  filter: drop-shadow(0 0 2px rgba(220 48 48 / 0.45));
+  filter: drop-shadow(0 0 calc(2px * var(--map-zoom, 1)) rgba(220 48 48 / 0.45));
 }
 
 .fate-of-the-vale-enemy-line-glow {
   stroke: rgba(132 202 199 / 0.52);
-  stroke-width: 22px;
+  stroke-width: calc(22px * var(--map-zoom, 1));
   stroke-linecap: round;
   stroke-opacity: 0.9;
   vector-effect: non-scaling-stroke;
 }
 
 .fate-of-the-vale-enemy-line{
-  stroke-width: 10px;
-  stroke-dasharray: 86 10;
+  stroke-width: calc(10px * var(--map-zoom, 1));
+  stroke-dasharray: calc(86px * var(--map-zoom, 1)) calc(10px * var(--map-zoom, 1));
   stroke-linecap: round;
   stroke-opacity: 1;
   vector-effect: non-scaling-stroke;

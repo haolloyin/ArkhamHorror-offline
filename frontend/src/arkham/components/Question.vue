@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n';
 import { useDebouncedRef } from '@/composable/debouncedRef';
 import { handleEmbeddedI18n, parseInput } from '@/arkham/i18n';
 import { formatCost } from '@/arkham/cost';
+import { abilityNeedsGhostModal } from '@/arkham/ghostAbility';
 import { choiceRequiresModal, MessageType, CardLabel, ChaosTokenLabel, type Message, type TargetLabel } from '@/arkham/types/Message';
 import { computed, inject, ref, watch, onMounted } from 'vue';
 import { imgsrc, formatContent } from '@/arkham/helpers';
@@ -24,6 +25,8 @@ import QuestionChoices from '@/arkham/components/QuestionChoices.vue';
 import CardImage from '@/arkham/components/CardImage.vue';
 import CardPoolPicker from '@/arkham/components/CardPoolPicker.vue';
 import { cardPoolForLabelKey } from '@/arkham/cardPools';
+import { putBackInAnyOrderPicks } from '@/arkham/putBackInAnyOrder';
+import PutBackInAnyOrder from '@/arkham/components/PutBackInAnyOrder.vue';
 
 export interface Props {
   game: Game
@@ -371,6 +374,10 @@ const cardPoolCandidates = computed(() => {
 
 const cardPoolActive = computed(() => cardPoolPick.value !== null && cardPoolCandidates.value.length > 0)
 
+// The put-back panel owns its own state and styles; this only decides whether it
+// is what the modal should be showing.
+const putBackActive = computed(() => putBackInAnyOrderPicks(props.game, props.playerId) !== null)
+
 const focusedCardGroups = computed<SearchedCardGroup[]>(() => {
   if (focusedCardsForGroups.value.length === 0) return []
 
@@ -566,6 +573,12 @@ const showChoices = computed(() => {
     return false
   }
   if (choices.value.some(choiceRequiresModal)) {
+    return true
+  }
+  // An ability whose source card has left play has no card to carry its button, so the
+  // modal (with its ghost card) is the only place it can render -- Caught in the
+  // Crossfire's later initiations resolve after it discards itself. #5743
+  if (choices.value.some((c) => abilityNeedsGhostModal(props.game, c))) {
     return true
   }
   return props.game.focusedChaosTokens.length > 0 || focusedCards.value.length > 0 || searchedCards.value.length > 0 || paymentAmountsLabel.value || amountsLabel.value
@@ -1002,6 +1015,11 @@ const filteredCards = computed<{ choice: CardLabel; index: number }[]>(() => {
             :accent="cardPoolPick.pool.accent"
             @choose="$emit('choose', $event)"
           />
+          <PutBackInAnyOrder
+            v-else-if="putBackActive"
+            :game="game"
+            :playerId="playerId"
+          />
           <div v-else-if="focusedCardGroups.length > 0 && choices.length > 0" class="modal">
             <div class="modal-contents searched-cards focused-cards">
               <div v-for="group in focusedCardGroups" :key="group.key" class="group">
@@ -1024,7 +1042,7 @@ const filteredCards = computed<{ choice: CardLabel; index: number }[]>(() => {
               </div>
             </div>
           </div>
-          <div v-if="searchedCards.length > 0 && choices.length > 0 && !cardPoolActive" class="modal">
+          <div v-if="searchedCards.length > 0 && choices.length > 0 && !cardPoolActive && !putBackActive" class="modal">
             <div class="modal-contents searched-cards">
               <div v-for="group in searchedCards" :key="group.key" class="group">
                 <h2>{{ group.label }}</h2>
@@ -1293,6 +1311,7 @@ section {
       content: "";
       filter: blur(0.25em);
       z-index: var(--z-index-1);
+      pointer-events: none;
     }
     h1 {
       color: #19214F;
@@ -2078,6 +2097,7 @@ h2 {
       content: "";
       filter: blur(0.25em);
       z-index: var(--z-index-1);
+      pointer-events: none;
     }
     h1 {
       color: #19214F;
@@ -2288,4 +2308,5 @@ h2 {
     width: 100%;
   }
 }
+
 </style>

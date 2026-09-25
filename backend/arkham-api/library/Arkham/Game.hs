@@ -70,7 +70,7 @@ import Arkham.Game.Runner (preloadEntities, runPreGameMessage)
 import Arkham.Game.Settings
 import Arkham.Game.State
 import Arkham.Game.Utils
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.GameT
 import Arkham.Git (gitHash)
 import Arkham.Helpers
@@ -91,7 +91,11 @@ import Arkham.Helpers.Cost
 import Arkham.Helpers.Criteria
 import Arkham.Helpers.Customization (customizedSlots, hasCustomization)
 import Arkham.Helpers.Doom
-import Arkham.Helpers.Enemy (enemyEngagedInvestigators, getModifiedKeywords)
+import Arkham.Helpers.Enemy (
+  enemyEngagedInvestigators,
+  getEnemyAttackDamageAndHorror,
+  getModifiedKeywords,
+ )
 import Arkham.Helpers.Game
 import Arkham.Helpers.GameValue
 import Arkham.Helpers.Investigator hiding (investigator)
@@ -2837,6 +2841,12 @@ getLocationsMatching lmatcher = do
           [ fieldMap LocationShroud isJust l.id
           , notElem CannotInvestigate <$> getModifiers (toTarget l)
           ]
+    PotentiallyInvestigatableLocation -> do
+      flip filterM ls \l ->
+        andM
+          [ fieldMap LocationPrintedShroud isJust l.id
+          , notElem CannotInvestigate <$> getModifiers (toTarget l)
+          ]
     ConnectedTo forMovement matcher -> do
       -- locations with connections to locations that match
       -- so we filter each location by generating it's connections
@@ -3864,6 +3874,10 @@ enemyMatcherFilter [] _ = pure []
 enemyMatcherFilter es matcher' = do
   case matcher' of
     AttackingEnemy -> filterM (fieldMap EnemyAttacking isJust . toId) es
+    EnemyDealsDamageOrHorror ->
+      flip filterM es \e -> do
+        (damage, horror) <- getEnemyAttackDamageAndHorror (toId e)
+        pure $ damage > 0 || horror > 0
     EnemyWithToken tkn -> filterM (fieldMap EnemyTokens (Token.hasToken tkn) . toId) es
     EnemyWithTokens gv tkn -> do
       n <- getGameValue gv
@@ -5942,6 +5956,16 @@ instance Query ExtendedCardMatcher where
         iids <- select who
         discards <- concatMapM (fieldMap InvestigatorDiscard (map PlayerCard)) iids
         pure $ filter (`elem` discards) cs
+      -- The first match from the top, whatever sits above it: the "topmost event in
+      -- their discard pile" wording, and the same semantics getAsIfInHandCardsFor
+      -- gives CanPlayTopmostOfDiscard.
+      TopmostOfDiscardOf who cardMatcher -> do
+        iids <- select who
+        tops <-
+          concatMapM
+            (fieldMap InvestigatorDiscard (take 1 . filter (`cardMatch` cardMatcher) . map PlayerCard))
+            iids
+        pure $ filter (`elem` tops) cs
       InPlayAreaOf who -> do
         iids <- select who
         cards <- concatForM iids \i -> do
@@ -6216,7 +6240,14 @@ instance Projection Agenda where
     let AgendaAttrs {..} = toAttrs a
     case fld of
       AgendaSequence -> pure agendaSequence
-      AgendaDoom -> pure agendaDoom
+      -- "treat the agenda as if there were N fewer doom on it" -- every read of
+      -- its doom sees the reduction, including its own advance check, which
+      -- reaches this field through getDoomCount
+      AgendaDoom -> do
+        let ignore n = \case
+              IgnoreDoomOnThis k -> max 0 (n - k)
+              _ -> n
+        foldl' ignore agendaDoom <$> getModifiers aid
       AgendaDoomThreshold -> pure agendaDoomThreshold
       AgendaDeckId -> pure agendaDeckId
       AgendaAbilities -> pure $ getAbilities a
