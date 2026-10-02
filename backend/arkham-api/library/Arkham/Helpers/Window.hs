@@ -1645,14 +1645,37 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
     -- fast player window via the actual turn investigator) -- NOT the NonFast
     -- action-taking window, so "Play during your turn" Fast cards cannot be played
     -- with a granted "as if it were your turn" action. See #4894.
-    Matcher.DuringTurn whoMatcher -> guardTiming #when $ \case
-      Window.DuringTurn who -> matchWho iid who whoMatcher
-      Window.FastPlayerWindow -> do
-        miid <- selectOne Matcher.TurnInvestigator
-        case miid of
-          Nothing -> pure False
-          Just who -> matchWho iid who whoMatcher
-      _ -> noMatch
+    Matcher.DuringTurn whoMatcher -> do
+      let
+        matchTurnInvestigator =
+          selectOne Matcher.TurnInvestigator >>= \case
+            Nothing -> pure False
+            Just who -> matchWho iid who whoMatcher
+      case wType of
+        -- Still NOT the NonFast action-taking window, so "Play during your turn" Fast
+        -- cards cannot be played with a granted "as if it were your turn" action. #4894
+        Window.NonFast -> noMatch
+        Window.DuringTurn who | timing' == #when -> matchWho iid who whoMatcher
+        Window.FastPlayerWindow | timing' == #when -> matchTurnInvestigator
+        -- For an ABILITY, "during your turn" is a CONDITION that holds for the whole
+        -- turn, not a window type. Keyed to the live turn investigator it matches every
+        -- window the turn opens, so a reaction with no timing point of its own
+        -- (Safeguard (2), "during another investigator's turn") can be used at any point
+        -- -- including the Leaving/Entering/Moves windows between The Red Clock (2)'s two
+        -- moves, where the old two-window whitelist left no opening at all. #5784
+        --
+        -- Card playability keeps that narrow whitelist. 'cardInFastWindows' passes the
+        -- card alongside the source, so `isJust mcard` marks the playability pass; giving
+        -- it the turn-wide reading re-offered every Fast "during your turn" card in every
+        -- one of those windows (30 Segment of Onyx prompts in a single Red Clock
+        -- resolution).
+        --
+        -- Not extended to DuringYourAction below either: every ActionAbility carries that
+        -- window (Arkham.Ability), so widening it would offer every action ability in
+        -- every window of the turn.
+        _
+          | isJust mcard -> noMatch
+          | otherwise -> matchTurnInvestigator
     -- "You have an action to take": matches the NonFast action-taking window
     -- (real turn or granted action), the genuine DuringTurn window, and the fast
     -- player window. See #4894.
@@ -1690,6 +1713,7 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
               ]
           _ -> noMatch
         _ -> noMatch
+    -- tolerate removed enemies, the attacker can be defeated mid-attack
     Matcher.EnemyAttacks timing whoMatcher enemyAttackMatcher enemyMatcher ->
       guardTiming timing $ \case
         Window.EnemyAttacks details -> case attackTarget details of
@@ -1697,7 +1721,7 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
             andM
               [ not <$> isAttackCancelled details
               , matchWho iid who whoMatcher
-              , matches (attackEnemy details) enemyMatcher
+              , enemyMatches (attackEnemy details) enemyMatcher
               , enemyAttackMatches iid details enemyAttackMatcher
               ]
           -- An asset attacked "as if it were an engaged investigator" (Dogs of
@@ -1711,7 +1735,7 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
               , aid <=~> AssetAt (locationWithInvestigator iid)
               , not <$> isAttackCancelled details
               , matchWho iid iid whoMatcher
-              , matches (attackEnemy details) enemyMatcher
+              , enemyMatches (attackEnemy details) enemyMatcher
               , enemyAttackMatches iid details enemyAttackMatcher
               ]
           _ -> noMatch
@@ -1722,7 +1746,7 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
           SingleAttackTarget (InvestigatorTarget who) ->
             andM
               [ matchWho iid who whoMatcher
-              , matches (attackEnemy details) enemyMatcher
+              , enemyMatches (attackEnemy details) enemyMatcher
               , enemyAttackMatches iid details enemyAttackMatcher
               ]
           SingleAttackTarget (AssetTarget aid) ->
@@ -1730,17 +1754,18 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
               [ not . settingsStrictAsIfAt <$> getSettings
               , aid <=~> AssetAt (locationWithInvestigator iid)
               , matchWho iid iid whoMatcher
-              , matches (attackEnemy details) enemyMatcher
+              , enemyMatches (attackEnemy details) enemyMatcher
               , enemyAttackMatches iid details enemyAttackMatcher
               ]
           _ -> noMatch
         _ -> noMatch
+    -- tolerate removed enemies, your attack often defeats them before the window
     Matcher.EnemyAttacked timing whoMatcher sourceMatcher enemyMatcher ->
       guardTiming timing $ \case
         Window.EnemyAttacked who source' enemyId ->
           andM
             [ matchWho iid who whoMatcher
-            , matches enemyId enemyMatcher
+            , enemyMatches enemyId enemyMatcher
             , sourceMatches source' sourceMatcher
             ]
         _ -> noMatch
@@ -1749,7 +1774,7 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
         Window.SuccessfulAttackEnemy who source' enemyId _ -> do
           andM
             [ matchWho iid who whoMatcher
-            , matches enemyId enemyMatcher
+            , enemyMatches enemyId enemyMatcher
             , sourceMatches source' sourceMatcher
             ]
         _ -> noMatch
@@ -1869,8 +1894,13 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
         _ -> noMatch
     Matcher.ChaosTokenReleased timing whoMatcher tokenMatcher ->
       guardTiming timing $ \case
-        Window.ChaosTokenReleased who token ->
+        Window.ChaosTokenReleased (InvestigatorTarget who) token ->
           andM [matchWho iid who whoMatcher, matchChaosToken who token tokenMatcher]
+        _ -> noMatch
+    Matcher.ChaosTokenReleasedFrom timing targetMatcher tokenMatcher ->
+      guardTiming timing $ \case
+        Window.ChaosTokenReleased target token ->
+          andM [targetMatches target targetMatcher, matchChaosToken iid token tokenMatcher]
         _ -> noMatch
     Matcher.AddedToVictory timing mWhoMatcher cardMatcher -> guardTiming timing $ \case
       Window.AddedToVictory mWho card ->

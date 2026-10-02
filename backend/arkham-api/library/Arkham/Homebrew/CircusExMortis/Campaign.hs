@@ -4,6 +4,7 @@ import Arkham.Asset.Cards qualified as Assets
 import Arkham.Campaign.Import.Lifted
 import Arkham.Campaign.Overlay
 import Arkham.CampaignLogKey (recorded)
+import Arkham.Card.CardDef (CardDef)
 import Arkham.Classes.HasGame (getGame)
 import Arkham.Decklist.Type (investigator_name)
 import Arkham.Game.Base (gamePerformTarotReadings)
@@ -30,6 +31,16 @@ import Arkham.Source
 import Arkham.Tarot (TarotCard (..), TarotCardArcana (..), TarotCardFacing (Upright))
 import Arkham.Trait (Trait (Believer, Chosen, Clairvoyant, Miskatonic, Scholar))
 import Data.Text qualified as T
+
+{- | Swap a versioned campaign story card for its next version in the same
+investigator's deck (Relic of Ages pattern: remove the old def, add the new one
+without counting toward deck size). No-op when nobody owns the old version.
+-}
+swapCampaignCard :: ReverseQueue m => CardDef -> CardDef -> m ()
+swapCampaignCard old new =
+  getOwner old >>= traverse_ \iid -> do
+    removeCampaignCard old
+    addCampaignCardToDeck iid DoNotShuffleIn new
 
 newtype CircusExMortis = CircusExMortis CampaignAttrs
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
@@ -175,16 +186,11 @@ instance RunMessage CircusExMortis where
     -- Interlude: Written in Stone (guide pp19-20)
     CampaignStep (InterludeStep 2 _) -> scope "writtenInStone" do
       flavor $ setTitle "title" >> p "intro"
-      flavor do
-        setTitle "title"
-        p "prophecy"
-        ul $ li "addInvocationOfDiana"
       eachInvestigator \iid -> do
         chooseOneM iid do
-          questionLabeledCard iid
+          questionLabeledCard Skills.invocationOfDiana
           questionLabeled "addInvocationOfDianaQuestion"
-          labeled "addInvocationOfDiana"
-            $ addCampaignCardToDeck iid DoNotShuffleIn Skills.invocationOfDiana
+          labeled "addInvocationOfDiana" $ addCampaignCardToDeck iid DoNotShuffleIn Skills.invocationOfDiana
           labeled "doNotAddInvocationOfDiana" nothing
       flavor $ setTitle "title" >> p "destinyIntro"
       investigators <- getInvestigators
@@ -213,10 +219,15 @@ instance RunMessage CircusExMortis where
           swapCampaignCard
             HBAssets.amaltheaWeaverCircusFortuneTeller
             HBAssets.amaltheaWeaverAspirantOfWisdom
-      scope "furtherReading" $ flavor $ setTitle "title" >> p "body"
       chosen <- select $ InvestigatorWithTrait Chosen
       unless (null chosen) do
-        scope "noChoice" $ flavor $ setTitle "title" >> p "body"
+        flavor do
+          scope "furtherReadering" do
+            setTitle "title"
+            p "body"
+          scope "noChoice" $ p.green.valid "body"
+          p "motive"
+
         for_ chosen \iid -> do
           hasPhysical <- fieldP InvestigatorPhysicalTrauma (> 0) iid
           hasMental <- fieldP InvestigatorMentalTrauma (> 0) iid
@@ -227,21 +238,26 @@ instance RunMessage CircusExMortis where
               when hasPhysical $ labeled "healPhysicalTrauma" $ push $ HealTrauma iid 1 0
               when hasMental $ labeled "healMentalTrauma" $ push $ HealTrauma iid 0 1
               labeled "doNotHealTrauma" nothing
-      storyWithChooseOneM (setTitle "title" >> p "motive") do
-        labeled "fanaticism" do
-          flavor $ setTitle "title" >> p "fanaticism"
-          swapCampaignCard
-            HBAssets.deCultusBestiaeForgottenWorkOfApuleius
-            HBAssets.deCultusBestiaeInterpretationOfConviction
-        labeled "nemesis" do
-          flavor $ setTitle "title" >> p "nemesis"
-          swapCampaignCard
-            HBAssets.deCultusBestiaeForgottenWorkOfApuleius
-            HBAssets.deCultusBestiaeInterpretationOfObsession
-      flavor do
-        setTitle "title"
-        p "bookmark"
-        ul $ li "addSkullToken"
+
+      storyWithChooseOneM
+        do
+          scope "furtherReading" do
+            setTitle "title"
+            p "body"
+          scope "noChoice" $ p.green.validate (not $ null chosen) "body"
+          p "motive"
+        do
+          labeled "fanaticism" do
+            flavor $ setTitle "title" >> p "fanaticism"
+            swapCampaignCard
+              HBAssets.deCultusBestiaeForgottenWorkOfApuleius
+              HBAssets.deCultusBestiaeInterpretationOfConviction
+          labeled "nemesis" do
+            flavor $ setTitle "title" >> p "nemesis"
+            swapCampaignCard
+              HBAssets.deCultusBestiaeForgottenWorkOfApuleius
+              HBAssets.deCultusBestiaeInterpretationOfObsession
+      flavor $ setTitle "title" >> p "bookmark"
       addChaosToken #skull
       nextCampaignStep
       pure c

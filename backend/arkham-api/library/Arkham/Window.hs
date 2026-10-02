@@ -27,7 +27,7 @@ import Arkham.SkillTest.Step
 import Arkham.SkillTest.Type
 import Arkham.Source (Source (GameSource))
 import Arkham.Strategy (DamageStrategy)
-import Arkham.Target (Target (EnemyTarget))
+import Arkham.Target (Target (EnemyTarget, InvestigatorTarget))
 import Arkham.Timing (Timing)
 import Arkham.Timing qualified as Timing
 import Arkham.Token qualified as Token
@@ -146,6 +146,34 @@ primaryWindowTarget = \case
   DealtHorror _ target _ -> Just target
   DealtDamage _ _ target _ -> Just target
   _ -> Nothing
+
+{- | The timing points a matched window list holds, for splitting a forced ability's
+initiations (@runWindow@ in "Arkham.Investigator.Runner").
+
+A forced ability initiates once per timing point, and one check can carry several
+(@simultaneously@ merges one 'DealtDamage' window per enemy for Storm of Spirits). But the
+damage and the horror one source deals to one target are a __single__ point: "when X is
+dealt damage or horror" is one trigger that sees both halves. Splitting them made Spectral
+Shield offer two identical target buttons, then cancel damage without asking, then trigger
+again for the horror (#5785). Grouping by source and target keeps "damage dealt to __an__
+asset" initiating once per asset.
+
+'DealtExcessDamage' is deliberately not grouped -- it is its own timing point.
+-}
+windowEventGroups :: [Window] -> [[Window]]
+windowEventGroups = go
+ where
+  go [] = []
+  go (w : rest) = case damageEventKey w of
+    Nothing -> [w] : go rest
+    Just k -> let (same, others) = partition ((== Just k) . damageEventKey) rest in (w : same) : go others
+  damageEventKey w =
+    (windowTiming w,) <$> case windowType w of
+      DealtDamage source _ target _ -> Just (source, target)
+      DealtHorror source target _ -> Just (source, target)
+      TakeDamage source _ target _ -> Just (source, target)
+      TakeHorror source target _ -> Just (source, target)
+      _ -> Nothing
 
 revealedChaosTokens :: [Window] -> [ChaosToken]
 revealedChaosTokens [] = []
@@ -404,7 +432,10 @@ data WindowType
     fires for seals onto their assets too.
     -}
     ChaosTokenSealedOn InvestigatorId ChaosToken
-  | ChaosTokenReleased InvestigatorId ChaosToken
+  | {- | Raised on the card the token was sealed on, whichever card that is: an
+    investigator card, but also an enemy, asset, location, treachery or skill.
+    -}
+    ChaosTokenReleased Target ChaosToken
   | IgnoreChaosToken InvestigatorId ChaosToken
   | CancelChaosToken InvestigatorId ChaosToken
   | RevealChaosTokenEffect InvestigatorId ChaosToken EffectId
@@ -538,6 +569,13 @@ mconcat
               case contents of
                 Right (eid, placement) -> pure $ EnemySpawns eid placement
                 Left (eid, lid) -> pure $ EnemySpawns eid (AtLocation lid)
+            -- Used to carry the investigator whose card held the token; a
+            -- seal lives on any card type, so it carries that card's target.
+            "ChaosTokenReleased" -> do
+              contents <- (Right <$> o .: "contents") <|> (Left <$> o .: "contents")
+              case contents of
+                Right (t, token) -> pure $ ChaosTokenReleased t token
+                Left (iid, token) -> pure $ ChaosTokenReleased (InvestigatorTarget iid) token
             "PerformedDifferentTypesOfActionsInARow" -> do
               -- New shape carries the per-action type groups ([[Action]]); old
               -- saves carry a single flattened SDR ([Action]). Treat each legacy

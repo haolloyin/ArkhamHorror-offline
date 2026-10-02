@@ -2,6 +2,7 @@
 import { useI18n } from 'vue-i18n'
 import { onBeforeUnmount, ComputedRef, ref, computed, watch, nextTick } from 'vue'
 import { useDebug } from '@/arkham/debug'
+import { CARD_FLIGHT_ATTR, useCardFlight } from '@/arkham/cardFlight'
 import { Game } from '@/arkham/types/Game'
 import { imgsrc } from '@/arkham/helpers'
 import { cardArt, cardImage } from '@/arkham/cardImages'
@@ -26,6 +27,7 @@ import Story from '@/arkham/components/Story.vue'
 import ScarletKey from '@/arkham/components/ScarletKey.vue'
 import Treachery from '@/arkham/components/Treachery.vue'
 import SealedChaosTokens from '@/arkham/components/SealedChaosTokens.vue'
+import { locationTarget, cardDropHandlers, draggedOff, removeDragAttrs } from '@/arkham/debugCardDrop'
 import AbilitiesMenu from '@/arkham/components/AbilitiesMenu.vue'
 import PoolItem from '@/arkham/components/PoolItem.vue'
 import TokenPool from '@/arkham/components/TokenPool.vue'
@@ -69,6 +71,9 @@ const emits = defineEmits<{
   choose: [value: number]
   show: [cards: ComputedRef<Card[]>, title: string, isDiscards: boolean, revealed?: boolean]
 }>()
+
+// Where a revealed location lands when the revelation overlay hands it over.
+const cardFlightStyle = useCardFlight(() => props.location.cardId)
 
 const choose = (n: number) => emits('choose', n)
 
@@ -482,6 +487,28 @@ const { displayedImage: displayedFloodLevel, flipping: floodLevelFlipping } = us
 )
 
 const debug = useDebug()
+// Debug: a chaos token dragged from the bag seals here; a token from the debug
+// token panel is placed here.
+const cardDrop = cardDropHandlers(props.game.id, () => locationTarget(props.location.id))
+
+/* Debug-only: the pools this component renders itself (clues, breaches) get the same
+ * drag-off as the ones TokenPool renders. `Breach` is not a token tag -- the drop turns
+ * it into `RemoveBreaches`/`PlaceBreaches`. */
+const removeAttrs = (token: string, count: number) =>
+  debug.active && count > 0
+    ? removeDragAttrs(locationTarget(props.location.id), token, count)
+    : {}
+
+/* What the pool shows while one of its tokens is in flight off this location. */
+const inFlight = (token: string, count: number) =>
+  draggedOff(locationTarget(props.location.id), token, count)
+const displayedClues = computed(() => {
+  const count = clues.value ?? 0
+  return Math.max(0, count - inFlight('Clue', count))
+})
+const displayedBreaches = computed(() =>
+  Math.max(0, breaches.value - inFlight('Breach', breaches.value))
+)
 
 function onDrop(event: DragEvent) {
   event.preventDefault()
@@ -572,7 +599,11 @@ const hasAnyLocationVehicleAssets = computed(() =>
 
 <template>
   <div>
-    <div class="location-container" :class="{ 'location-container--has-vehicle-column': hasAnyLocationVehicleAssets }">
+    <div
+      class="location-container"
+      :class="{ 'location-container--has-vehicle-column': hasAnyLocationVehicleAssets }"
+      v-bind="cardDrop"
+    >
       <div class="location-investigator-column">
         <div
           v-for="investigator in investigators"
@@ -634,8 +665,9 @@ const hasAnyLocationVehicleAssets = computed(() =>
             ref="innerFrame"
             class="card-frame-inner"
             :class="{ highlighted, blocked, 'blocked--selectable': blocked && canInteract && !hasObjective, exhausted: isExhausted, 'card--flipping': flipping && !locationStory }"
-            :style="{ '--ui-rotation': `${uiRotation}deg` }"
+            :style="[{ '--ui-rotation': `${uiRotation}deg` }, cardFlightStyle]"
             :data-rotation="uiRotation || undefined"
+            :[CARD_FLIGHT_ATTR]="location.cardId"
           >
             <Story
               v-if="locationStory"
@@ -684,7 +716,13 @@ const hasAnyLocationVehicleAssets = computed(() =>
             class="clues pool location-pool"
             v-if="!flipping && ((clues ?? 0) > 0 || displayedFloodLevel)"
           >
-            <PoolItem v-if="clues && clues > 0" type="clue" :amount="clues" />
+            <PoolItem
+              v-if="(clues ?? 0) > 0"
+              type="clue"
+              :amount="displayedClues"
+              :style="displayedClues > 0 ? undefined : { display: 'none' }"
+              v-bind="removeAttrs('Clue', clues ?? 0)"
+            />
             <img
               v-if="displayedFloodLevel"
               :src="displayedFloodLevel"
@@ -703,8 +741,14 @@ const hasAnyLocationVehicleAssets = computed(() =>
               @choose="choose"
             />
             <Seal v-for="seal in seals" :key="seal.sealKind" :seal="seal" />
-            <TokenPool :tokens="locationTokens" />
-            <PoolItem v-if="breaches > 0" type="resource" :amount="breaches" />
+            <TokenPool :tokens="locationTokens" :target="locationTarget(location.id)" />
+            <PoolItem
+              v-if="breaches > 0"
+              type="resource"
+              :amount="displayedBreaches"
+              :style="displayedBreaches > 0 ? undefined : { display: 'none' }"
+              v-bind="removeAttrs('Breach', breaches)"
+            />
             <PoolItem
               v-if="location.brazier && location.brazier === 'Lit'"
               type="resource"
@@ -751,7 +795,7 @@ const hasAnyLocationVehicleAssets = computed(() =>
         </button>
 
         <template v-if="debug.active">
-          <button @click="debugging = true">{{ $t('enemy.debug') }}</button>
+          <button class="debug-open" @click="debugging = true">{{ $t('enemy.debug') }}</button>
         </template>
       </div>
       <div class="attachments" v-if="hasAttachments">
@@ -1244,7 +1288,7 @@ img.card.source-highlight {
 }
 
 .location:has(.abilities) {
-  z-index: var(--z-index-30) !important;
+  z-index: var(--z-board-location-raised) !important;
 }
 
 .locus {

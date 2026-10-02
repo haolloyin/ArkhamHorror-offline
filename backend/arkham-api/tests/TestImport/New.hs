@@ -35,6 +35,7 @@ import Arkham.Deck qualified as Deck
 import Arkham.Discover
 import Arkham.Enemy.Types
 import Arkham.Enemy.Types qualified as Field
+import Arkham.EnemyLocation.Types (EnemyLocationAttrs, enemyLocationAsEnemyId)
 import Arkham.Entities qualified as Entities
 import Arkham.Exhaust
 import Arkham.Fight
@@ -149,6 +150,27 @@ setChaosTokens = run . SetChaosTokens
 
 spawnAt :: Enemy -> Location -> TestAppT ()
 spawnAt e l = run $ EnemySpawnAtLocationMatching Nothing (Matcher.LocationWithId $ toId l) (toId e)
+
+{- | Put an enemy-location into play. Enemy-locations aren't 'Location' entities, so
+they need their own helper; 'PlaceEnemyLocation' is the path 'Arkham.Game.Runner' uses.
+-}
+placeEnemyLocation :: CardDef -> TestAppT LocationId
+placeEnemyLocation def = do
+  card <- genCard def
+  lid <- getRandom
+  run $ PlaceEnemyLocation lid card
+  pure lid
+
+-- | The coerced 'EnemyId' the fight and evade subsystems target an enemy-location by.
+asEnemyLocationEnemy :: LocationId -> EnemyId
+asEnemyLocationEnemy = enemyLocationAsEnemyId . EnemyLocationId
+
+enemyLocationAttrs :: HasCallStack => LocationId -> TestAppT EnemyLocationAttrs
+enemyLocationAttrs lid = do
+  els <- view (entitiesL . Entities.enemyLocationsL) <$> getGame
+  case lookup lid els of
+    Just el -> pure (toAttrs el)
+    Nothing -> error $ "expected an enemy-location at " <> show lid
 
 class CanMoveTo a where
   moveTo :: Investigator -> a -> TestAppT ()
@@ -872,6 +894,42 @@ assertNotTarget (toTarget -> target) = do
   case find isMessageTarget choices of
     Nothing -> pure ()
     Just _ -> expectationFailure $ "expected not to find target " <> show target <> " but did"
+
+{- | Assert the open question does not offer to /play/ this card.
+
+Narrower than 'assertNotTarget', which only sees the target: a card can sit under
+the same 'CardIdTarget' as a commit option, so an event with a skill icon (Live
+and Learn) is a legitimate target of a commit window while not being on offer as
+a reaction.
+-}
+assertNotPlayable :: (HasCallStack, IsCard card) => card -> TestAppT ()
+assertNotPlayable (toCardId -> cardId) = do
+  questionMap <- gameQuestion <$> getGame
+  let
+    choices = case mapToList questionMap of
+      [(_, question)] -> case stripQuestionWrappers question of
+        ChooseOne msgs -> msgs
+        PlayerWindowChooseOne msgs -> msgs
+        ChooseN _ msgs -> msgs
+        _ -> []
+      _ -> []
+    isPlayOf = \case
+      InitiatePlayCard _ c _ _ _ _ -> toCardId c == cardId
+      InitiatePlayCardWithWindows _ c _ _ _ _ -> toCardId c == cardId
+      PlayCard _ c _ _ _ _ -> toCardId c == cardId
+      _ -> False
+    playsCard = \case
+      TargetLabel _ msgs -> any isPlayOf msgs
+      _ -> False
+
+  case find playsCard choices of
+    Nothing -> pure ()
+    Just choice ->
+      expectationFailure
+        $ "expected "
+        <> show cardId
+        <> " not to be playable, but found:\n\n"
+        <> show choice
 
 unlessSetting :: (Settings -> Bool) -> TestAppT () -> TestAppT ()
 unlessSetting f body = do

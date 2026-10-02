@@ -342,7 +342,11 @@ instance RunMessage EnemyAttrs where
       pure $ a & sealedChaosTokensL %~ (token :)
     SealedChaosToken token _ _ -> do
       pure $ a & sealedChaosTokensL %~ filter (/= token)
-    UnsealChaosToken token -> pure $ a & sealedChaosTokensL %~ filter (/= token)
+    UnsealChaosToken token -> do
+      when (token `elem` enemySealedChaosTokens) do
+        Lifted.checkWhen (Window.ChaosTokenReleased (toTarget a) token)
+        Lifted.checkAfter (Window.ChaosTokenReleased (toTarget a) token)
+      pure $ a & sealedChaosTokensL %~ filter (/= token)
     RemoveAllChaosTokens face -> pure $ a & sealedChaosTokensL %~ filter ((/= face) . chaosTokenFace)
     EnemySpawnEngagedWithPrey eid | eid == enemyId -> do
       preyIds <- select =<< getPreyMatcher a
@@ -584,8 +588,25 @@ instance RunMessage EnemyAttrs where
               | otherwise -> push $ PlaceEnemy enemyId placement
             Just lid ->
               canSpawnInLocation enemyId lid >>= \case
-                True -> spawnInto
                 False -> push $ toDiscard GameSource enemyId
+                True -> case placement of
+                  -- Spawning into a threat area is the same table state as
+                  -- `SpawnEngagedWith`: the enemy arrives at that investigator's
+                  -- location, so it *enters* it and owes the `EnemyEnters` /
+                  -- `EnemyEntersYourLocation` windows (Gather Intel 12036 on Rise
+                  -- of the Elder Things, #5787). `EnemyEntered` raises those and,
+                  -- while `enemySpawnDetails` is set, also emits the `#after
+                  -- EnemySpawns` window itself -- so `spawnInto`'s hand-rolled
+                  -- `afterSpawns` must not be pushed as well, or every "after this
+                  -- enemy spawns" ability fires twice. It reports `AtLocation lid`,
+                  -- matching the `#when` half the non-`Do` handler already pushed.
+                  InThreatArea {} ->
+                    pushAll [PlaceEnemy enemyId placement, EnemyEntered enemyId lid, EnemySpawned details]
+                  -- Every other placement that resolves to a location holds the
+                  -- enemy somewhere other than on the location itself: `AsSwarm`
+                  -- would re-enter its host, and an attachment or a vehicle only
+                  -- borrows its host's location.
+                  _ -> spawnInto
         _ -> error $ "Unhandled spawn: " <> show details.spawnAt
       pure a
     EnemySpawned details | details.enemy == enemyId -> do
@@ -1741,16 +1762,12 @@ instance RunMessage EnemyAttrs where
         damageAmount = damageAssignmentAmount damageAssignment
       canDamage <- sourceCanDamageEnemy eid source
       when canDamage do
-        -- Defeat is part of *dealing* damage (Rules Reference, "Dealing Damage/Horror"
-        -- step 2), and "after..." effects only execute once the triggering condition has
-        -- fully resolved (FAQ 1.4), so both after-windows sit below `Damaged` -- which
-        -- pushes AssignedDamage + checkDefeated ahead of them, #5682.
+        -- The after-windows belong to `Damaged`, which knows the amount that
+        -- survived the reductions declared in these when-windows, #5682.
         Lifted.checkWhen $ Window.WouldTakeDamage source (toTarget a) damageAmount DamageDirect
         Lifted.checkWhen $ Window.DealtDamage source damageEffect (toTarget a) damageAmount
         Lifted.checkWhen $ Window.TakeDamage source damageEffect (toTarget a) damageAmount
         push $ Damaged (EnemyTarget eid) damageAssignment
-        Lifted.checkAfter $ Window.DealtDamage source damageEffect (toTarget a) damageAmount
-        Lifted.checkAfter $ Window.TakeDamage source damageEffect (toTarget a) damageAmount
       pure a
     Damaged (EnemyTarget eid) damageAssignment'' | eid == enemyId -> do
       let source = damageAssignment''.source
@@ -1774,6 +1791,14 @@ instance RunMessage EnemyAttrs where
           push $ AssignedDamage (toTarget a) amount' 0
           unless damageAssignment'.delayed do
             push $ checkDefeated source eid
+          -- Damage reduced away was never dealt, so nothing happened "after" it.
+          -- Defeat is part of *dealing* damage (Rules Reference, "Dealing
+          -- Damage/Horror" step 2) and "after..." effects only execute once the
+          -- triggering condition has fully resolved (FAQ 1.4), so both windows sit
+          -- below the AssignedDamage + checkDefeated pushed above, #5682.
+          when (amount' > 0) do
+            Lifted.checkAfter $ Window.DealtDamage source damageAssignment'.effect (toTarget a) amount'
+            Lifted.checkAfter $ Window.TakeDamage source damageAssignment'.effect (toTarget a) amount'
           pure $ a & assignedDamageL %~ insertWith combine source damageAssignment'
         else pure a
     CheckDefeated source (isTarget a -> True) | not enemyDefeated -> do

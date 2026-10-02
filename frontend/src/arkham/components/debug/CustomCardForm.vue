@@ -681,6 +681,9 @@ async function loadCard(card: CustomCard) {
   form.traits = (def.cardTraits ?? []).map((t: string) => traitDisplay.value.get(t) ?? t).join('. ')
   form.icons = (def.skills ?? []).map((s: any) => (s.tag === 'SkillIcon' ? s.contents : 'Wild'))
   form.keywords = (def.keywords ?? []).map((k: any) => k.tag).filter((k: string) => KEYWORDS.includes(k))
+  // A card already carrying one half of Permanent gets the other, rather than
+  // loading as a form that disagrees with itself.
+  if (form.permanent || form.keywords.includes('Permanent')) setPermanent(true)
 
   form.fight = gameValueNumber(def.fight)
   form.health = gameValueNumber(def.health)
@@ -754,6 +757,22 @@ function reset() {
 
 function buildCustomCard(cardCode: string): CustomCard {
   return { def: mergeRaw(buildDef(cardCode)) as any, art: art.value }
+}
+
+/* Permanent is the same fact said twice: the `permanent` flag on the def, which is
+ * what the engine reads everywhere (`cdPermanent`), and the `Permanent` keyword,
+ * which is what the card prints -- nothing reads the keyword. A card carrying one
+ * without the other says two different things, so either control sets both. */
+function setPermanent(on: boolean) {
+  form.permanent = on
+  const has = form.keywords.includes('Permanent')
+  if (on && !has) form.keywords.push('Permanent')
+  if (!on && has) form.keywords = form.keywords.filter((k) => k !== 'Permanent')
+}
+
+function toggleKeyword(keyword: string) {
+  if (keyword === 'Permanent') return setPermanent(!form.keywords.includes(keyword))
+  toggle(form.keywords, keyword)
 }
 
 function toggle(list: string[], value: string) {
@@ -867,7 +886,8 @@ defineExpose({ loadCard, reset, buildCustomCard, cardType: computed(() => form.c
             <BoolField
               v-if="isPlayerCard"
               label="Permanent"
-              v-model="form.permanent"
+              :modelValue="form.permanent"
+              @update:modelValue="setPermanent"
             />
           </div>
 
@@ -929,7 +949,7 @@ defineExpose({ loadCard, reset, buildCustomCard, cardType: computed(() => form.c
                 type="button"
                 class="chip"
                 :class="{ on: form.keywords.includes(keyword) }"
-                @click="toggle(form.keywords, keyword)"
+                @click="toggleKeyword(keyword)"
               >
                 {{ keyword }}
               </button>
@@ -1579,6 +1599,25 @@ fieldset {
 }
 
 /* Opens the picker; it is not a card itself, so it stays the form's plain grey. */
+/* The builder's add button, same as the editors' -- scoped styles mean each
+   component that has one needs the rule, and this file never had it. */
+.add {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid #4b5563;
+  border-radius: 4px;
+  color: #eee;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.6rem;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.14);
+    border-color: #6b7280;
+  }
+}
+
 .add-chip {
   background: rgba(255, 255, 255, 0.07);
   border-color: #4b5563;

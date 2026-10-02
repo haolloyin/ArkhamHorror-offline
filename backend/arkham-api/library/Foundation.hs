@@ -30,13 +30,15 @@ import Data.IntMap.Strict qualified as IntMap
 import UnliftIO.Exception qualified as UnliftIO
 
 import Arkham.Card.CardCode
+import Auth.ApiKey qualified as ApiKey
 import Auth.JWT qualified as JWT
 import Control.Monad.Logger (LogSource)
 import Data.Aeson (Result (Success), fromJSON)
 import Data.Bugsnag.Settings qualified as Bugsnag
 import Data.ByteString.Lazy qualified as BSL
-import Data.Time.Clock (UTCTime)
+import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
 import Data.Traversable (for)
+import Data.UUID (UUID)
 import Database.Persist.Sql (
   ConnectionPool,
   SqlBackend,
@@ -52,7 +54,9 @@ import GHC.Records
 import Network.Bugsnag.Exception (AsException (..))
 import Network.Bugsnag.Yesod (bugsnagYesodMiddleware)
 import Network.HTTP.Client.Conduit (HasHttpManager (..), Manager)
+import Network.HTTP.Types (status429)
 import Orphans ()
+import ThirdEdition.Store qualified as ThirdEdition
 import Yesod.Core.Types (Logger)
 import Yesod.Core.Unsafe qualified as Unsafe
 import "bugsnag" Network.Bugsnag qualified as Bugsnag
@@ -174,6 +178,9 @@ data App = App
   {- ^ Epic Multiplayer: per-event websocket rooms (organizer dashboard feed),
   sibling of 'appGameRooms'.
   -}
+  , appThirdEditionRooms :: !(MVar (Map UUID Room))
+  -- ^ Third edition: per-table websocket rooms, sibling of 'appGameRooms'.
+  , appThirdEditionStore :: ThirdEdition.Store
   , appPubSubHealth :: !(TVar UTCTime)
   {- ^ When this pod last saw a message arrive on the pub/sub subscriber
   socket. A half-open subscriber TCP connection is invisible to hedis --
@@ -253,6 +260,20 @@ instance Yesod App where
       AdminP _ -> do
         _ <- getAdminUser
         pure Authorized
+      -- API keys are admin-only while they settle. Gated here rather than in the
+      -- handlers to match the admin routes above, and because a gate a new
+      -- endpoint has to remember to apply is a gate that will be forgotten.
+      --
+      -- `self` is deliberately excluded: it is the one endpoint a *key* calls
+      -- about itself, so the MCP server can ask what its credential may do and
+      -- offer only the tools it can use. `getAdminUser` goes through
+      -- `getRequestUserId`, which is JWT-only, so gating it would 401 every key
+      -- and take that away.
+      ApiV1ApiKeysP keys -> case keys of
+        ApiV1ApiKeySelfR -> pure Authorized
+        _ -> do
+          _ <- getAdminUser
+          pure Authorized
       ApiV1ArkhamP arkham -> case arkham of
         ApiV1ArkhamGamesP games -> case games of
           ApiV1ArkhamGamesImportR -> pure Authorized
@@ -406,10 +427,107 @@ tokenToUserId token = do
 getJwtSecret :: HandlerFor App Text
 getJwtSecret = getsYesod $ appJwtSecret . appSettings
 
+{- | The account owner, acting as themselves.
+
+Deliberately JWT-only: an API key is accepted by 'getScopedCaller' and nowhere
+else, so an endpoint added later is closed to keys until somebody says which
+scope opens it. The alternative -- keys accepted everywhere, each handler
+remembering to check -- fails open, and the failure is that a key granted for
+writing cards can delete the account.
+-}
 getRequestUserId :: Handler UserId
 getRequestUserId = do
   mToken <- JWT.lookupToken
   maybe notAuthenticated pure . join =<< for mToken tokenToUserId
+
+{- | Who is calling, and what they are allowed to do.
+
+A JWT caller is the owner and carries every scope. A key caller carries only what
+it was granted, and must hold all of @required@ or the request is refused -- 403
+rather than 401, because the credential is good and the permission is not, and a
+client that retries authentication on a 401 would otherwise loop.
+-}
+data Caller = Caller
+  { callerUserId :: UserId
+  , callerScopes :: [ApiKey.Scope]
+  , callerApiKeyId :: Maybe ArkhamApiKeyId
+  -- ^ Absent for the owner's own session.
+  }
+
+getScopedCaller :: [ApiKey.Scope] -> Handler Caller
+getScopedCaller required = do
+  mKey <- ApiKey.lookupApiKeyHeader
+  case mKey of
+    Just presented -> callerFromKey required presented
+    Nothing -> do
+      userId <- getRequestUserId
+      pure $ Caller userId ApiKey.allScopes Nothing
+
+{- | Resolve a presented key, refusing it for every reason it might be refused,
+and charge the request against its rate limit.
+
+Looked up by digest, so the key itself is never stored and a dump of this table
+does not yield anyone's credentials.
+-}
+callerFromKey :: [ApiKey.Scope] -> Text -> Handler Caller
+callerFromKey required presented = do
+  now <- liftIO getCurrentTime
+  mRow <- runDB $ getBy $ UniqueApiKeyDigest (ApiKey.digestOf presented)
+  case mRow of
+    Nothing -> notAuthenticated
+    Just (Entity keyId key) -> do
+      when (isJust $ arkhamApiKeyRevokedAt key) $ permissionDenied "This API key has been revoked"
+      for_ (arkhamApiKeyExpiresAt key) \expiry ->
+        when (expiry <= now) $ permissionDenied "This API key has expired"
+
+      let granted = ApiKey.parseScopes (arkhamApiKeyScopes key)
+          missing = filter (`notElem` granted) required
+      unless (null missing) do
+        permissionDenied
+          $ "This API key is missing the scope(s): "
+          <> ApiKey.renderScopes missing
+          <> ". It has: "
+          <> ApiKey.renderScopes granted
+
+      -- A write is what is worth capping; a read costs a query and is not a way
+      -- to fill a disk.
+      let isWrite = ApiKey.cardsWrite `elem` required
+      runDB $ chargeApiKey now keyId key isWrite
+
+      pure $ Caller (arkhamApiKeyUserId key) granted (Just keyId)
+
+{- | Note the key as used, and count the write against a fixed hourly window.
+
+On the row rather than in the process: in the app a counter could only ever be
+per-replica, and a limit that a second replica doubles is not a limit. It also
+holds for someone calling the API directly instead of through the MCP server,
+which is the case a limiter in front of the MCP server cannot see.
+-}
+chargeApiKey :: UTCTime -> ArkhamApiKeyId -> ArkhamApiKey -> Bool -> SqlPersistT Handler ()
+chargeApiKey now keyId key isWrite = do
+  let
+    windowStart = arkhamApiKeyUsageWindowStart key
+    withinWindow = maybe False (\started -> diffUTCTime now started < 3600) windowStart
+    used = if withinWindow then arkhamApiKeyUsageCount key else 0
+  when (isWrite && used >= ApiKey.writeLimitPerHour) do
+    lift
+      $ sendResponseStatus status429
+      $ object
+        [ "message"
+            .= ( "This API key has made "
+                   <> tshow ApiKey.writeLimitPerHour
+                   <> " writes in the last hour, which is its limit. It will reset within the hour."
+               )
+        ]
+  update keyId
+    $ [ArkhamApiKeyLastUsedAt =. Just now]
+    <> [ field
+       | isWrite
+       , field <-
+           [ ArkhamApiKeyUsageCount =. used + 1
+           , ArkhamApiKeyUsageWindowStart =. Just (if withinWindow then fromMaybe now windowStart else now)
+           ]
+       ]
 
 getAdminUser :: Handler (Entity User)
 getAdminUser = do

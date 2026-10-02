@@ -566,6 +566,20 @@ function moveUp() {
     }
   }
 
+  /* Debug panels get their own chrome: the default desaturated green reads as an
+     ordinary game prompt, and a debug window should be obviously not that. Cool
+     blue-slate picked to match the minimize button already in this header, with a
+     teal edge -- deliberately not magenta, which means "the game wants a choice". */
+  &:has(.debug-modal) {
+    background: rgba(60, 79, 90, 0.62);
+    border-color: rgba(102, 200, 214, 0.28);
+
+    > header {
+      background: rgba(18, 26, 31, 0.78);
+      border-bottom: 1px solid rgba(102, 200, 214, 0.22);
+    }
+  }
+
   &:has(.amount-modal) {
     background: #735e7b;
     border-color: rgba(255, 255, 255, 0.18);
@@ -607,8 +621,13 @@ function moveUp() {
       border: none;
       color: white;
       border-radius: 50%;
-      width: min(24px, 2vw);
-      height: min(24px, 2vw);
+      /* The global button rule pads 1px 11px, and box-sizing is border-box, so
+         22px of that came out of this box and crushed the glyph. It was also
+         sized `min(24px, 2vw)`, which only reaches 24px at a 1200px viewport --
+         every narrower window got a smaller box with the same padding. */
+      padding: 0;
+      width: 24px;
+      height: 24px;
       aspect-ratio: 1;
       display: flex;
       align-items: center;
@@ -625,6 +644,7 @@ function moveUp() {
 
       svg {
         fill: currentColor;
+        flex-shrink: 0;
       }
     }
   }

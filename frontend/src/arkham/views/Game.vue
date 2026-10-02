@@ -39,7 +39,6 @@ import processingJSON from '@/assets/processing.json'
 import api from '@/api'
 import {
   fetchGame,
-  fetchGameStep,
   buildWebsocketUrl,
   undoChoice,
   undoScenarioChoice,
@@ -56,8 +55,19 @@ import { useSettings } from '@/stores/settings'
 import { useUserStore } from '@/stores/user'
 import { useEventStore } from '@/arkham/stores/event'
 import { useEventTimer } from '@/arkham/composables/useEventTimer'
+import { useStepPoller } from '@/arkham/composables/useStepPoller'
 import { awaitingOrganizer, type SharedEventState } from '@/arkham/types/EpicEvent'
-import { useMenu } from '@/composable/menu'
+import { useMenu, type MenuEntry } from '@/composable/menu'
+import { useKeybindings, type HoverAction } from '@/arkham/keybindings'
+import {
+  assetTarget,
+  enemyTarget,
+  investigatorTarget,
+  locationTarget,
+  placeTokensOn,
+  type PlaceableToken,
+  type SealTarget,
+} from '@/arkham/debugCardDrop'
 import useEmitter from '@/composable/useEmitter'
 import { useDebug } from '@/arkham/debug'
 import { cardImg, imgsrc, isTypingTarget } from '@/arkham/helpers'
@@ -73,6 +83,13 @@ import {
 } from '@/arkham/composables/useGameChoices'
 import { buildGameIndexes, gameIndexesKey } from '@/arkham/composables/useGameIndexes'
 import { Card, asCardCode, cardDecoder, toCardContents } from '@/arkham/types/Card'
+import { isDevBuild } from '@/arkham/displayRules'
+import {
+  CARD_FLIGHT_ATTR,
+  CARD_FLIGHT_STATE,
+  CARD_FLIGHT_TRANSITION_CLASS,
+  cardFlightTransitionName,
+} from '@/arkham/cardFlight'
 import { customCardDef, isCustomCardCode } from '@/arkham/customCards'
 import * as Message from '@/arkham/types/Message'
 import type { Phase } from '@/arkham/types/Phase'
@@ -96,6 +113,7 @@ import EventActAdvanceBarrier from '@/arkham/components/EventActAdvanceBarrier.v
 import StandaloneScenario from '@/arkham/components/StandaloneScenario.vue'
 import StoryQuestion from '@/arkham/components/StoryQuestion.vue'
 import AchievementToast from '@/arkham/components/AchievementToast.vue'
+import DrawSpotlight from '@/arkham/components/DrawSpotlight.vue'
 import Draggable from '@/components/Draggable.vue'
 import Menu from '@/components/Menu.vue'
 import Prompt from '@/components/Prompt.vue'
@@ -111,6 +129,15 @@ interface GameCardOnly {
   card: Card
 }
 
+interface GameDrewCards {
+  player: string
+  title: string
+  cards: Card[]
+  // 'upkeep' | 'action' | 'card' | 'opening' -- kept loose so an unknown kind
+  // from a newer server degrades to "not upkeep" instead of failing to decode.
+  kind: string
+}
+
 // TODO: contents should not be string
 type ServerResult =
   | { tag: 'GameError'; contents: string }
@@ -119,6 +146,7 @@ type ServerResult =
   | { tag: 'GameAchievement'; contents: string }
   | { tag: 'GameCard'; contents: string }
   | { tag: 'GameCardOnly'; contents: string }
+  | { tag: 'GameDrewCards'; contents: string }
   | { tag: 'GameUpdate'; contents: string }
   | { tag: 'PhaseChanged'; contents: Phase }
   | { tag: 'GameShowDiscard'; contents: string }
@@ -141,9 +169,18 @@ const router = useRouter()
 const route = useRoute()
 const store = useCardStore()
 const userStore = useUserStore()
-const { inlineModals } = storeToRefs(useSettings())
+const settings = useSettings()
+const { inlineModals } = storeToRefs(settings)
 const eventStore = useEventStore()
 const { addEntry, menuItems } = useMenu()
+const {
+  is: isKey,
+  isHover: isHoverKey,
+  boundHoverActions,
+  anyBindingMatches,
+  keys: shortcutKeys,
+  profile: keybindingProfile,
+} = useKeybindings()
 const toast = useToast()
 
 // "Epic Multiplayer": a group's game can be entered two ways — via the dashboard's
@@ -461,6 +498,198 @@ async function drainPhaseNotificationQueue() {
   }
 }
 
+/* ---- Card flight -------------------------------------------------------
+ *
+ * Both full-screen reveals -- the encounter revelation and the draw spotlight --
+ * hand their card off to wherever it actually ended up when you dismiss them:
+ * into your hand, into the threat area, onto a location, into play. The board
+ * behind the lock is already up to date (#4817), so the destination is mounted
+ * and only needs to take the transition name over at the right instant.
+ */
+type DrawSpotlightEntry = { title: string; cards: Card[] }
+
+const drawSpotlight = ref<DrawSpotlightEntry | null>(null)
+/* Cards an overlay is showing full-screen right now. Their board copies hide so
+ * that a card is never on screen twice, and a placeholder holds the slot. */
+const previewedCardIds = ref<ReadonlySet<string>>(new Set())
+const flyingCardIds = ref<ReadonlySet<string>>(new Set())
+
+/* Returns whether the overlay actually opened, so a caller holding the lock on
+ * its behalf knows to let go again. */
+function showDrawSpotlight(entry: DrawSpotlightEntry): boolean {
+  if (entry.cards.length === 0) return false
+  drawSpotlight.value = entry
+  uiLock.value = true
+  return true
+}
+
+type TransitionDocument = Document & {
+  startViewTransition?: (callback: () => Promise<void>) => { finished: Promise<void> }
+}
+
+/* The on-screen element a card would fly to, or null if it has none.
+ *
+ * Asked of the DOM rather than of game state: the precondition for a view
+ * transition is that a laid-out element carrying the name exists afterwards,
+ * and only the DOM knows that. A treachery may have resolved and gone; a card
+ * held by another seat is in a hand that is not on screen.
+ *
+ * It must be the *visible* one. A card is rendered more than once -- Player.vue
+ * lays out a desktop hand and a mobile one and hides the wrong one, and an
+ * inactive investigator tab keeps its whole board in the DOM at
+ * `display: none`. `querySelector` cheerfully returns the hidden copy, whose
+ * box is 0x0, and a view transition to a 0x0 target does not fail: it shrinks
+ * the card to a point and vanishes. So take the first candidate that actually
+ * occupies space. (The hidden copies carry the same name during the flight,
+ * which would normally be a fatal duplicate -- they get away with it only
+ * because an unrendered element's `view-transition-name` is ignored.) */
+function laidOutDestination(id: string): Element | null {
+  const candidates = document.querySelectorAll(`[${CARD_FLIGHT_ATTR}="${CSS.escape(id)}"]`)
+  for (const el of candidates) {
+    const r = el.getBoundingClientRect()
+    if (r.width && r.height) return el
+  }
+  return null
+}
+
+function cardsWithADestination(cards: Card[]): string[] {
+  return cards.map((c) => toCardContents(c).id).filter((id) => laidOutDestination(id))
+}
+
+/* A card-shaped hole left where a flying card is going to land.
+ *
+ * A view transition promotes the destination element out of the page for the
+ * duration -- one element cannot be in two places -- so the slot the card was
+ * already sitting in goes empty until the flight arrives, which reads as the
+ * card blinking out. These sit in the page (no transition name, so they are
+ * part of the root snapshot) and hold the space until the card is really back.
+ */
+const flightPlaceholders = ref<{ id: string; style: Record<string, string> }[]>([])
+
+function measureDestinations(ids: string[]) {
+  return ids.flatMap((id) => {
+    const el = laidOutDestination(id)
+    if (!el) return []
+    const r = el.getBoundingClientRect()
+    return [
+      {
+        id,
+        style: {
+          top: `${r.top}px`,
+          left: `${r.left}px`,
+          width: `${r.width}px`,
+          height: `${r.height}px`,
+        },
+      },
+    ]
+  })
+}
+
+/* Tear down a reveal, flying its cards home if they have anywhere to go.
+ * `hide` clears the overlay's own state and must NOT release `uiLock`: doing
+ * that inside the callback replays the queued GameUpdate mid-transition and
+ * re-renders the board out from under the cards being morphed. */
+function flyThenDismiss(cards: Card[], hide: () => void) {
+  const settle = () => {
+    flyingCardIds.value = new Set()
+    flightPlaceholders.value = []
+    uiLock.value = false
+  }
+
+  const release = () => {
+    hide()
+    settle()
+  }
+
+  const transitionDocument = document as TransitionDocument
+  const flying = cardsWithADestination(cards)
+  if (!transitionDocument.startViewTransition || settings.prefersReducedMotion || !flying.length) {
+    release()
+    return
+  }
+
+  // Measured before the transition starts, while the destinations are still
+  // laid out and unpromoted.
+  const placeholders = measureDestinations(flying)
+
+  try {
+    const transition = transitionDocument.startViewTransition(async () => {
+      // `hide` clears the overlay, which clears `previewedCardIds` and so
+      // un-hides the board copy -- it has to be visible in this new state or it
+      // captures an empty snapshot and flies as nothing. Naming it in the same
+      // render is what makes it the other end of the flight.
+      flyingCardIds.value = new Set(flying)
+      flightPlaceholders.value = placeholders
+      hide()
+      await nextTick()
+    })
+    // `finished` rejects when the transition is skipped. Either way the overlay
+    // is already gone and the lock has to come off, or the board stays frozen.
+    transition.finished.then(settle, settle)
+  } catch (e) {
+    console.error(e)
+    release()
+  }
+}
+
+/* Whatever an overlay is currently showing. Derived rather than set at each call
+ * site so every entry point is covered -- the encounter revelation, the draw
+ * spotlight, and the dev demo alike -- and so it clears itself the moment the
+ * overlay does, which is exactly when the flight needs the board copy back. */
+watch(
+  [drawSpotlight, gameCard],
+  () => {
+    const cards = drawSpotlight.value?.cards ?? (gameCard.value ? [gameCard.value.card] : [])
+    previewedCardIds.value = new Set(cards.map((c) => toCardContents(c).id))
+  },
+  { immediate: true },
+)
+
+/* The slot is measured while the overlay is up, not when the flight starts.
+ *
+ * It has to be re-measured when the board changes: the client message announcing
+ * the draw arrives before the GameUpdate that actually puts the card in hand, so
+ * at the moment the overlay opens the destination often does not exist yet, and
+ * the hand reflows as it arrives. Placeholders are never cleared here -- they
+ * must outlive `previewedCardIds` to cover the flight -- only in `settle`. */
+watch(
+  [previewedCardIds, game],
+  async () => {
+    if (previewedCardIds.value.size === 0) return
+    await nextTick()
+    flightPlaceholders.value = measureDestinations([...previewedCardIds.value])
+  },
+  { immediate: true },
+)
+
+/* Built here rather than inline in the template: `view-transition-class` is not
+ * in Vue's CSSProperties, and a style literal in a template is checked against
+ * it strictly. */
+const revelationCardStyle = computed(() =>
+  gameCard.value
+    ? {
+        viewTransitionName: cardFlightTransitionName(gameCard.value.card),
+        viewTransitionClass: CARD_FLIGHT_TRANSITION_CLASS,
+      }
+    : undefined,
+)
+
+function dismissDrawSpotlight() {
+  const entry = drawSpotlight.value
+  if (!entry) return
+  flyThenDismiss(entry.cards, () => {
+    drawSpotlight.value = null
+  })
+}
+
+/* Undo rewinds past the draw or reveal, so it goes with it. */
+function clearDrawSpotlight() {
+  drawSpotlight.value = null
+  previewedCardIds.value = new Set()
+  flyingCardIds.value = new Set()
+  flightPlaceholders.value = []
+}
+
 const format = (str: string) => {
   return handleEmbeddedI18n(str, t)
 }
@@ -489,7 +718,7 @@ addEntry({
   id: 'viewSettings',
   icon: AdjustmentsHorizontalIcon,
   content: t('gameBar.viewSettings'),
-  shortcut: 'S',
+  binding: 'viewSettings',
   nested: 'view',
   action: () => (showSettings.value = !showSettings.value),
 })
@@ -498,7 +727,7 @@ addEntry({
   id: 'viewHistory',
   icon: ClockIcon,
   content: t('gameBar.viewHistory'),
-  shortcut: 'H',
+  binding: 'viewHistory',
   nested: 'view',
   action: () => (showHistory.value = !showHistory.value),
 })
@@ -558,45 +787,24 @@ watch(questionPlayerId, (owner) => {
 // after the upgrade component has unmounted, so its local waiting poll cannot
 // carry the UI through the whole chain. Keep the game view synchronized until
 // the engine leaves IsChooseDecks.
-let chooseDecksPoll: ReturnType<typeof setTimeout> | null = null
-// Last step this poll has already pulled the full game for. Null means we have
-// not probed yet, which counts as "changed" so the first tick resyncs once.
-let chooseDecksStep: number | null = null
-// Jittered so a table full of clients cannot line up on the same instant.
-const chooseDecksInterval = () => 750 + Math.floor(Math.random() * 250)
-
-async function pollChooseDecksState() {
-  try {
-    const step = await fetchGameStep(props.gameId)
-    if (step !== chooseDecksStep) {
-      chooseDecksStep = step
-      const latest = await fetchGame(props.gameId, props.spectate)
-      game.value = latest.game
-      if (latest.playerId && !latest.game.question[playerId.value ?? '']) {
-        playerId.value = latest.playerId
-      }
-      followPendingUpgradeQuestion(latest.game)
+const chooseDecksPoll = useStepPoller({
+  gameId: () => props.gameId,
+  onChange: async () => {
+    const latest = await fetchGame(props.gameId, props.spectate)
+    game.value = latest.game
+    if (latest.playerId && !latest.game.question[playerId.value ?? '']) {
+      playerId.value = latest.playerId
     }
-    if (game.value?.gameState.tag === 'IsChooseDecks') {
-      chooseDecksPoll = setTimeout(pollChooseDecksState, chooseDecksInterval())
-    } else {
-      chooseDecksPoll = null
-    }
-  } catch {
-    chooseDecksPoll = setTimeout(pollChooseDecksState, 1500)
-  }
-}
+    followPendingUpgradeQuestion(latest.game)
+  },
+  shouldContinue: () => game.value?.gameState.tag === 'IsChooseDecks',
+})
 
 watch(
   () => game.value?.gameState.tag,
   (tag) => {
-    if (tag === 'IsChooseDecks' && chooseDecksPoll === null) {
-      chooseDecksStep = null
-      chooseDecksPoll = setTimeout(pollChooseDecksState, 500)
-    } else if (tag !== 'IsChooseDecks' && chooseDecksPoll !== null) {
-      clearTimeout(chooseDecksPoll)
-      chooseDecksPoll = null
-    }
+    if (tag === 'IsChooseDecks') chooseDecksPoll.start()
+    else chooseDecksPoll.stop()
   },
 )
 
@@ -823,6 +1031,16 @@ const gameCardOnlyDecoder = JsonDecoder.object<GameCardOnly>(
   'GameCard',
 )
 
+const gameDrewCardsDecoder = JsonDecoder.object<GameDrewCards>(
+  {
+    player: JsonDecoder.string(),
+    title: JsonDecoder.string(),
+    cards: JsonDecoder.array<Card>(cardDecoder, 'Card[]'),
+    kind: JsonDecoder.string(),
+  },
+  'GameDrewCards',
+)
+
 // Socket Handling
 const onError = () => {
   processing.value = false
@@ -831,8 +1049,19 @@ const onError = () => {
     setGameQuestion(oldQuestion.value)
   }
   socketError.value = true
+  /* The socket carries the token too, so a refused connection is often a dead
+   * sign-in rather than a lost network. One cheap authenticated call tells them
+   * apart: a 401 goes through the interceptor in main.ts and lands them on the
+   * sign-in form, anything else is left alone. Reconnects retry on a timer, so
+   * this is rate limited rather than one-shot -- a network blip must not spend
+   * the only probe, and this must not become a request storm. whoami only. */
+  if (Date.now() - lastAuthProbe > 30000) {
+    lastAuthProbe = Date.now()
+    void api.get('whoami').catch(() => {})
+  }
 }
 let hasConnectedOnce = false
+let lastAuthProbe = 0
 
 const onConnected = () => {
   socketError.value = false
@@ -864,7 +1093,7 @@ const qPop = () => {
   return resultQueue.value[qHead++]
 }
 let decoding = false
-let pendingUpdate: string | null = null
+let pendingUpdate: { payload: string; queued: boolean } | null = null
 
 function entitiesMoved(previous: Arkham.Game, current: Arkham.Game) {
   const placementChanged = (
@@ -898,9 +1127,19 @@ function applyGameUpdate(updatedGame: Arkham.Game, locked: boolean) {
   }
 }
 
-function scheduleApplyUpdate(payload: string) {
+/* `queued` says whether the caller already put this update on the replay queue,
+ * which it does when the lock was held the moment the update arrived.
+ *
+ * The distinction matters because the lock is sampled again below, after the
+ * decode: an overlay can take it in between -- the draw spotlight does exactly
+ * that, from its own decode callback -- and then an update that arrived unlocked,
+ * and so was never queued, gets its question blanked with nothing left to restore
+ * it. That is a board that cannot be clicked, with no error, until a refetch. So
+ * when the lock is found to have been taken meanwhile, the update is queued here
+ * instead. */
+function scheduleApplyUpdate(payload: string, queued: boolean) {
   if (decoding) {
-    pendingUpdate = payload
+    pendingUpdate = { payload, queued }
     return
   }
   decoding = true
@@ -908,6 +1147,7 @@ function scheduleApplyUpdate(payload: string) {
     .decodePromise(payload)
     .then((updatedGame) => {
       const locked = uiLock.value
+      if (locked && !queued) qPush({ tag: 'GameUpdate', contents: payload })
       // Behind a revelation: refresh the board but keep the question hidden so the
       // player can't act until they dismiss it. On unlock the queued GameUpdate is
       // replayed (locked === false) and restores the real question + side effects.
@@ -967,7 +1207,7 @@ function scheduleApplyUpdate(payload: string) {
       if (pendingUpdate) {
         const p = pendingUpdate
         pendingUpdate = null
-        scheduleApplyUpdate(p)
+        scheduleApplyUpdate(p.payload, p.queued)
       }
     })
 }
@@ -1237,6 +1477,46 @@ const handleResult = (result: ServerResult) => {
           uiLock.value = false
         })
       return
+    case 'GameDrewCards': {
+      if (props.spectate) return
+      /* The one preference that costs nothing is read BEFORE the lock is taken: a
+       * draw nobody asked to see must not stall this client's queue even for the
+       * length of a decode. */
+      if (settings.drawSpotlight === 'off') return
+      if (uiLock.value) {
+        qPush(result)
+        return
+      }
+      /* Everything past here takes the lock FIRST and releases it on the paths
+       * that turn out not to open the spotlight, exactly as GameCardOnly does.
+       * Deferring the lock to the decode callback left a window in which this
+       * client looked unlocked while a spotlight was already on its way: another
+       * result popped off the replay queue could take the lock for its own overlay,
+       * and a GameUpdate handled in that window blanked its question against a lock
+       * that was not held when it arrived. */
+      uiLock.value = true
+      gameDrewCardsDecoder
+        .decodePromise(result as any)
+        .then((r) => {
+          if (!(solo.value === true || r.player === playerId.value)) {
+            uiLock.value = false
+            return
+          }
+          if (settings.drawSpotlight === 'upkeep' && r.kind !== 'upkeep') {
+            uiLock.value = false
+            return
+          }
+          // Re-takes the lock, and leaves it alone if it has nothing to show.
+          if (!showDrawSpotlight({ title: format(r.title), cards: r.cards })) {
+            uiLock.value = false
+          }
+        })
+        .catch((e) => {
+          console.error(e)
+          uiLock.value = false
+        })
+      return
+    }
     case 'SharedStateUpdate':
       // "Epic Multiplayer" shared-state feed riding on this group's game ws.
       // Forward it to the event store so the organizer bar's shared counters stay
@@ -1251,14 +1531,16 @@ const handleResult = (result: ServerResult) => {
     case 'PhaseChanged':
       showPhaseNotification(result.contents as Phase)
       return
-    case 'GameUpdate':
+    case 'GameUpdate': {
       // Flush the latest state onto the board even while a revelation/modal holds
       // the UI lock, so the table behind it reflects the current situation instead
       // of freezing on the pre-revelation state (issue #4817). Keep it queued so
       // the pending question is only restored once every revelation is dismissed.
-      if (uiLock.value) qPush(result)
-      scheduleApplyUpdate(result.contents)
+      const queued = uiLock.value
+      if (queued) qPush(result)
+      scheduleApplyUpdate(result.contents, queued)
       return
+    }
   }
 }
 
@@ -1277,13 +1559,83 @@ watch(uiLock, async () => {
 
 const confirmingUndoScenario = ref(false)
 
-const actionMap = computed<Map<string, () => void>>(() => {
-  const map = new Map<string, () => void>()
+/* A menu entry names its shortcut so it follows the active keybinding profile;
+ * `shortcut` remains the raw-key escape hatch for keys no profile remaps. */
+const runMenuShortcut = (event: KeyboardEvent): boolean => {
   for (const item of menuItems.value) {
-    if (item.shortcut) map.set(item.shortcut, item.action)
+    if (item.binding ? isKey(item.binding, event) : item.shortcut === event.key) {
+      item.action()
+      return true
+    }
   }
-  return map
-})
+  return false
+}
+
+const menuShortcutKeys = (item: MenuEntry): string[] => {
+  if (item.binding) return shortcutKeys(item.binding)
+  return item.shortcut ? [item.shortcut] : []
+}
+
+/* The card under the cursor as a debug target. `data-id` sits on the card image for
+ * assets, enemies and locations, and on the two wrappers an investigator renders as
+ * -- the same four kinds `debugCardDrop` can aim at with a drag.
+ *
+ * `closest` rather than the element itself, because these keys are pressed while
+ * pointing at whatever happens to be on top: a status badge, a token pool, the
+ * action pips over a portrait. The nearest ancestor wins, so an asset in a player
+ * area still resolves to the asset and not to the investigator behind it. */
+const hoveredCardTarget = (): SealTarget | null => {
+  const id = document
+    .elementFromPoint(mouseX, mouseY)
+    ?.closest('[data-id]')
+    ?.getAttribute('data-id')
+  const currentGame = game.value
+  if (!id || !currentGame) return null
+  if (currentGame.assets[id]) return assetTarget(id)
+  if (currentGame.enemies[id]) return enemyTarget(id)
+  if (currentGame.locations[id]) return locationTarget(id)
+  if (currentGame.investigators[id]) return investigatorTarget(id)
+  return null
+}
+
+const HOVER_TOKENS: Record<Exclude<HoverAction, 'exhaustHovered'>, PlaceableToken> = {
+  placeDamage: 'Damage',
+  placeHorror: 'Horror',
+  placeDoom: 'Doom',
+  placeClue: 'Clue',
+  placeResource: 'Resource',
+}
+
+/* Runs before the board-level shortcuts, and only when a card is really under the
+ * cursor, which is what lets one press place a resource on the card you are pointing
+ * at and take resources from the pool otherwise -- the way SCE's numpad 9 does.
+ *
+ * Debug-only, because placing a token is not a player action here: the engine owns
+ * every token on the table. */
+const runHoverShortcut = (event: KeyboardEvent): boolean => {
+  if (!debug.active) return false
+  const currentGame = game.value
+  if (!currentGame) return false
+
+  const target = hoveredCardTarget()
+  if (!target) return false
+
+  if (isHoverKey('exhaustHovered', event)) {
+    if (target.tag !== 'AssetTarget') return false
+    const exhausted = currentGame.assets[target.contents]?.exhausted
+    debug.send(currentGame.id, { tag: exhausted ? 'Ready' : 'Exhaust', contents: target })
+    return true
+  }
+
+  for (const [action, token] of Object.entries(HOVER_TOKENS)) {
+    if (!isHoverKey(action as HoverAction, event)) continue
+    // Same convention as dragging a token out of the debug panel: shift places five.
+    placeTokensOn(currentGame.id, target, token, event.shiftKey ? 5 : 1)
+    return true
+  }
+
+  return false
+}
 
 const canUndoScenario = computed(() => {
   if (!game.value) return false
@@ -1394,9 +1746,10 @@ const feedKonami = (rawKey: string): boolean => {
 const handleKeyPress = (event: KeyboardEvent) => {
   if (filingBug.value) return
   if (isTypingTarget(event.target)) return
-  if (event.ctrlKey) return
-  if (event.metaKey) return
   if (event.altKey) return
+  /* Ctrl/Cmd chords stay the browser's unless the active profile actually asked
+   * for one -- the TTS profile puts undo on Ctrl+Z. */
+  if ((event.ctrlKey || event.metaKey) && !anyBindingMatches(event)) return
 
   if (feedKonami(event.key)) return
 
@@ -1428,9 +1781,10 @@ const handleKeyPress = (event: KeyboardEvent) => {
       confirmingUndoScenario.value = true
       return
     }
-    // Pressing U again while armed = single undo (re-pressing the prefix)
-    if (k === 'u') {
+    // Pressing the prefix again while armed = single undo
+    if (isKey('undo', event) || isKey('undoChord', event)) {
       clearUndoChord()
+      event.preventDefault()
       undo()
       return
     }
@@ -1438,28 +1792,38 @@ const handleKeyPress = (event: KeyboardEvent) => {
     clearUndoChord()
   }
 
-  if (event.key === 'u') {
+  if (isKey('undo', event)) {
+    event.preventDefault()
     undo()
     return
   }
 
-  if (event.key === 'U') {
+  if (isKey('undoChord', event)) {
     armUndoChord()
     return
   }
 
-  if (event.key === 'D') {
+  if (isKey('toggleDebug', event)) {
     debug.toggle()
     return
   }
 
-  if (event.key === '?') {
+  if (isKey('showShortcuts', event)) {
     showShortcuts.value = !showShortcuts.value
     return
   }
 
-  if (event.key === ' ' || event.code === 'Space') {
+  if (runHoverShortcut(event)) return
+
+  if (isKey('continue', event) || event.code === 'Space') {
     event.preventDefault()
+
+    // Dismissing the draw spotlight runs the flight to the hand, so it cannot go
+    // through continueUI's blunt teardown.
+    if (drawSpotlight.value) {
+      dismissDrawSpotlight()
+      return
+    }
 
     if (gameCard.value || tarotCards.value.length > 0) {
       continueUI()
@@ -1502,7 +1866,7 @@ const handleKeyPress = (event: KeyboardEvent) => {
     return
   }
 
-  if (event.key === 'd') {
+  if (isKey('draw', event)) {
     const draw = choices.value.findIndex((c) => {
       if (c.tag !== Message.MessageType.COMPONENT_LABEL) return false
       if (c.component.tag !== 'InvestigatorDeckComponent') return false
@@ -1522,7 +1886,7 @@ const handleKeyPress = (event: KeyboardEvent) => {
     return
   }
 
-  if (event.key === 'r') {
+  if (isKey('takeResources', event)) {
     const resource = choices.value.findIndex((c) => {
       if (c.tag !== Message.MessageType.COMPONENT_LABEL) return false
       if (c.component.tag !== 'InvestigatorComponent') return false
@@ -1534,27 +1898,8 @@ const handleKeyPress = (event: KeyboardEvent) => {
     return
   }
 
-  if (event.key === 'e') {
+  if (isKey('endTurn', event)) {
     if (!game.value || !playerId.value) return
-    const elementUnderMouse = document.elementFromPoint(mouseX, mouseY)
-    if (debug.active && elementUnderMouse) {
-      const dataId = elementUnderMouse.getAttribute('data-id')
-      if (dataId && game.value.assets[dataId]) {
-        const exhausted = elementUnderMouse.classList.contains('exhausted')
-        if (exhausted) {
-          debug.send(game.value.id, {
-            tag: 'Ready',
-            contents: { tag: 'AssetTarget', contents: dataId },
-          })
-        } else {
-          debug.send(game.value.id, {
-            tag: 'Exhaust',
-            contents: { tag: 'AssetTarget', contents: dataId },
-          })
-        }
-        return
-      }
-    }
     const endTurn = choices.value.findIndex((c) => {
       if (c.tag !== Message.MessageType.END_TURN_BUTTON) return false
       return game.value?.investigators[c.investigatorId]?.playerId === playerId.value
@@ -1563,7 +1908,7 @@ const handleKeyPress = (event: KeyboardEvent) => {
     return
   }
 
-  actionMap.value.get(event.key)?.()
+  runMenuShortcut(event)
 }
 
 // Sidebar
@@ -1598,6 +1943,7 @@ async function runUndo(call: (gameId: string) => Promise<void>) {
   resultQueue.value = []
   gameCard.value = null
   tarotCards.value = []
+  clearDrawSpotlight()
   uiLock.value = false
   try {
     await call(props.gameId)
@@ -1656,11 +2002,19 @@ async function fileBug() {
     })
 }
 
-const continueUI = () => {
+const clearRevealState = () => {
   gameCard.value = null
   showTheSilenceModal.value = false
   tarotCards.value = []
-  uiLock.value = false
+  drawSpotlight.value = null
+}
+
+/* The revealed card flies to whatever it became -- the enemy that spawned, the
+ * treachery in the threat area, the location placed on the map. Tarot and The
+ * Silence carry no card, so they fall through to a plain dismissal. */
+const continueUI = () => {
+  const card = gameCard.value?.card
+  flyThenDismiss(card ? [card] : [], clearRevealState)
 }
 
 function preloadImages(game: Arkham.Game): void {
@@ -1911,6 +2265,7 @@ provide('processing', processing)
 provide('chooseOrdered', chooseOrdered)
 provide('storyAnswerPending', storyAnswerPending)
 provide('uiLock', uiLock)
+provide(CARD_FLIGHT_STATE, { previewed: previewedCardIds, flying: flyingCardIds })
 provide('skipAllTriggers', skipAllTriggers)
 provide('skipAllAvailable', skipAllAvailable)
 provide('skipAllInProgress', skipAllInProgress)
@@ -2002,6 +2357,52 @@ onMounted(() => {
   }
   ;(window as any).undo = undo
   ;(window as any).debugChoose = choose
+  /* Lets a dev build fire each draw-spotlight treatment against a real board
+   * without an engine change behind it, so the look can be chosen before the
+   * wiring exists. Dev only: it fabricates a reveal the game never had. */
+  if (isDevBuild()) {
+    ;(window as any).__drawSpotlightDemo = (opts: { count?: number } = {}) => {
+      const g = game.value
+      if (!g) return 'no game loaded'
+      /* Cards whose hand slot is actually on screen, so the flight on dismiss
+       * lands somewhere real -- the whole point of looking at it. An inactive
+       * investigator tab keeps its board in the DOM at `display: none`, so
+       * "in hand" is not the same as "visible", and the seat that owns this
+       * playerId is not necessarily the tab being shown. */
+      const onScreen = (cards: Card[]) =>
+        cards.filter((c) => laidOutDestination(toCardContents(c).id))
+      let investigator = Object.values(g.investigators).find(
+        (i) => i.playerId === playerId.value,
+      )
+      let pool = onScreen(investigator?.hand ?? [])
+      if (pool.length === 0) {
+        const shown = Object.values(g.investigators).find((i) => onScreen(i.hand ?? []).length)
+        if (shown) {
+          investigator = shown
+          pool = onScreen(shown.hand)
+        }
+      }
+      if (pool.length === 0) return 'no hand cards are visible to fly to'
+      const cards = pool.slice(0, Math.max(1, opts.count ?? 1))
+      // Built as the embedded-i18n string the server actually sends, and run
+      // through the same `format`, so the demo cannot drift from the real thing.
+      const name = investigator?.name.title ?? 'Someone'
+      const key = cards.length > 1 ? 'drewCards' : 'drewCard'
+      const title = format(`$${key} iname=s:"${name}" count=i:${cards.length}`)
+      showDrawSpotlight({ cards, title })
+      return { count: cards.length }
+    }
+    /* Feed a raw server result straight into the socket handler, so the decode
+     * and the preference gating can be exercised without a server that emits it
+     * yet. Takes the same JSON the websocket carries. */
+    ;(window as any).__feedServerResult = (payload: any) => {
+      handleResult(typeof payload === 'string' ? JSON.parse(payload) : payload)
+    }
+    ;(window as any).__drawSpotlightClear = () => {
+      clearDrawSpotlight()
+      uiLock.value = false
+    }
+  }
   document.addEventListener('mousemove', onMove, { passive: true })
   if (realityAcidLightActive.value) connectFocusLightObserver()
   document.addEventListener('keydown', handleKeyPress)
@@ -2016,11 +2417,13 @@ onUnmounted(() => {
   focusLightObserver = null
   if (focusLightAnimationFrame !== null) cancelAnimationFrame(focusLightAnimationFrame)
   window.removeEventListener('arkham-setting-change', handleSettingChange)
-  if (chooseDecksPoll !== null) clearTimeout(chooseDecksPoll)
   if (processingTimer !== null) clearTimeout(processingTimer)
   delete (window as any).sendDebug
   delete (window as any).undo
   delete (window as any).debugChoose
+  delete (window as any).__drawSpotlightDemo
+  delete (window as any).__drawSpotlightClear
+  delete (window as any).__feedServerResult
   emitter.off('playabilityResult', onPlayabilityResult)
   close()
 })
@@ -2084,6 +2487,7 @@ onUnmounted(() => {
       <div class="shortcuts-modal">
         <div class="shortcuts-header">
           <h2 class="shortcuts-title">{{ $t('gameBar.shortcutsTitle') }}</h2>
+          <p class="shortcuts-profile">{{ $t(`gameBar.settings.keybindingProfile.${keybindingProfile}`) }}</p>
         </div>
 
         <div class="shortcuts-body">
@@ -2092,19 +2496,19 @@ onUnmounted(() => {
             <div class="shortcut-list">
               <div class="shortcut-row">
                 <div class="shortcut-name">{{ $t('gameBar.shortcutSkipTriggers') }}</div>
-                <div class="shortcut-keys"><kbd> </kbd></div>
+                <div class="shortcut-keys"><kbd>{{ shortcutKeys('continue').join('+') }}</kbd></div>
               </div>
               <div class="shortcut-row">
                 <div class="shortcut-name">{{ $t('gameBar.shortcutEndTurn') }}</div>
-                <div class="shortcut-keys"><kbd>e</kbd></div>
+                <div class="shortcut-keys"><kbd>{{ shortcutKeys('endTurn').join('+') }}</kbd></div>
               </div>
               <div class="shortcut-row">
                 <div class="shortcut-name">{{ $t('gameBar.shortcutDraw') }}</div>
-                <div class="shortcut-keys"><kbd>d</kbd></div>
+                <div class="shortcut-keys"><kbd>{{ shortcutKeys('draw').join('+') }}</kbd></div>
               </div>
               <div class="shortcut-row">
                 <div class="shortcut-name">{{ $t('gameBar.shortcutTakeResources') }}</div>
-                <div class="shortcut-keys"><kbd>r</kbd></div>
+                <div class="shortcut-keys"><kbd>{{ shortcutKeys('takeResources').join('+') }}</kbd></div>
               </div>
             </div>
           </section>
@@ -2114,37 +2518,49 @@ onUnmounted(() => {
             <div class="shortcut-list">
               <div class="shortcut-row">
                 <div class="shortcut-name">{{ $t('gameBar.shortcutUndo') }}</div>
-                <div class="shortcut-keys"><kbd>u</kbd></div>
+                <div class="shortcut-keys"><kbd>{{ shortcutKeys('undo').join('+') }}</kbd></div>
               </div>
               <div class="shortcut-row">
                 <div class="shortcut-name">{{ $t('game.shortcutUndoActionStart') }}</div>
                 <div class="shortcut-keys">
-                  <kbd>U</kbd><span class="chord-arrow">+</span><kbd>A</kbd>
+                  <kbd>{{ shortcutKeys('undoChord').join('+') }}</kbd><span class="chord-arrow">+</span><kbd>A</kbd>
                 </div>
               </div>
               <div class="shortcut-row">
                 <div class="shortcut-name">{{ $t('game.shortcutUndoTurnStart') }}</div>
                 <div class="shortcut-keys">
-                  <kbd>U</kbd><span class="chord-arrow">+</span><kbd>T</kbd>
+                  <kbd>{{ shortcutKeys('undoChord').join('+') }}</kbd><span class="chord-arrow">+</span><kbd>T</kbd>
                 </div>
               </div>
               <div class="shortcut-row">
                 <div class="shortcut-name">{{ $t('game.shortcutUndoPhaseStart') }}</div>
                 <div class="shortcut-keys">
-                  <kbd>U</kbd><span class="chord-arrow">+</span><kbd>P</kbd>
+                  <kbd>{{ shortcutKeys('undoChord').join('+') }}</kbd><span class="chord-arrow">+</span><kbd>P</kbd>
                 </div>
               </div>
               <div class="shortcut-row">
                 <div class="shortcut-name">{{ $t('game.shortcutUndoRoundStart') }}</div>
                 <div class="shortcut-keys">
-                  <kbd>U</kbd><span class="chord-arrow">+</span><kbd>R</kbd>
+                  <kbd>{{ shortcutKeys('undoChord').join('+') }}</kbd><span class="chord-arrow">+</span><kbd>R</kbd>
                 </div>
               </div>
               <div class="shortcut-row">
                 <div class="shortcut-name">{{ $t('gameBar.shortcutRestartScenario') }}</div>
                 <div class="shortcut-keys">
-                  <kbd>U</kbd><span class="chord-arrow">+</span><kbd>S</kbd>
+                  <kbd>{{ shortcutKeys('undoChord').join('+') }}</kbd><span class="chord-arrow">+</span><kbd>S</kbd>
                 </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Debug-only: placing a token is not a player action, the engine owns them. -->
+          <section v-if="debug.active" class="shortcuts-section">
+            <h3 class="section-title">{{ $t('game.shortcutSection.hovered') }}</h3>
+            <p class="section-hint">{{ $t('game.shortcutHover.hint') }}</p>
+            <div class="shortcut-list">
+              <div v-for="[action, binding] in boundHoverActions" :key="action" class="shortcut-row">
+                <div class="shortcut-name">{{ $t(`game.shortcutHover.${action}`) }}</div>
+                <div class="shortcut-keys"><kbd>{{ binding.display.join('+') }}</kbd></div>
               </div>
             </div>
           </section>
@@ -2154,11 +2570,11 @@ onUnmounted(() => {
             <div class="shortcut-list">
               <div class="shortcut-row">
                 <div class="shortcut-name">{{ $t('gameBar.shortcutShowOrHideShortcuts') }}</div>
-                <div class="shortcut-keys"><kbd>?</kbd></div>
+                <div class="shortcut-keys"><kbd>{{ shortcutKeys('showShortcuts').join('+') }}</kbd></div>
               </div>
               <div class="shortcut-row">
                 <div class="shortcut-name">{{ $t('gameBar.shortcutToggleDebug') }}</div>
-                <div class="shortcut-keys"><kbd>D</kbd></div>
+                <div class="shortcut-keys"><kbd>{{ shortcutKeys('toggleDebug').join('+') }}</kbd></div>
               </div>
               <div class="shortcut-row">
                 <div class="shortcut-name">{{ $t('gameBar.shortcutSelectInvestigator') }}</div>
@@ -2171,10 +2587,10 @@ onUnmounted(() => {
                 </div>
               </div>
               <template v-for="item in menuItems" :key="item.id">
-                <div v-if="item.shortcut" class="shortcut-row">
+                <div v-if="menuShortcutKeys(item).length" class="shortcut-row">
                   <div class="shortcut-name">{{ item.content }}</div>
                   <div class="shortcut-keys">
-                    <kbd>{{ item.shortcut }}</kbd>
+                    <kbd>{{ menuShortcutKeys(item).join('+') }}</kbd>
                   </div>
                 </div>
               </template>
@@ -2233,7 +2649,7 @@ onUnmounted(() => {
             <MenuItem v-slot="{ active }">
               <button :class="{ active }" @click="showShortcuts = !showShortcuts">
                 <BoltIcon aria-hidden="true" /> {{ $t('gameBar.shortcuts') }}
-                <span class="shortcut">?</span>
+                <span class="shortcut">{{ shortcutKeys('showShortcuts').join('+') }}</span>
               </button>
             </MenuItem>
             <template v-for="item in menuItems" :key="item.id">
@@ -2241,7 +2657,7 @@ onUnmounted(() => {
                 <button :class="{ active }" @click="item.action">
                   <component v-if="item.icon" v-bind:is="item.icon"></component>
                   {{ item.content }}
-                  <span v-if="item.shortcut" class="shortcut">{{ item.shortcut }}</span>
+                  <span v-if="menuShortcutKeys(item).length" class="shortcut">{{ menuShortcutKeys(item).join('+') }}</span>
                 </button>
               </MenuItem>
             </template>
@@ -2256,7 +2672,7 @@ onUnmounted(() => {
             <MenuItem v-slot="{ active }">
               <button :class="{ active }" @click="debug.toggle">
                 <BugAntIcon aria-hidden="true" /> {{ $t('gameBar.toggleDebug') }}
-                <span class="shortcut">D</span>
+                <span class="shortcut">{{ shortcutKeys('toggleDebug').join('+') }}</span>
               </button>
             </MenuItem>
             <MenuItem v-slot="{ active }">
@@ -2285,7 +2701,7 @@ onUnmounted(() => {
             <MenuItem v-slot="{ active }">
               <button :class="{ active }" @click="undo">
                 <BackwardIcon aria-hidden="true" /> {{ $t('gameBar.undo') }}
-                <span class="shortcut">u</span>
+                <span class="shortcut">{{ shortcutKeys('undo').join('+') }}</span>
               </button>
             </MenuItem>
             <div
@@ -2295,7 +2711,7 @@ onUnmounted(() => {
             >
               <div class="undo-jump-header">
                 <span>{{ $t('game.undoTo') }}</span>
-                <span class="chord-prefix"><kbd>U</kbd> + <span class="chord-hint">…</span></span>
+                <span class="chord-prefix"><kbd>{{ shortcutKeys('undoChord').join('+') }}</kbd> + <span class="chord-hint">…</span></span>
               </div>
               <MenuItem v-if="canUndoAction" v-slot="{ active }">
                 <button class="undo-jump scope-action" :class="{ active }" @click="undoActionStart">
@@ -2396,7 +2812,11 @@ onUnmounted(() => {
       :player-id="playerId"
     />
     <template v-else>
-      <Draggable v-if="showSettings">
+      <!-- The panel is tabbed, so without these the window resizes and its header
+           walks up the screen every time you change tab: preserveWidth keeps the
+           widest tab's width, preservePosition pins the title bar and caps the
+           height instead of recentering. Same pair the chaos bag window uses. -->
+      <Draggable v-if="showSettings" preserveWidth preservePosition>
         <Settings
           :game="game"
           :playerId="playerId"
@@ -2441,6 +2861,7 @@ onUnmounted(() => {
             <div class="revelation-card-container">
               <div
                 class="revelation-card"
+                :style="revelationCardStyle"
                 :class="{ 'cthulhu-revelation-card': isCthulhuDeckReveal }"
                 :role="isCthulhuDeckReveal ? 'button' : undefined"
                 :tabindex="isCthulhuDeckReveal ? 0 : undefined"
@@ -2462,6 +2883,23 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+        <Teleport to="body">
+          <div
+            v-for="p in flightPlaceholders"
+            :key="p.id"
+            class="card-flight-placeholder"
+            :style="p.style"
+            aria-hidden="true"
+          />
+        </Teleport>
+        <DrawSpotlight
+          v-if="drawSpotlight && game && playerId"
+          :game="game"
+          :playerId="playerId"
+          :title="drawSpotlight.title"
+          :cards="drawSpotlight.cards"
+          @dismiss="dismissDrawSpotlight"
+        />
         <HistoryPanel
           v-if="showHistory && game && playerId"
           :game="game"
@@ -3688,6 +4126,18 @@ header {
   border-bottom: 1px solid var(--box-border);
 }
 
+.section-hint {
+  margin: 0 0 6px;
+  font-size: 0.8em;
+  opacity: 0.7;
+}
+
+.shortcuts-profile {
+  margin: 0;
+  font-size: 0.8em;
+  opacity: 0.7;
+}
+
 .shortcuts-title {
   margin: 0;
   font-family: Teutonic, serif;
@@ -4098,5 +4548,60 @@ dialog {
   font-weight: bold;
   width: 1rem;
   flex-shrink: 0;
+}
+
+/* Reduced motion keeps the reveal, drops the choreography: the card still fills
+ * the screen, it just arrives already there.
+ *
+ * The flip cannot simply be shortened. The front starts rotated away, at
+ * `opacity: 0` and hidden by `backface-visibility`, and the animation is what
+ * brings it round -- so removing the animation alone leaves a card that never
+ * appears, and a very short duration still plays a rotation. The finished state
+ * is set by hand and the back face dropped instead.
+ *
+ * Selectors carry the full `.revelation-card-container` chain and this block
+ * sits last: the rules it overrides are nested a level deeper, so a shorter
+ * selector earlier in the file loses on both specificity and source order. The
+ * glow stays, static -- the pulse is an animation, the colour is not. */
+@media (prefers-reduced-motion: reduce) {
+  .revelation,
+  .revelation :deep(.card),
+  .revelation.cthulhu-revelation,
+  .revelation.cthulhu-revelation::before,
+  .revelation.cthulhu-revelation::after {
+    animation: none;
+  }
+
+  .revelation-card-container .revelation-card,
+  .revelation-card-container .tarot-card {
+    perspective: none;
+  }
+
+  .revelation-card-container .revelation-card :deep(.card-container),
+  .revelation-card-container .revelation-card .card-container,
+  .revelation-card-container .tarot-card .card-container {
+    animation: none;
+    transform: none;
+    opacity: 1;
+  }
+
+  .revelation-card-container .revelation-card .card.back,
+  .revelation-card-container .tarot-card .card.back {
+    display: none;
+  }
+}
+
+/* Teleported to body -- a `position: fixed` element is still clipped by an
+   ancestor carrying a transform or filter, and the board has several. The scope
+   attribute travels with the teleport, so this scoped rule still reaches it. */
+.card-flight-placeholder {
+  position: fixed;
+  z-index: var(--z-index-900);
+  pointer-events: none;
+  border-radius: 6px;
+  /* Reads as an empty slot waiting to be filled: light enough to see against
+     the dark board, quiet enough not to look like a card of its own. */
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
 }
 </style>

@@ -6,13 +6,13 @@
  * expression you choose between; they are what you can do to whatever you have,
  * which is why they are offered on every expression and filtered by the type at
  * that point in the chain. */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import BindingField from '@/arkham/components/debug/BindingField.vue'
+import BindingToggle from '@/arkham/components/debug/BindingToggle.vue'
 import ValueEditor from '@/arkham/components/debug/ValueEditor.vue'
 import PropertyField from '@/arkham/components/debug/PropertyField.vue'
 import type { Binding } from '@/arkham/customCardBindings'
 import {
-  CARD_PROPS,
   SKILL_TEST_PROPS,
   expressionType,
   stageKey,
@@ -21,6 +21,13 @@ import {
   typeFits,
   QUERY_MODES,
   QUERY_NOUNS,
+  entityOf,
+  isNary,
+  naryExtras,
+  naryOperandProblem,
+  RECORD_HOLDS,
+  NARY_NAMES,
+  propOptionsFor,
   stageProp,
   queryType,
   unwindPipeline,
@@ -47,27 +54,35 @@ const emit = defineEmits<{ 'update:modelValue': [v: any] }>()
  * this editor does not. `card` is the one we can type. */
 const KINDS = ['card', 'enemy', 'location', 'investigator', 'asset', 'act']
 
+/* An example Field, for the box that is only reached before the schema has loaded
+ * -- the names are the engine's own, so there is nothing to guess from. */
+const FIELD_PLACEHOLDER: Record<string, string> = {
+  investigator: 'InvestigatorTraits',
+  enemy: 'EnemyHealth',
+  location: 'LocationShroud',
+  asset: 'AssetUses',
+  act: 'ActClues',
+}
+
 /* What an expression can start as. Anything that takes exactly one operand is a
  * transform instead, so it is not repeated here. */
 type Source = {
   key: string
   label: string
-  shape: 'literal' | 'prop' | 'skillTest' | 'filter' | 'nary' | 'query'
+  shape: 'literal' | 'prop' | 'skillTest' | 'query' | 'record'
 }
 
 /* Named the way the step kinds are: the short word for the thing, with the
  * controls underneath saying what it does. A sentence in the dropdown says it
  * twice and makes the list slower to scan. */
+
 const SOURCES: Source[] = [
   { key: '', label: 'Value', shape: 'literal' },
   { key: 'get', label: 'Property', shape: 'prop' },
   { key: 'skillTest', label: 'Skill test', shape: 'skillTest' },
   { key: 'query', label: 'Query', shape: 'query' },
-  { key: 'filter', label: 'Filter', shape: 'filter' },
-  { key: 'add', label: 'Add', shape: 'nary' },
-  { key: 'subtract', label: 'Subtract', shape: 'nary' },
-  { key: 'multiply', label: 'Multiply', shape: 'nary' },
-  { key: 'divide', label: 'Divide', shape: 'nary' },
+  { key: 'recordSet', label: 'Campaign log set', shape: 'record' },
+  { key: 'recordCount', label: 'Campaign log count', shape: 'record' },
 ]
 
 const PREDICATES = [
@@ -112,8 +127,37 @@ function pickSource(key: string) {
   if (chosen.shape === 'skillTest') return rebuild({ skillTest: 'difficulty' }, stages)
   if (chosen.shape === 'query')
     return rebuild({ query: { kind: 'enemy', matcher: null }, mode: 'all' }, stages)
-  if (chosen.shape === 'filter') return rebuild({ filter: { eq: null }, of: kept ?? null }, stages)
+  if (chosen.shape === 'record') return rebuild({ [key]: homebrewKey('') }, stages)
   return rebuild({ [key]: [kept ?? null, null] }, stages)
+}
+
+/* A key the card writes for itself. A custom card's own log entries are homebrew
+ * ones by definition, and the wrapper is what makes an arbitrary name a
+ * CampaignLogKey; an official campaign's key is a constructor, and reaching one
+ * of those is a raw JSON job. */
+const homebrewKey = (name: string) => ({ tag: 'HomebrewCampaignLogKey', contents: name })
+
+const recordKeyName = computed(() => {
+  const v = source.value?.[currentSource.value.key]
+  return v && typeof v === 'object' && v.tag === 'HomebrewCampaignLogKey' ? (v.contents ?? '') : ''
+})
+
+const setRecordKey = (name: string) => patch({ [currentSource.value.key]: homebrewKey(name) })
+
+const recordIsHomebrew = computed(() => {
+  const v = source.value?.[currentSource.value.key]
+  return !v || (typeof v === 'object' && v.tag === 'HomebrewCampaignLogKey')
+})
+
+/* Whether the value field has been swapped for the binding picker. Only needed
+ * while nothing is chosen yet: once a `$name` is in the value, that is what the
+ * field holds and `isBindingText` says so on its own. */
+const bindingInput = ref(false)
+
+function useBinding(name: string | null) {
+  setLiteral(name ?? '')
+  // Cleared back to a value, so the field goes back to being one.
+  if (!name) bindingInput.value = false
 }
 
 // --- the value a plain source holds ---
@@ -168,6 +212,45 @@ const stageFits = (at: number) => {
   const key = keyAt(at)
   return !!key && stagesFor(pipelineTypes.value[at]).some((st) => st.name === key)
 }
+
+/* The operands a nary stage carries besides the one it is handed, edited in place.
+ * Stored as the engine stores them -- one list, the handed value first -- so the
+ * hole at index 0 is left alone. */
+const setNaryExtra = (at: number, which: number, value: any) => {
+  const stage = stageAt(at)
+  const key = NARY_NAMES.find((n) => n in (stage ?? {}))
+  if (!key) return
+  const held = [...(stage[key] as any[])]
+  held[which + 1] = value
+  patchStage(at, { [key]: held })
+}
+
+const addNaryExtra = (at: number) => {
+  const stage = stageAt(at)
+  const key = NARY_NAMES.find((n) => n in (stage ?? {}))
+  if (!key) return
+  patchStage(at, { [key]: [...(stage[key] as any[]), null] })
+}
+
+const removeNaryExtra = (at: number, which: number) => {
+  const stage = stageAt(at)
+  const key = NARY_NAMES.find((n) => n in (stage ?? {}))
+  if (!key) return
+  const held = (stage[key] as any[]).filter((_, i) => i !== which + 1)
+  patchStage(at, { [key]: held })
+}
+
+/* What is wrong with a transform's own operands, if anything: said under the step
+ * and marked on it, because a join between two different lists is something the
+ * runner will do without complaint. */
+const stageOperandProblems = (at: number): string[] =>
+  naryExtras(stageAt(at))
+    .map((extra) =>
+      naryOperandProblem(keyAt(at), pipelineTypes.value[at], expressionType(extra, props.bindings ?? [])),
+    )
+    .filter((problem): problem is string => !!problem)
+
+const stageIsWrong = (at: number) => !stageFits(at) || stageOperandProblems(at).length > 0
 
 const stageLabel = (at: number) =>
   stageOptions(at).find((st) => st.name === keyAt(at))?.label ?? keyAt(at)
@@ -227,35 +310,36 @@ const addStage = () => {
   if (next) rebuild(source.value, [...pipeline.value.stages, { ...next.template }])
 }
 
-const canAddStage = computed(
-  () =>
-    (source.value !== null || pipeline.value.stages.length > 0) &&
-    stagesFor(pipelineTypes.value[pipeline.value.stages.length]).length > 0,
-)
+/* Why there is no transform to add, when there is not.
+ *
+ * Said on a dead button rather than by taking the button away: a control that
+ * vanishes leaves you wondering whether you missed it, where a greyed one with a
+ * reason answers the question -- most usefully when the reason is that nothing can
+ * be read off the type you have arrived at. */
+const noStageReason = computed(() => {
+  if (source.value === null && pipeline.value.stages.length === 0) {
+    return 'Give this a value first'
+  }
+  const incoming = pipelineTypes.value[pipeline.value.stages.length]
+  if (stagesFor(incoming).length === 0) {
+    return incoming
+      ? `Nothing can be read off ${incoming}`
+      : 'Nothing can be read off this yet'
+  }
+  return ''
+})
 
 
 // --- shapes with operands of their own ---
 
-const naryItems = computed<any[]>(() => {
-  const v = source.value?.[currentSource.value.key]
-  return Array.isArray(v) ? v : []
-})
-const setNary = (i: number, item: any) =>
-  patch({ [currentSource.value.key]: naryItems.value.map((x, j) => (j === i ? item : x)) })
-const addNary = () => patch({ [currentSource.value.key]: [...naryItems.value, null] })
-const removeNary = (i: number) =>
-  patch({ [currentSource.value.key]: naryItems.value.filter((_, j) => j !== i) })
 
-const predicateKey = computed(() => {
-  const f = source.value?.filter
-  if (!f || typeof f !== 'object') return 'eq'
-  return PREDICATES.find((p) => p.key in f)?.key ?? 'eq'
-})
-const predicateOperand = computed(() => source.value?.filter?.[predicateKey.value] ?? null)
-const setPredicate = (key: string) => patch({ filter: { [key]: predicateOperand.value } })
-const setPredicateOperand = (v: any) => patch({ filter: { [predicateKey.value]: v } })
 
-const propsFor = computed(() => (source.value?.kind === 'card' ? CARD_PROPS : null))
+
+
+
+
+
+const propsFor = computed(() => propOptionsFor(source.value?.kind ?? 'card') ?? null)
 </script>
 
 <template>
@@ -271,24 +355,35 @@ const propsFor = computed(() => (source.value?.kind === 'card' ? CARD_PROPS : nu
         <option v-for="o in SOURCES" :key="o.key" :value="o.key">{{ o.label }}</option>
       </select>
 
+      <!-- A value or a binding, never both at once: the binding picker is what
+           the field becomes when you ask for it, the way it is everywhere else in
+           the builder. Showing the two side by side made every number look like it
+           had a second, empty field attached. -->
       <template v-if="currentSource.shape === 'literal'">
-        <input
-          v-if="!isBindingText"
-          class="grow"
-          :value="literalText"
-          :placeholder="expect === 'Int' ? 'a number' : 'a value'"
-          @input="setLiteral(($event.target as HTMLInputElement).value)"
-          @keydown.stop
-        />
         <BindingField
-          v-if="isBindingText || applicableBindings.length"
+          v-if="isBindingText || bindingInput"
+          clearable
           class="grow"
           :modelValue="isBindingText ? literalText.trim() : null"
           :applicable="applicableBindings"
           :inScope="bindings"
           :type="expect ?? 'anything'"
-          @update:modelValue="setLiteral($event ?? '')"
+          @update:modelValue="useBinding($event)"
         />
+        <div v-else class="value-box grow">
+          <input
+            :value="literalText"
+            :placeholder="expect === 'Int' ? 'a number' : 'a value'"
+            @input="setLiteral(($event.target as HTMLInputElement).value)"
+            @keydown.stop
+          />
+          <BindingToggle
+            :open="false"
+            :count="applicableBindings.length"
+            :type="expect ?? 'anything'"
+            @toggle="bindingInput = true"
+          />
+        </div>
       </template>
 
       <template v-else-if="currentSource.shape === 'prop'">
@@ -306,14 +401,15 @@ const propsFor = computed(() => (source.value?.kind === 'card' ? CARD_PROPS : nu
           class="grow"
           :modelValue="source?.get"
           :options="propsFor"
-          of="a card"
+          :of="`a ${source?.kind ?? 'card'}`"
+          :prefix="entityOf(source?.kind)"
           @update:modelValue="patch({ get: $event })"
         />
         <label v-else>
           Field
           <input
             :value="source?.get"
-            placeholder="EnemyHealth"
+            :placeholder="FIELD_PLACEHOLDER[source?.kind ?? ''] ?? 'SomeField'"
             @input="patch({ get: ($event.target as HTMLInputElement).value })"
             @keydown.stop
           />
@@ -331,15 +427,50 @@ const propsFor = computed(() => (source.value?.kind === 'card' ? CARD_PROPS : nu
       </template>
 
 
-      <template v-else-if="currentSource.shape === 'filter'">
-        <label>
-          Which
-          <select :value="predicateKey" @change="setPredicate(($event.target as HTMLSelectElement).value)">
-            <option v-for="p in PREDICATES" :key="p.key" :value="p.key">{{ p.label }}</option>
+      <template v-else-if="currentSource.shape === 'record'">
+        <label v-if="recordIsHomebrew" class="grow">
+          Key
+          <input
+            :value="recordKeyName"
+            placeholder="TraitsLearned"
+            @input="setRecordKey(($event.target as HTMLInputElement).value)"
+            @keydown.stop
+          />
+        </label>
+        <ValueEditor
+          v-else
+          class="grow"
+          :bindings="bindings"
+          type="CampaignLogKey"
+          label="Key"
+          :modelValue="source?.[currentSource.key]"
+          @update:modelValue="patch({ [currentSource.key]: $event })"
+        />
+        <!-- Nothing can work out what a set holds: the log's generic entry is any
+             JSON at all. Saying so is what lets a join be checked. -->
+        <label v-if="currentSource.key === 'recordSet'">
+          of
+          <select
+            :value="source?.holds ?? ''"
+            @change="patch({ holds: ($event.target as HTMLSelectElement).value || undefined })"
+          >
+            <option value="">anything</option>
+            <option v-for="h in RECORD_HOLDS" :key="h" :value="h">{{ h }}</option>
           </select>
         </label>
       </template>
+
     </div>
+
+    <!-- A set and a count are two different things the log stores under a key,
+         and picking the wrong one is silent, so the difference is spelled out. -->
+    <p v-if="currentSource.shape === 'record'" class="record-hint">
+      {{
+        currentSource.key === 'recordSet'
+          ? 'The entries recorded under that key, so they can be counted or filtered. Crossed-out entries are left out.'
+          : 'The number recorded under that key — what the log counts, not how many entries the set has.'
+      }}
+    </p>
 
     <!-- "search: cards  get: first / that match ...", read left to right and then
          down. A block of its own because a query is a small thing entire, not two
@@ -375,23 +506,7 @@ const propsFor = computed(() => (source.value?.kind === 'card' ? CARD_PROPS : nu
       />
     </div>
 
-    <div v-if="currentSource.shape === 'filter'" class="nested">
-      <ExpressionEditor
-        :modelValue="predicateOperand"
-        :bindings="bindings"
-        label="compared with"
-        @update:modelValue="setPredicateOperand"
-      />
-      <ExpressionEditor
-        :modelValue="source?.of"
-        :bindings="bindings"
-        expect="[any]"
-        label="out of"
-        @update:modelValue="patch({ of: $event })"
-      />
-    </div>
-
-    <div v-else-if="currentSource.shape === 'prop'" class="nested">
+    <div v-if="currentSource.shape === 'prop'" class="nested">
       <ExpressionEditor
         :modelValue="source?.of"
         :bindings="bindings"
@@ -400,23 +515,11 @@ const propsFor = computed(() => (source.value?.kind === 'card' ? CARD_PROPS : nu
       />
     </div>
 
-    <div v-else-if="currentSource.shape === 'nary'" class="nested">
-      <div v-for="(item, i) in naryItems" :key="i" class="row">
-        <ExpressionEditor
-          :modelValue="item"
-          :bindings="bindings"
-          expect="Int"
-          @update:modelValue="setNary(i, $event)"
-        />
-        <button type="button" class="remove" @click="removeNary(i)">×</button>
-      </div>
-      <button type="button" class="add" @click="addNary">+ Value</button>
-    </div>
 
     <!-- What can be done to whatever the source is, in the order it happens. -->
     <div class="pipeline">
       <div v-for="(stage, at) in pipeline.stages" :key="at" class="pipe-stage">
-        <div class="pipe-step" :class="{ invalid: !stageFits(at) }">
+        <div class="pipe-step" :class="{ invalid: stageIsWrong(at) }">
           <span class="pipe-arrow" aria-hidden="true">
             <svg viewBox="0 0 14 16" width="14" height="16">
               <!-- Down out of the step above, then right into the step this is:
@@ -448,12 +551,23 @@ const propsFor = computed(() => (source.value?.kind === 'card' ? CARD_PROPS : nu
             </option>
           </select>
           <PropertyField
-            v-if="keyAt(at) === 'get'"
+            v-if="keyAt(at) === 'get' && propOptionsFor(stageAt(at)?.kind)"
             class="fit"
             :modelValue="stageProp(stageAt(at))"
-            :options="stageAt(at)?.kind === 'skillTest' ? SKILL_TEST_PROPS : CARD_PROPS"
-            :of="stageAt(at)?.kind === 'skillTest' ? 'the skill test' : 'a card'"
+            :options="propOptionsFor(stageAt(at)?.kind)!"
+            :of="`a ${stageAt(at)?.kind ?? 'card'}`"
+            :prefix="entityOf(stageAt(at)?.kind)"
             @update:modelValue="setStageProp(at, $event)"
+          />
+          <!-- An entity's Field, which the served schema does not carry, so it is
+               typed rather than chosen. Named the way the engine names it. -->
+          <input
+            v-else-if="keyAt(at) === 'get'"
+            class="fit"
+            :value="stageProp(stageAt(at)) ?? ''"
+            :placeholder="FIELD_PLACEHOLDER[stageAt(at)?.kind ?? ''] ?? 'SomeField'"
+            @input="setStageProp(at, ($event.target as HTMLInputElement).value)"
+            @keydown.stop
           />
           <select
             v-if="keyAt(at) === 'filter'"
@@ -482,6 +596,9 @@ const propsFor = computed(() => (source.value?.kind === 'card' ? CARD_PROPS : nu
           <code>{{ pipelineTypes[at] }}</code> is not something “{{ stageLabel(at) }}” can be
           asked for.
         </p>
+        <p v-for="problem in stageOperandProblems(at)" :key="problem" class="pipe-error">
+          {{ problem }}.
+        </p>
 
         <div v-if="keyAt(at) === 'filter'" class="pipe-operand">
           <ExpressionEditor
@@ -491,9 +608,41 @@ const propsFor = computed(() => (source.value?.kind === 'card' ? CARD_PROPS : nu
             @update:modelValue="setStagePredicateOperand(at, $event)"
           />
         </div>
+
+        <!-- What it is added to, divided by, joined with. The value handed down the
+             chain is the first operand and is not shown again here; these are the
+             rest of them. -->
+        <div v-if="isNary(keyAt(at))" class="pipe-operand">
+          <div v-for="(extra, which) in naryExtras(stageAt(at))" :key="which" class="extra">
+            <ExpressionEditor
+              :modelValue="extra"
+              :bindings="bindings"
+              :queryKinds="queryKinds"
+              :expect="keyAt(at) === 'concat' ? undefined : 'Int'"
+              :label="stageLabel(at)"
+              @update:modelValue="setNaryExtra(at, which, $event)"
+            />
+            <button
+              v-if="naryExtras(stageAt(at)).length > 1"
+              type="button"
+              class="remove"
+              title="Remove this value"
+              @click="removeNaryExtra(at, which)"
+            >
+              ×
+            </button>
+          </div>
+          <button type="button" class="add" @click="addNaryExtra(at)">+ Value</button>
+        </div>
       </div>
 
-      <button v-if="canAddStage" type="button" class="add-transform" @click="addStage">
+      <button
+        type="button"
+        class="add-transform"
+        :disabled="!!noStageReason"
+        :title="noStageReason || 'Do something to what you have'"
+        @click="addStage"
+      >
         <span class="add-glyph" aria-hidden="true">+</span> transform
       </button>
     </div>
@@ -571,6 +720,36 @@ input.unknown {
 
   code {
     color: #adf;
+  }
+}
+
+/* The box the toggle is a segment of.
+ *
+ * The border and the padding belong to this wrapper, not to the input inside it.
+ * The toggle's own negative margins are cut to exactly this padding, which is
+ * what lets it reach the box's edges and read as a segment divided from the value
+ * -- outside a box like this it is a button parked next to the field. Same
+ * metrics as ValueEditor's field box, because it is the same control. */
+.value-box {
+  align-items: stretch;
+  background: #111827;
+  border: 1px solid #4b5563;
+  border-radius: 4px;
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0.35rem 0.5rem;
+
+  > input {
+    background: transparent;
+    border-color: transparent;
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0;
+  }
+
+  &:focus-within {
+    border-color: #6b7280;
   }
 }
 
@@ -765,6 +944,18 @@ select {
   }
 }
 
+.add-transform:disabled {
+  border-style: dashed;
+  color: #4b5563;
+  cursor: not-allowed;
+
+  &:hover {
+    background: #111827;
+    border-color: #4b5563;
+    color: #4b5563;
+  }
+}
+
 .add-transform {
   align-items: center;
   align-self: flex-start;
@@ -785,6 +976,27 @@ select {
     border-color: #14b8a6;
     color: #5eead4;
   }
+}
+
+/* A transform's own operands, under the step that uses them: what it is added to,
+   divided by, joined with. One each, with a way to add more where the operator
+   takes any number. */
+.extra {
+  align-items: flex-start;
+  display: flex;
+  gap: 0.25rem;
+  min-width: 0;
+
+  > .expr {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+.record-hint {
+  color: #9ca3af;
+  font-size: 0.72rem;
+  margin: 0.15rem 0 0;
 }
 
 .add-glyph {

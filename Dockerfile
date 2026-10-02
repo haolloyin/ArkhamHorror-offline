@@ -5,6 +5,9 @@ FROM node:24.7.0-alpine AS frontend
 ENV LC_ALL=C.UTF-8
 
 ARG ASSET_HOST=""
+# ".arkhamhorror.app" in production, so the 3ed subdomain shares the sign-in
+# cookie; empty for self-hosting, where the cookie stays on the host serving it
+ARG AUTH_COOKIE_DOMAIN=""
 
 RUN mkdir -p /opt/arkham/src/frontend
 
@@ -13,6 +16,25 @@ COPY ./frontend/package.json ./frontend/tsconfig.json ./frontend/vite.config.js 
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY ./frontend /opt/arkham/src/frontend
 ENV VITE_ASSET_HOST=${ASSET_HOST}
+ENV VITE_AUTH_COOKIE_DOMAIN=${AUTH_COOKIE_DOMAIN}
+RUN npm run build
+
+# Third edition frontend, served from 3ed.arkhamhorror.app (see prod.nginxconf)
+FROM node:24.7.0-alpine AS frontend-3ed
+
+ENV LC_ALL=C.UTF-8
+
+ARG ASSET_HOST=""
+ARG AUTH_COOKIE_DOMAIN=""
+ARG MAIN_SITE_URL="https://arkhamhorror.app"
+
+WORKDIR /opt/arkham/src/frontend-3ed
+COPY ./frontend-3ed/package.json ./frontend-3ed/package-lock.json /opt/arkham/src/frontend-3ed/
+RUN --mount=type=cache,target=/root/.npm npm ci
+COPY ./frontend-3ed /opt/arkham/src/frontend-3ed
+ENV VITE_ASSET_HOST=${ASSET_HOST}
+ENV VITE_AUTH_COOKIE_DOMAIN=${AUTH_COOKIE_DOMAIN}
+ENV VITE_MAIN_SITE_URL=${MAIN_SITE_URL}
 RUN npm run build
 
 FROM ubuntu:22.04 AS base
@@ -87,6 +109,7 @@ COPY ./backend/stack.yaml ./backend/stack.yaml.lock /opt/arkham/src/backend/
 COPY ./backend/arkham-api/package.yaml /opt/arkham/src/backend/arkham-api/package.yaml
 COPY ./backend/validate/package.yaml /opt/arkham/src/backend/validate/package.yaml
 COPY ./backend/cards-discover/package.yaml /opt/arkham/src/backend/cards-discover/package.yaml
+COPY ./backend/ah3e/package.yaml /opt/arkham/src/backend/ah3e/package.yaml
 RUN --mount=type=cache,id=stack-home-${CACHE_ID},target=/root/.stack \
     --mount=type=cache,id=stack-work-shared-${CACHE_ID},target=/opt/arkham/src/backend/.stack-work \
     stack build --system-ghc --dependencies-only --no-terminal --ghc-options '-fno-write-ide-info -j4 +RTS -A128m -n2m -RTS'
@@ -122,6 +145,24 @@ RUN --mount=type=cache,id=stack-home-${CACHE_ID},target=/root/.stack \
     --mount=type=cache,id=stack-discover-hie-${CACHE_ID},target=/opt/arkham/src/backend/cards-discover/.hie \
   sh /opt/arkham/src/backend/scripts/docker-build-api.sh
 
+# The custom-card MCP server's DSL reference, generated from the Haskell that runs
+# it. Generated here rather than committed: the step and expression languages are
+# `KeyMap.lookup` calls, not types, so nothing reifies them and a checked-in copy
+# is the copy that goes stale.
+FROM ubuntu:22.04 AS mcp
+RUN apt-get update && \
+  apt-get install -y --assume-yes --no-install-recommends python3 && \
+  rm -rf /var/lib/apt/lists/*
+COPY ./mcp /opt/arkham/mcp
+# The whole tree, because the extraction needs more than the DSL modules: every
+# hand-written `instance FromJSON` (to know which fields a decoder defaults) and
+# every `<X>Attrs` record (the `$bindings` a card gets for free) is somewhere in
+# here. Narrowing it would mean enumerating files that move.
+COPY ./backend/arkham-api/library/Arkham /src/library/Arkham
+RUN ARKHAM_SOURCE_DIR=/src/library/Arkham \
+      python3 /opt/arkham/mcp/arkham-cards/extract_dsl.py && \
+      test -s /opt/arkham/mcp/arkham-cards/dsl.json
+
 FROM ubuntu:22.04 AS app
 
 # App
@@ -129,24 +170,28 @@ FROM ubuntu:22.04 AS app
 ENV LC_ALL=C.UTF-8
 
 RUN apt-get update && \
-  apt-get install -y --assume-yes --no-install-recommends libpq-dev ca-certificates nginx curl cron && \
+  apt-get install -y --assume-yes --no-install-recommends libpq-dev ca-certificates nginx curl cron python3 && \
   rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p \
   /opt/arkham/bin \
   /opt/arkham/src/backend/arkham-api \
   /opt/arkham/src/frontend \
+  /opt/arkham/src/frontend-3ed \
   /var/log/nginx \
   /var/lib/nginx \
   /run
 
 COPY --from=frontend /opt/arkham/src/frontend/dist /opt/arkham/src/frontend/dist
+COPY --from=frontend-3ed /opt/arkham/src/frontend-3ed/dist /opt/arkham/src/frontend-3ed/dist
 COPY --from=api /opt/arkham/bin/arkham-api /opt/arkham/bin/arkham-api
 COPY ./backend/arkham-api/config /opt/arkham/src/backend/arkham-api/config
 COPY ./prod.nginxconf /opt/arkham/src/backend/prod.nginxconf
 COPY ./start.sh /opt/arkham/src/backend/arkham-api/start.sh
 COPY ./web-entrypoint.sh /web-entrypoint.sh
 COPY ./backend/arkham-api/digital-ocean.crt /opt/arkham/src/backend/arkham-api/digital-ocean.crt
+# The MCP server, with dsl.json as the mcp stage generated it.
+COPY --from=mcp /opt/arkham/mcp /opt/arkham/mcp
 
 RUN useradd -ms /bin/bash yesod && \
   chown -R yesod:yesod /opt/arkham /var/log/nginx /var/lib/nginx /run && \
@@ -154,7 +199,8 @@ RUN useradd -ms /bin/bash yesod && \
 USER yesod
 ENV PATH="$PATH:/opt/stack/bin:/opt/arkham/bin"
 
-EXPOSE 3000
+# 3001 serves the 3ed frontend to hosts that can't route by name (docker-compose)
+EXPOSE 3000 3001
 
 WORKDIR /opt/arkham/src/backend/arkham-api
 ENTRYPOINT ["/web-entrypoint.sh"]

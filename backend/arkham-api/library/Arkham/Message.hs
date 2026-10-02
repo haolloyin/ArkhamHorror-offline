@@ -192,6 +192,29 @@ instance QueueWrapper Message where
   queueGroup (Run msgs) = Just (msgs, Run)
   queueGroup _ = Nothing
 
+{- | Rewrite a queued message through every transport it can be travelling in,
+including the ones no 'QueueWrapper' primitive sees.
+
+A @When@ window's responder always runs with the effect the window stands in front of
+already wrapped in 'MoveWithSkillTest': @handleDoUseAbility@ wraps it in place, and
+@releaseInitiationEffects@ hands a materialised initiation's held effects back wrapped.
+That wrapper is deliberately not stripped and is not a 'queueGroup', so a cancel or
+reduction written as a flat scan silently no-ops (Sylvester Blake's "cancel that damage"
+let a fight's 2 damage through). Every in-flight rewrite of a pending effect goes
+through here.
+-}
+rewriteQueuedM :: Applicative f => (Message -> f [Message]) -> Message -> f [Message]
+rewriteQueuedM f = go
+ where
+  go = \case
+    Priority inner -> map Priority <$> go inner
+    Retain inner -> map Retain <$> go inner
+    MoveWithSkillTest inner -> map MoveWithSkillTest <$> go inner
+    MovedWithSkillTest sid inner -> map (MovedWithSkillTest sid) <$> go inner
+    Simultaneously inner -> (\xs -> [Simultaneously (concat xs)]) <$> traverse go inner
+    Run inner -> (\xs -> [Run (concat xs)]) <$> traverse go inner
+    other -> f other
+
 resolve :: Message -> [Message]
 resolve msg = [When msg, msg, After msg]
 
@@ -1290,6 +1313,11 @@ data Message
     -- obtains the card first, so it leaves the victory display, set-aside pile or
     -- deck it came from rather than being duplicated into the destination.
     DebugMoveCard CardId DebugCardDestination
+  | {- | Debug: seal a token from the chaos bag onto a card. Named by id rather
+    than by value so the sealed copy keeps the real token's face, and so a token
+    that is no longer in the bag is a no-op instead of a fabricated seal.
+    -}
+    DebugSealChaosToken ChaosTokenId Target
   | DebugCustomize InvestigatorId CardId
   | DebugIncreaseCustomization InvestigatorId CardCode Customization [CustomizationChoice]
   | SetScenarioDifficulty Difficulty

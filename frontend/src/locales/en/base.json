@@ -1,4 +1,6 @@
 {
+  "drewCard": "{iname} drew",
+  "drewCards": "{iname} drew {count} cards",
   "serviceUnavailable": "Service Unavailable",
   "pleaseTryAgainLater": "Please try again later.",
   "nav": {
@@ -53,6 +55,7 @@
   "passwordResetRequested": "Password reset requested",
   "passwordUpdatedSuccessfully": "Password updated successfully",
   "register": "Register",
+  "sessionExpired": "You were signed out. Sign in to return to your game.",
   "resetPassword": "Reset Password",
   "settings": "Settings",
   "updatePassword": "Update Password",
@@ -315,7 +318,17 @@
     "shortcutSection": {
       "game": "Game",
       "undo": "Undo",
-      "view": "View"
+      "view": "View",
+      "hovered": "Card Under The Cursor"
+    },
+    "shortcutHover": {
+      "hint": "Debug only. Hold shift to place five.",
+      "exhaustHovered": "Exhaust / ready",
+      "placeDamage": "Place damage",
+      "placeHorror": "Place horror",
+      "placeDoom": "Place doom",
+      "placeClue": "Place clue",
+      "placeResource": "Place resource"
     },
     "undoTo": "Undo to",
     "startOfAction": "Start of action",
@@ -489,6 +502,8 @@
     "search": "Search…",
     "useThisDeck": "Use this deck",
     "alreadyPlayedThisCampaign": "This investigator has already played in this campaign",
+    "investigatorAlreadyChosen": "This investigator has already been chosen",
+    "investigatorInAnotherScenario": "This investigator is already playing another scenario in this campaign",
     "randomBasicWeaknessPoolTooltip": "Adjust which products are used when randomly assigning this deck's basic weakness."
   },
   "campaign": {
@@ -562,7 +577,8 @@
     "revisedCoreArtDescription": "Shows the Revised Core Set artwork for supported encounter cards, including enemies, treacheries, locations, and agendas. Only artwork changes—not card rules or player cards. This preference applies only to your view; other players keep their own art settings.",
     "customCardsWarning": "Experimental. This feature can stop working, break a game in progress, or be removed at any time. Custom cards are only ever as correct as the definition behind them, and the builder can express things the engine will happily run but no printed card would ever do.",
     "customCardsHelp": "Adds a Card Builder to the menu, where you can make your own cards and add them to a game from the debug menu. It also lets you lay an overlay over a deck, from the {icon} button on a deck or beside a deck when you pick one for a game: swap in a custom investigator (their signatures come with them, and the old ones go), and add or remove cards. An overlay applied on the deck page sticks to that deck until you remove it; one applied when you choose a deck for a game applies to that game only, leaving the deck and every other copy of it untouched.",
-    "openCardBuilder": "Open the card builder"
+    "openCardBuilder": "Open the card builder",
+    "apiKeys": "API keys"
   },
   "phaseTransition": {
     "CampaignPhase": "Campaign Phase",
@@ -641,14 +657,19 @@
     },
     "enemy": {
       "title": "Debug Enemy",
-      "increaseDamageDealt": "Increase Damage Dealt",
       "addHunter": "Add Hunter",
       "increaseHealth": "Increase Health",
       "exhaust": "Exhaust",
       "ready": "Ready",
       "defeat": "Defeat",
       "evade": "Evade",
-      "addDamage": "Add Damage"
+      "damage": "Damage on this enemy",
+      "damageDealt": "Damage this enemy deals",
+      "horrorDealt": "Horror this enemy deals",
+      "state": "State",
+      "sealedTokens": "Sealed Tokens",
+      "release": "Release this token",
+      "shiftFive": "Shift-click for 5"
     },
     "location": {
       "title": "Debug Location",
@@ -685,7 +706,15 @@
       "onTop": "Place on top",
       "onBottom": "Place on bottom",
       "shuffleIn": "Shuffle in",
-      "wrongDeck": "Wrong back for this deck"
+      "wrongDeck": "Wrong back for this deck",
+      "sealToken": "Seal token here",
+      "placeTokens": "Place {count}",
+      "placeUses": "Add {count} {use}",
+      "moveTokens": "Move {count}"
+    },
+    "tokenPanel": {
+      "hint": "Drag to a card (shift: 5)",
+      "trash": "Drop a token here to remove it"
     }
   },
   "customizations": {
@@ -862,6 +891,7 @@
     "cardCount": "{n} card | {n} cards",
     "renameSet": "Rename this set",
     "exportSet": "Export {name}",
+    "importIntoSet": "Add a card file to {name}",
     "deleteSet": "Delete this set and its cards",
     "noCardMatches": "No card here matches the filter.",
     "emptySet": "Nothing in this set yet. Open it and build a card.",
@@ -894,6 +924,7 @@
     "fileHasNoCards": "That file has no cards in it.",
     "reviewTitle": "Import \"{name}\"",
     "reviewReplaceTitle": "Replace \"{name}\"",
+    "reviewAddTitle": "Add to \"{name}\"",
     "reviewFrom": "from {file}",
     "reviewAdded": "{n} new",
     "reviewUpdated": "{n} updated",

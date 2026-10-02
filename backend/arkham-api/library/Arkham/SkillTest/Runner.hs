@@ -92,9 +92,9 @@ computeCommitCosts iid cards = do
 instance RunMessage SkillTest where
   runMessage msg s@SkillTest {..} = case msg of
     RepeatSkillTest sid skillTestId' | skillTestId' == skillTestId -> do
-      push
-        $ BeginSkillTestWithPreMessages' []
-        $ ( buildSkillTest
+      let
+        repeated =
+          ( buildSkillTest
               sid
               skillTestInvestigator
               skillTestSource
@@ -103,9 +103,29 @@ instance RunMessage SkillTest where
               skillTestBaseValue
               (fromMaybe skillTestDifficulty skillTestOriginalDifficulty)
           )
-          { skillTestAction = skillTestAction
-          , skillTestDifficultyIncrease = skillTestDifficultyIncrease
-          }
+            { skillTestAction = skillTestAction
+            , skillTestDifficultyIncrease = skillTestDifficultyIncrease
+            }
+      -- A repeat is not the declaring card's own test, so it is deferred here rather than
+      -- by 'handleSkillTestNesting': the card's tail must not ride along with it, or an
+      -- event that repeats a test (Live and Learn) discards only after the repeat ends.
+      inSkillTestWindow <- fromQueue $ elem EndSkillTestWindow
+      if inSkillTestWindow
+        then do
+          -- the test is performed again, not responded to twice, so the window it was
+          -- declared in is over: drop the re-check 'WindowAsk' queued behind the ask, or a
+          -- second Live and Learn is offered against a test that is already being repeated
+          let
+            endedThisTest w = case windowType w of
+              Window.SkillTestEnded st -> st.id == skillTestId
+              _ -> False
+          removeAllMessagesMatching \case
+            Do (CheckWindows ws) -> any endedThisTest ws
+            _ -> False
+          -- while this test is still current, so 'EffectNextSkillTestWindow' re-points
+          push $ NextSkillTest sid
+          insertAfterMatching [BeginSkillTestWithPreMessages' [] repeated] (== EndSkillTestWindow)
+        else push $ BeginSkillTestWithPreMessages' [] repeated
       pure s
     IncreaseSkillTestDifficulty n -> do
       -- see: faqs/drawing-thin
@@ -445,15 +465,15 @@ instance RunMessage SkillTest where
         _ -> False
       push $ chooseOne player [SkillTestApplyResultsButton]
       -- "You succeed by n, instead" overrides the tested values entirely, so the
-      -- result can't be recalculated from them (FailTies etc. must not apply)
-      mods <- getModifiers (toTarget s)
-      let x = getSum $ mconcat [Sum m | SkillTestResultValueModifier m <- mods]
-      push $ SkillTestResults $ SkillTestResultsData n 0 0 0 (guard (x /= 0) $> x) True
+      -- result can't be recalculated from them (FailTies etc. must not apply).
+      -- The test itself is untouched though: only an *automatic* success has a
+      -- total difficulty of 0, so the real numbers are still reported.
+      results <- calculateRawSkillTestResultsData s
+      push $ SkillTestResults results {skillTestResultsSuccess = True}
       pure
         $ s
         & (resultL .~ SucceededBy NonAutomatic n)
-        & (difficultyL .~ SkillTestDifficulty (Fixed 0))
-        & (difficultyIncreaseL .~ 0)
+        & (resultForcedL .~ True)
     FailSkillTest -> do
       push $ Do FailSkillTest
       when (skillTestStep < SkillTestFastWindow2) $ push CheckAllAdditionalCommitCosts
@@ -1050,6 +1070,9 @@ instance RunMessage SkillTest where
         unless hasRun $ push $ RunSkillTest skillTestInvestigator
         pure s
     RecalculateSkillTestResults -> runMessage (RecalculateSkillTestResultsCanChangeAutomatic False) s
+    -- A forced "you succeed by n instead" is not derived from the tested
+    -- values, so there is nothing to recalculate it from.
+    RecalculateSkillTestResultsCanChangeAutomatic _ | skillTestResultForced -> pure s
     RecalculateSkillTestResultsCanChangeAutomatic canChange -> do
       let
         isAutomatic =

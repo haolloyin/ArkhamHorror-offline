@@ -1,0 +1,922 @@
+:root { --bg:#f6f4ef; --panel:#fff; --ink:#1d1b18; --muted:#6b665d; --line:#ddd6c8; --accent:#5b3fa0; --doom:#b3261e; --clue:#1f6f8b; --ok:#2e7d32; --delayed:#c62828; }
+@media (prefers-color-scheme: dark) { :root { --bg:#16151a; --panel:#211f27; --ink:#ece8f4; --muted:#a39db0; --line:#37333f; --accent:#a98bf0; --doom:#ef6b61; --clue:#5fb8d6; --ok:#6fcf73; --delayed:#e04a43; } }
+/* A rim that follows a piece's own outline: four offsets with no blur, so it reads
+as a drawn line rather than a glow. */
+:root { --rim:drop-shadow(1px 0 0 rgba(255,255,255,.45)) drop-shadow(-1px 0 0 rgba(255,255,255,.45))
+  drop-shadow(0 1px 0 rgba(255,255,255,.45)) drop-shadow(0 -1px 0 rgba(255,255,255,.45)); }
+* { box-sizing: border-box; }
+[hidden] { display:none !important; }
+/* the game's own icon font: one glyph per symbol the cards print */
+@font-face { font-family:'AHRDIcons'; src:url('/fonts/AHRDIcons.ttf') format('truetype'); font-display:swap;
+  font-weight:normal; font-style:normal; }
+.ico { font-family:'AHRDIcons'; font-weight:normal; font-style:normal; font-variant:normal; line-height:1;
+  display:inline-block; vertical-align:-.08em; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 system-ui, sans-serif; display:flex; flex-direction:column; min-height:100dvh; }
+header { display:flex; flex-wrap:wrap; gap:10px; align-items:center; padding:4px 16px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:4; }
+header h1 { font-size:15px; margin:0 8px 0 0; }
+/* one height for everything in the bar, so the pills and the buttons sit on the
+same line rather than each finding its own */
+header button, header .pill { min-height:28px; display:inline-flex; align-items:center; padding:3px 10px; margin:0; }
+header .pills { align-items:center; }
+.pill { padding:2px 10px; border-radius:999px; border:1px solid var(--line); white-space:nowrap; }
+/* the phase pill takes the banner's tint, so the header keeps saying what the banner said */
+.pill.phase { border-color:color-mix(in srgb, var(--phase-color) 60%, transparent);
+  background:color-mix(in srgb, var(--phase-color) 42%, rgba(8, 11, 13, .88));
+  color:rgba(242, 232, 207, .94);
+  box-shadow:0 0 12px color-mix(in srgb, var(--phase-color) 30%, transparent);
+  transition:background .3s ease, border-color .3s ease, box-shadow .3s ease; }
+.pills { display:flex; flex-wrap:wrap; gap:6px; }
+.doom { color:var(--doom); font-weight:600; } .clue { color:var(--clue); font-weight:600; }
+main { display:grid; grid-template-columns: minmax(0,1fr); gap:12px; padding:12px 16px; }
+section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; min-width:0; }
+section h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 8px; }
+/* inside the table, a panel wears its name up its left edge rather than across
+the top, which costs a line of height on every box */
+.map-section section { display:flex; align-items:stretch; gap:8px; padding:0; overflow:hidden; }
+/* the label is a band down the box's left edge, flush with it */
+.map-section section > h2 { flex:0 0 auto; margin:0; writing-mode:vertical-rl; transform:rotate(180deg);
+  letter-spacing:.1em; font-size:11px; align-self:stretch; padding:6px 3px;
+  background:color-mix(in srgb, var(--ink) 7%, transparent); }
+/* the content sits against its label rather than stretching away from it */
+.map-section section > :not(h2) { flex:0 1 auto; min-width:0; padding:8px 8px 8px 0; }
+/* the chip in a heading turns back the right way up */
+.map-section section > h2 .inv-chip { transform:rotate(180deg); }
+.q { margin-bottom:12px; }
+.q .prompt { font-weight:600; margin-bottom:6px; }
+.q button:has(.label-cards) { display:inline-flex; flex-direction:column; align-items:center; gap:6px; padding:8px; vertical-align:top; }
+.label-cards { display:flex; gap:6px; }
+.label-card { position:relative; display:block; }
+.label-card img { display:block; width:120px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,.4); }
+.label-sheet img { width:260px; }
+.label-zoom { position:absolute; right:4px; top:4px; width:26px; height:26px; border-radius:8px; display:grid; place-items:center; background:rgba(0,0,0,.55); color:#fff; cursor:zoom-in; backdrop-filter:blur(2px); box-shadow:0 1px 4px rgba(0,0,0,.5); transition:background .12s, transform .12s; }
+.label-zoom:hover { background:rgba(0,0,0,.85); transform:scale(1.08); }
+.examine-icon { width:15px; height:15px; display:block; }
+.test-box { width:100%; margin:6px 0 10px; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:color-mix(in srgb, var(--accent) 6%, transparent); display:grid; gap:10px; }
+.test-head { display:flex; align-items:center; gap:10px; }
+.test-head > div:nth-child(2) { flex:1; }
+.test-kind { font-size:12px; color:var(--muted); }
+.test-score { text-align:right; font-size:12px; color:var(--muted); white-space:nowrap; }
+.test-score b { display:block; font-size:22px; line-height:1; color:var(--ink); }
+.test-score.pass b { color:var(--ok); }
+.test-steps { display:flex; gap:4px; margin:0; padding:0; list-style:none; counter-reset:step; font-size:12px; }
+.test-steps li { flex:1; counter-increment:step; padding:4px 8px; border-radius:6px; background:color-mix(in srgb, var(--line) 50%, transparent); color:var(--muted); white-space:nowrap; }
+.test-steps li::before { content:counter(step) ". "; }
+.test-steps li.done { color:inherit; opacity:.7; }
+.test-steps li.now { background:var(--accent); color:#fff; font-weight:600; }
+.test-dice { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+/* a die is a piece on the table, not a hole in the panel: it carries its own face */
+.test-dice .die { width:34px; height:34px; line-height:34px; margin:0; font-size:17px; border-radius:7px;
+  background:color-mix(in srgb, var(--ink) 14%, var(--panel)); border-color:color-mix(in srgb, var(--ink) 34%, var(--line));
+  box-shadow:0 1px 3px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.12); }
+.test-dice .die.hit { background:var(--ok); border-color:var(--ok); }
+.test-dice .die.miss { opacity:.65; }
+/* what is about to be rolled: the dice are there, waiting to be filled in */
+.test-dice .die.blank { border-style:dashed; border-color:color-mix(in srgb, var(--accent) 55%, var(--line));
+  background:color-mix(in srgb, var(--accent) 10%, var(--panel)); box-shadow:none; }
+.test-dice .die.removed { opacity:.3; text-decoration:line-through; }
+.test-facts { display:flex; flex-wrap:wrap; gap:6px; }
+.test-fact { font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+button { font:inherit; border:1px solid var(--line); background:var(--bg); color:var(--ink); padding:4px 10px; border-radius:6px; margin:0 6px 6px 0; cursor:pointer; }
+button:hover { border-color:var(--accent); }
+button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+.nb { border:1px solid var(--line); border-radius:6px; padding:6px 8px; margin-bottom:8px; }
+.nb .title { font-weight:600; display:flex; gap:8px; flex-wrap:wrap; }
+.space { display:flex; gap:8px; flex-wrap:wrap; padding:2px 0 2px 10px; }
+.space .name { min-width:90px; color:var(--muted); }
+.tag { font-size:12px; padding:0 6px; border-radius:4px; background:var(--bg); border:1px solid var(--line); }
+.tag.inv { border-color:var(--ok); } .tag.mon { border-color:var(--doom); }
+table { border-collapse:collapse; width:100%; } td, th { text-align:left; padding:3px 6px; border-bottom:1px solid var(--line); font-size:13px; }
+.log { max-height:320px; overflow:auto; font-family: ui-monospace, monospace; font-size:12px; white-space:pre-wrap; }
+.die { display:inline-block; width:24px; height:24px; line-height:24px; text-align:center; border:1px solid var(--line); border-radius:4px; margin-right:4px; font-weight:700; }
+.die.hit { background:var(--ok); color:#fff; border-color:var(--ok); }
+.err { color:var(--doom); }
+/* the table itself is the page; the boxes inside it carry the panels */
+.map-section { --band:clamp(340px, 66vh, 1040px); margin:12px 16px 0; padding:0; background:none; border:none; }
+/* the codex and the decks are all cards: one row along the bottom, scrolled rather than wrapped */
+/* a badge rides above a deck's top corner and another below it, and a row that
+scrolls sideways would otherwise clip them -- or grow a scrollbar for the 2px */
+.card-strip { display:flex; align-items:flex-start; gap:14px; overflow-x:auto; padding:10px 0 8px; }
+.card-strip > section { flex:0 0 auto; }
+.card-strip .decks { flex:1 1 auto; flex-wrap:nowrap; justify-content:flex-start; border-top:none; margin-top:0; padding-top:0; }
+.card-strip .codex, .card-strip .deck-group.lead, .card-strip .display-group { flex-wrap:nowrap; }
+.card-strip .decks, .card-strip .deck-group.lead, .card-strip .display-group { align-items:flex-start; }
+.card-strip .codex-card { width:96px; }
+/* the strip is tighter than the old full-width row, so the cards give a little back */
+.card-strip .decks, .card-strip .deck-group.lead, .card-strip .display-group { gap:12px; }
+.card-strip .deck { width:88px; gap:4px; }
+.card-strip .deck-stack, .card-strip .deck-stack > img, .card-strip .deck-empty { width:76px; height:120px; }
+.map-wrap { position:relative; overflow:hidden; touch-action:pan-y; }
+.map-wrap.panning { cursor:grabbing; }
+.map-wrap.zoomed { cursor:grab; touch-action:none; }
+.map-controls { position:absolute; bottom:8px; right:8px; z-index:3; display:flex; gap:4px; }
+.map-controls button { margin:0; width:34px; height:34px; padding:0; font-size:18px; line-height:1; background:color-mix(in srgb, var(--panel) 85%, transparent); backdrop-filter:blur(4px); }
+.map-hint { position:absolute; left:10px; bottom:8px; z-index:3; font-size:11px; color:var(--muted); background:color-mix(in srgb, var(--panel) 80%, transparent); padding:2px 8px; border-radius:999px; pointer-events:none; opacity:0; transition:opacity .2s; }
+.map-wrap:hover .map-hint { opacity:1; }
+body.map-full { overflow:hidden; }
+body.map-full .map-wrap { position:fixed; inset:0; z-index:30; max-height:none; background:var(--bg); touch-action:none; }
+body.map-full #map, body.map-full .map-wrap .board-fit { height:100% !important; }
+body.map-full #mapFullToggle { background:var(--accent); color:#fff; border-color:var(--accent); }
+.map-controls button svg { width:18px; height:18px; vertical-align:middle; }
+.map-wrap.hide-tokens #tokensToggle { background:var(--accent); color:#fff; border-color:var(--accent); }
+/* the anchors stay, so a space you can choose still glows and still takes the click */
+.map-wrap.hide-tokens .anchor > :not(.pick-ring) { visibility:hidden; }
+/* One band across the top: the sheet, the map, and everything the turn player
+reads or answers, all the same height, so the page is about one screen tall. */
+.map-row { display:flex; gap:12px; align-items:stretch; justify-content:space-between; }
+/* the map and the codex share a column: whatever height the map does not take,
+the codex sits in, so a map that shrinks does not leave a hole under it */
+.map-col { flex:1 1 auto; min-width:280px; display:flex; flex-direction:column; gap:10px; }
+/* the board and the active card share a stage, so the card can sit over the board
+rather than take a panel's worth of the table */
+.map-stage { position:relative; display:flex; flex-direction:column; min-width:0; min-height:0; }
+/* it is the card itself, not a panel: no frame, no heading, since it sits right
+against the question that names it */
+.map-stage > .active-side { margin:0; padding:0; max-width:322px;
+  background:none; border:none; box-shadow:none; transition:opacity .18s ease; }
+.map-stage > .active-side > h2 { display:none; }
+.map-stage > .active-side > #activeToken { padding:0; }
+.map-stage > .active-side > #activeCard,
+.map-stage > .active-side .encounter,
+.map-stage > .active-side .encounter-card { padding:0; min-height:0; }
+.map-stage > .active-side .encounter { padding-left:22px; }
+.map-stage > .active-side .encounter-card { width:auto; }
+/* both sides free and both capped: the card takes the larger size that fits the
+board's height and a card's width, and keeps its own proportions either way */
+.map-stage > .active-side .encounter-card img { width:auto; height:auto; max-width:300px;
+  max-height:var(--stage-h, none); }
+/* over the board it is capped by the board's own height; below 1101 it flows in the column */
+@media (min-width: 1101px) {
+  .map-stage > .active-side { position:absolute; z-index:6; width:auto;
+    display:flex; flex-direction:column; justify-content:flex-start; }
+  /* reading the board is worth more than the card while the pointer is on it, so the
+  whole card fades out of the way rather than needing to be put away */
+  .map-wrap:hover ~ .active-side { opacity:.1; pointer-events:none; }
+}
+@media (prefers-reduced-motion: reduce) { .map-stage > .active-side { transition:none; } }
+/* three columns: the card sits at the map's right, against the rail that asks */
+@media (min-width: 1801px) { .map-stage > .active-side { top:0; right:0; justify-content:flex-start; } }
+/* two: it sits at the map's foot, over the board, straight above the question */
+@media (max-width: 1800px) and (min-width: 1101px) { .map-stage > .active-side { left:6px; bottom:0; justify-content:flex-end; } }
+.map-row .map-wrap { max-height:var(--band); }
+/* under the map: the codex and the display, side by side, sitting on the bottom of
+the row so the slack the map leaves is above them rather than below */
+/* the cards fit the room they are given; nothing here ever scrolls */
+.under-map { display:flex; align-items:flex-start; gap:14px; overflow:hidden; padding:10px 0 8px; margin-top:auto; }
+.under-map .codex, .under-map .decks, .under-map .display-group { flex-wrap:nowrap; min-width:0; }
+/* the codex gives way by wrapping rather than by shrinking its cards to slivers */
+.under-map .codex { display:grid; grid-template-columns:repeat(auto-fill, minmax(90px, 140px)); }
+.under-map .codex-card { width:auto; min-width:0; max-width:none; }
+.under-map .deck { flex:1 1 0; width:auto; min-width:0; }
+.under-map .deck-stack { width:100%; height:auto; aspect-ratio:76 / 120; }
+.under-map .deck-stack > img, .under-map .deck-empty { width:100%; height:100%; }
+/* the art says which card it is, and the title says the rest */
+.under-map > section { flex:0 0 auto; }
+/* the display's cards sit in their box the way the codex's do */
+.under-map .decks { flex:0 1 auto; flex-wrap:nowrap; border-top:none; margin-top:0; padding:8px 8px 8px 0; gap:12px; }
+.under-map .display-group { flex-wrap:nowrap; align-items:flex-start; gap:12px; }
+.under-map .deck { width:88px; gap:4px; }
+.under-map .deck-stack, .under-map .deck-stack > img, .under-map .deck-empty { width:76px; height:120px; }
+.map-col .codex-card { width:96px; }
+/* the column takes whatever width the row has spare, up to the point where the
+mythos cup stops wrapping, since the map beside it asks for a fixed width */
+/* the basis is five mythos tokens wider than the cup needs, so the sheet and what
+sits under it start out readable rather than only growing into what is spare */
+.sheet-col { flex:1 1 clamp(240px, 18vw, 470px); min-width:190px; max-width:min(38vw, 560px); display:flex; flex-direction:column; gap:10px; }
+/* the rail holds a player's four cards across and no more, so what it does not
+need goes to the map */
+.side-rail { flex:0 0 clamp(380px, 20vw, 500px); min-width:0; display:flex; flex-direction:column; gap:10px; }
+/* the question panel is only as tall as the question */
+.side-rail > section:first-child { flex:0 0 auto; }
+/* the questions take the panel's width rather than their own content's, so the
+   test box under them spans it too, and they are spaced by the column's gap
+   rather than by margins that hang off the last one */
+#questions { display:flex; flex-direction:column; gap:10px; }
+#questions > .q, #questions .q-row > .q { margin-bottom:0; }
+#questions > #error:empty { display:none; }
+.questions-panel > #questions { flex:1 1 auto; }
+/* the player panel is as tall as the player area in it, not as tall as the rail */
+.side-rail .rail-players { flex:0 0 auto; display:flex; flex-direction:column; }
+/* the tabs sit on the player area's own box, so the panel around them adds nothing
+and its content fills it edge to edge */
+.rail-players { background:none; border:none; padding:0; }
+.map-section .rail-players > #investigators { padding:0; }
+.side-rail .rail-players > #investigators { flex:0 0 auto; }
+.scenario-side { width:100%; cursor:zoom-in; position:relative; }
+/* over the art, which is the left 58% of every sheet, and standing on the bottom edge rather than below it */
+.sheet-tokens { position:absolute; left:29%; bottom:14px; transform:translateX(-50%); display:flex; gap:18px; z-index:2; }
+/* no plate behind them: each token throws its own shadow onto the art instead */
+.sheet-tokens .tok { filter:drop-shadow(0 4px 5px rgba(0,0,0,.8)) drop-shadow(0 1px 1px rgba(0,0,0,.6)); }
+.sheet-tokens .tok b { min-width:20px; height:20px; line-height:20px; font-size:13px; }
+.sheet-tokens .bump { animation:sheetBump .9s ease-out; }
+/* a count that just went up: the token jumps and the amount floats off it */
+.toks .dbg-tokwrap { position:relative; }
+.toks .tok.gained { animation:tokGain .7s cubic-bezier(.2,.8,.3,1.2); }
+.tok-gain { position:absolute; left:50%; top:-4px; z-index:3; pointer-events:none; font-weight:700; font-size:13px;
+  color:var(--ok); text-shadow:0 1px 3px rgba(0,0,0,.85); animation:tokGainFloat .9s ease-out forwards; }
+@keyframes tokGain { 0% { transform:scale(1); } 35% { transform:scale(1.35); } 100% { transform:scale(1); } }
+@keyframes tokGainFloat { 0% { opacity:0; transform:translate(-50%, 8px); } 25% { opacity:1; } 100% { opacity:0; transform:translate(-50%, -18px); } }
+@media (prefers-reduced-motion: reduce) { .toks .tok.gained { animation:none; } .tok-gain { animation:none; opacity:0; } }
+@keyframes sheetBump { 0% { transform:scale(1); } 30% { transform:scale(1.45); filter:drop-shadow(0 0 8px var(--doom)); } 100% { transform:scale(1); } }
+@media (prefers-reduced-motion: reduce) { .sheet-tokens .bump { animation:none; } }
+/* With room for the rail there is room to fill the window: the table stands exactly
+as tall as the viewport, the deck row sits on its floor, and the band takes the rest,
+which is how the map comes out as large as it can be. */
+@media (min-width: 1801px) {
+  /* the app stands the window's height so the table below the header can fill it */
+  #app { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
+  /* the table takes whatever the header leaves, measured rather than guessed */
+  .map-section { --band:none; display:flex; flex-direction:column; gap:10px; flex:1 1 auto; min-height:0; margin-bottom:12px; }
+  .map-row { flex:1 1 auto; min-height:0; }
+  .card-strip { flex:0 0 auto; }
+  /* the codex ends the sheet's column, and its cards answer to that column's width */
+  .sheet-col > section:last-child { margin-top:auto; }
+  .sheet-col > section { overflow:hidden; }
+  .sheet-col .codex { display:grid; grid-template-columns:repeat(auto-fill, minmax(90px, 140px)); gap:clamp(3px, 0.4vw, 10px); width:100%; }
+  .sheet-col .codex-card { width:auto; min-width:0; max-width:none; }
+  /* the deck row carries the display as well, and gives a little rather than scroll */
+  .card-strip .decks { flex-wrap:nowrap; }
+  .card-strip .deck { flex:1 1 0; width:auto; min-width:52px; max-width:88px; }
+  .card-strip .deck-stack { width:100%; height:auto; aspect-ratio:76 / 120; }
+  .card-strip .deck-stack > img, .card-strip .deck-empty { width:100%; height:100%; }
+}
+/* Without a rail (see wideRail) the two columns carry it between them, so they
+each keep their own flow rather than waiting on the taller of the two. */
+@media (max-width: 1800px) {
+  .sheet-col { flex:0 1 clamp(280px, 34vw, 620px); }
+  .map-col { flex:1 1 420px !important; }
+  /* in the sheet's column the cards answer to the column: each row shares the width
+  it has, closing the gaps and scaling the cards rather than running past the edge */
+  .sheet-col .under-map { display:block; overflow-x:visible; }
+  .sheet-col .under-map > section + section { margin-top:10px; }
+  .sheet-col .under-map .decks,
+  .sheet-col .under-map .display-group,
+  .sheet-col .under-map .codex { display:grid; grid-template-columns:repeat(auto-fill, minmax(90px, 140px)); gap:clamp(3px, 0.5vw, 12px); width:100%; }
+  .sheet-col .under-map .deck { flex:1 1 0; width:auto; min-width:0; }
+  .sheet-col .under-map .codex-card { width:auto; min-width:0; max-width:none; }
+  .sheet-col .under-map .deck-stack { width:100%; height:auto; aspect-ratio:76 / 120; }
+  .sheet-col .under-map .deck-stack > img,
+  .sheet-col .under-map .deck-empty { width:100%; height:100%; }
+}
+@media (max-width: 1100px) {
+  .map-row { flex-wrap:wrap; }
+  .sheet-col, .map-col { flex:1 1 100%; max-width:none; }
+  /* in one column the sheet is only as tall as the mythos cup and the active card
+  beside it, and only as wide as that height leaves it */
+  /* the sheet takes a third of the row and stands as tall as that makes it; the
+  mythos cup and the active card have the rest */
+  .sheet-col { display:grid; grid-template-columns:minmax(0, min(34%, 420px)) minmax(0, 1fr); align-items:stretch; }
+  .sheet-col > .scenario-side { grid-column:1; grid-row:1 / span 2; width:100%; align-self:start; }
+  .sheet-col > .scenario-side .flip { width:100%; height:auto; }
+  .sheet-col > section:nth-of-type(1) { grid-column:2; grid-row:1; }
+  .sheet-col > section:nth-of-type(2) { grid-column:2; grid-row:2; }
+  .sheet-col > section:nth-of-type(3) { grid-column:1 / -1; grid-row:3; }
+  /* whose turn it is, what they are being asked, the card it is about, then the board */
+  .map-stage { display:contents; }
+  .map-stage > .active-side { min-width:0; }
+  .map-col > .rail-players { order:1; }
+  .map-col > .questions-panel { order:2; }
+  .map-stage > .active-side { order:3; }
+  .map-stage > .map-wrap { order:4; }
+  .map-col > .under-map { order:5; }
+  /* one column has no width to scroll sideways in, so the decks wrap into rows */
+  .card-strip { overflow-x:visible; flex-wrap:wrap; }
+  .card-strip .decks, .card-strip .deck-group.lead, .card-strip .display-group { flex-wrap:wrap; }
+  .card-strip .decks { justify-content:center; }
+}
+/* Phone width: everything in one column, nothing beside anything else. The sheet
+stops sharing its row, the map's controls come off the map and sit under it, and
+every row of cards divides the width it has rather than running past the edge. */
+@media (max-width: 560px) {
+  .map-section { margin-inline:8px; }
+  .map-row { gap:8px; }
+  .sheet-col { display:flex; flex-direction:column; gap:8px; flex:1 1 100%; width:100%; max-width:none; }
+  .sheet-col > .scenario-side { width:100%; }
+  .sheet-col > .scenario-side .flip { width:100%; height:auto; }
+  /* the controls leave the map and sit under it -- except in full screen, where the
+  map is the whole window and they have nowhere else to be */
+  body:not(.map-full) .map-wrap { height:auto !important; }
+  body:not(.map-full) .map-controls { position:static; justify-content:center; margin-top:6px; }
+  body.map-full .map-controls { bottom:calc(8px + env(safe-area-inset-bottom, 0px)); }
+  .map-hint { display:none; }
+  .under-map, .card-strip { display:block; overflow-x:visible; }
+  .under-map > section + section, .card-strip > * + * { margin-top:8px; }
+  .under-map .decks, .under-map .display-group, .under-map .codex,
+  .card-strip .decks, .card-strip .deck-group.lead, .card-strip .display-group {
+    flex-wrap:wrap; gap:4px; width:100%; justify-content:flex-start; }
+  .under-map .deck, .under-map .codex-card, .card-strip .deck { width:calc(20% - 4px); min-width:0; flex:0 0 auto; }
+  .under-map .codex-card { width:calc(33.333% - 4px); }
+  .under-map .deck-stack, .card-strip .deck-stack { width:100%; height:auto; aspect-ratio:76 / 120; }
+  .under-map .deck-stack > img, .under-map .deck-empty,
+  .card-strip .deck-stack > img, .card-strip .deck-empty { width:100%; height:100%; }
+  .card-strip .deck-group.lead, .card-strip .display-group { padding:0; border:none; }
+  .player-area { padding:8px; gap:8px; }
+  .sheet { width:100%; }
+}
+/* a narrow header says the same in less room */
+@media (max-width: 1100px) {
+  header { gap:8px; padding:6px 10px; font-size:13px; }
+  header h1 { font-size:14px; margin-right:2px; }
+  header .pill { padding:1px 8px; }
+  header button { padding:3px 8px; }
+  .undo-btn kbd { display:none; }
+  .pill-seats { display:none; }
+}
+@media (max-width: 760px) {
+  .table-name { max-width:8ch; display:inline-block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; }
+  #status .pill:not(.phase) { display:none; }
+}
+@media (max-width: 560px) {
+  header { gap:6px; padding:5px 8px; }
+  header button { padding:2px 7px; }
+  .table-name { display:none; }
+}
+/* stacked, the sheet's column is the width of the page -- it was still pinned to
+340px here, which is what squeezed the mythos cup and the active card beside it */
+@media (max-width: 900px) { .map-row { flex-direction:column; } .sheet-col { flex-basis:auto; width:100%; } }
+.board-fit { position:relative; overflow:hidden; }
+.board { position:absolute; top:0; left:0; margin:0; transform-origin:top left; will-change:transform; }
+.board > img { position:absolute; pointer-events:none; user-select:none; }
+.anchor { position:absolute; transform:translate(-50%,-50%) rotate(var(--map-rot, 0deg)); display:flex; flex-wrap:wrap; justify-content:center; gap:3px; max-width:120px; min-width:26px; min-height:26px; border-radius:14px; padding:2px; }
+.map-wrap .inv-tok { box-shadow:0 0 0 1.5px rgba(255,255,255,.55), 0 2px 6px rgba(0,0,0,.8); }
+.map-wrap .mon-card > img { box-shadow:0 0 0 1px rgba(255,255,255,.28), 0 1px 3px rgba(0,0,0,.6); }
+.anchor.selectable { cursor:pointer; }
+/* the pick ring is a fixed small circle on the space's point, above its tokens and monster
+   cards, so a click inside it picks the space instead of enlarging a card */
+.pick-ring { position:absolute; left:50%; top:50%; width:38px; height:38px; transform:translate(-50%,-50%); border-radius:50%; z-index:3; cursor:pointer;
+  box-shadow:0 0 0 3px #ffd54a, 0 0 12px 4px rgba(255,213,74,.7); background:rgba(255,213,74,.22); }
+.pick-ring:hover { background:rgba(255,213,74,.45); }
+.chip { font-size:11px; font-weight:700; line-height:1; padding:4px 6px; border-radius:10px; color:#fff; white-space:nowrap; box-shadow:0 1px 3px rgba(0,0,0,.6); }
+.chip.doom { background:#b3261e; } .chip.clue { background:#1f6f8b; } .chip.inv { background:#2e7d32; }
+.chip.mon { background:#4a148c; } .chip.marker { background:#555; } .chip.anom { background:#e65100; }
+.chip.marker.blue { background:#1565c0; } .chip.marker.red { background:#c62828; } .chip.marker.white { background:#eee; color:#222; }
+.other-space { display:inline-flex; gap:6px; align-items:center; margin:6px 8px 0 0; padding:4px 8px; border:1px solid var(--line); border-radius:6px; }
+.other-space.selectable { cursor:pointer; box-shadow:0 0 0 3px #ffd54a; }
+.tok { position:relative; display:inline-block; vertical-align:middle; flex:none; }
+/* a token is a disc of cardboard: a faint light rim around it and a sheen across
+   its face, and nothing pooled underneath, which only smeared at this size */
+.tok img { width:100%; height:100%; object-fit:contain; position:relative; z-index:1;
+  filter:var(--rim) drop-shadow(0 1px 2px rgba(0,0,0,.5)); }
+.tok b, .deck-count, #logUnread { user-select:none; -webkit-user-select:none; }
+.tok b { position:absolute; z-index:3; right:-4px; bottom:-4px; min-width:16px; height:16px; padding:0 3px; border-radius:8px; background:#111; color:#fff; font-size:11px; line-height:16px; text-align:center; box-shadow:0 0 0 1px rgba(255,255,255,.5); }
+.toks { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.cup { display:flex; flex-wrap:wrap; gap:4px; align-items:center; margin:4px 0; }
+#debugToggle.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+.dbg-tokwrap { display:inline-flex; flex-direction:column; align-items:center; gap:2px; }
+.dbg-num { width:46px; background:#1b1a24; color:inherit; border:1px solid var(--line);
+  border-radius:5px; padding:1px 3px; font:inherit; font-size:11px; text-align:center; }
+.dbg-inline { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:6px;
+  padding-top:6px; border-top:1px dashed var(--line); }
+.dbg-inline label { display:inline-flex; gap:4px; align-items:center; color:var(--muted); font-size:11px; }
+.dbg-gain input { width:130px; background:#1b1a24; color:inherit; border:1px solid var(--line);
+  border-radius:5px; padding:2px 5px; font:inherit; font-size:11px; }
+.dbg-gain button, .dbg-deal { font-size:11px; padding:1px 6px; }
+.dbg-deal { position:absolute; left:-6px; bottom:-6px; z-index:2; border-radius:11px;
+  min-width:22px; height:22px; line-height:1; }
+.sheet-tokens .dbg-num { width:40px; }
+.dbg-view { position:absolute; right:-6px; top:-6px; z-index:2; border-radius:13px;
+  min-width:26px; height:26px; line-height:0; font-size:11px; padding:0;
+  display:inline-flex; align-items:center; justify-content:center; }
+.dbg-view svg { width:16px; height:16px; display:block; }
+.browse { max-width:min(1100px, 92vw); max-height:86vh; overflow:auto; background:var(--panel);
+  border:1px solid var(--line); border-radius:12px; padding:14px 16px; cursor:default; }
+.browse > h3 { margin:0 0 10px; font-size:12px; text-transform:uppercase;
+  letter-spacing:.04em; color:var(--muted); }
+.browse-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:10px; }
+.browse-card { position:relative; margin:0; cursor:pointer; border-radius:8px; }
+.browse-card img { display:block; width:100%; border-radius:6px; }
+.browse-card:hover { outline:2px solid var(--accent); outline-offset:2px; }
+.browse-pos { position:absolute; left:4px; top:4px; min-width:18px; height:18px; padding:0 4px;
+  border-radius:9px; background:rgba(0,0,0,.7); color:#fff; font-size:10px; line-height:18px; text-align:center; }
+.dbg-row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:6px 0; }
+.dbg-row > label { min-width:84px; color:var(--muted); font-size:12px; }
+.dbg-row input[type=number] { width:64px; }
+.dbg-row input, .dbg-row select { background:#1b1a24; color:inherit; border:1px solid var(--line); border-radius:6px; padding:4px 6px; font:inherit; font-size:12px; }
+.dbg-group { border-top:1px solid var(--line); margin-top:10px; padding-top:8px; }
+.dbg-group > h3 { margin:0 0 4px; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+#debug button { font-size:12px; padding:4px 8px; }
+/* The mythos panel is two drawers on vertical handles. What was drawn lies open;
+the cup is shut against the right edge with only its handle showing. Taking the
+cup's handle slides it across the panel, and the other handle sends it back. */
+/* its children are drawers, which stand outside the flow, so the panel itself has
+to ask for the width -- and it fills the box, so the handles meet its edges */
+/* the drawers fill the panel, so its handles meet the label band and the box's
+own top and bottom */
+.map-section section:has(> .mythos) { gap:0; }
+.map-section section > .mythos { flex:1 1 auto; padding:0; align-self:stretch; }
+.mythos { --handle:23px; position:relative; min-height:52px; overflow:hidden; }
+/* the tokens inside a drawer raise themselves for their own badges, so each drawer
+needs a layer of its own or the one behind paints through the one in front */
+/* each drawer stops a handle's width short of the far edge: the open one ends
+where the other's handle begins, so nothing is ever drawn under a handle or past
+the panel */
+.mythos-drawer { position:absolute; inset:0 var(--handle) 0 0; z-index:1; display:flex; background:var(--panel); }
+.mythos-drawer.sliding { z-index:2; inset:0 0 0 0; right:auto; width:calc(100% - var(--handle));
+  transform:translateX(100%); transition:transform .32s cubic-bezier(.4,.1,.2,1); }
+.mythos-drawer.sliding.open { transform:translateX(var(--handle)); }
+.mythos-tab { flex:0 0 auto; width:var(--handle); align-self:stretch; margin:0; padding:6px 3px; font-size:10px;
+  letter-spacing:.06em; text-transform:uppercase; writing-mode:vertical-rl; transform:rotate(180deg); border:none;
+  border-radius:0; cursor:pointer; background:color-mix(in srgb, var(--ink) 8%, transparent); color:var(--muted);
+  transition:background .14s, color .14s; }
+.mythos-tab:hover { color:var(--ink); background:color-mix(in srgb, var(--ink) 14%, transparent); }
+.mythos-tab b { font-weight:700; color:var(--ink); }
+.mythos-tab.on { background:color-mix(in srgb, var(--accent) 26%, transparent); color:var(--ink); }
+.mythos-drawer > .cup { flex:1 1 auto; min-width:0; margin:0; padding:0 8px; flex-wrap:wrap; align-content:center;
+  align-items:center; overflow-x:hidden; overflow-y:auto; scrollbar-width:thin; }
+.mythos .waiting { font-size:12px; }
+@media (prefers-reduced-motion: reduce) { .mythos-drawer.sliding { transition:none; } }
+.sheet-col .cup { gap:2px; }
+.mythos .cup { gap:2px; }
+/* taking a turn is one button beside the chip that says whose it is */
+.q-turn { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.q-turn .prompt { margin:0; }
+.q-turn button { margin:0; }
+/* an investigator named in a choice: the standee, at the height of the words */
+.label-standee { height:34px; width:auto; vertical-align:middle; margin-right:6px; }
+.inv-tok { width:34px; height:34px; border-radius:50%; box-shadow:0 0 0 2px #fff, 0 2px 6px rgba(0,0,0,.8); }
+/* the whole standee stands on the space instead of the round marker */
+/* a faint white rim picks the piece out of the art it stands on */
+.inv-piece { width:34px; height:50px; object-fit:contain; align-self:flex-end; position:relative;
+  filter:var(--rim) drop-shadow(0 1px 2px rgba(0,0,0,.7)); }
+/* a shadow pooled under the base, so the piece stands on the space rather than floating on it */
+/* a flat shadow under the base, not a silhouette thrown across the board */
+.inv-wrap:has(> .inv-piece)::before { content:""; position:absolute; left:50%; bottom:1px; width:26px; height:6px;
+  pointer-events:none; border-radius:50%; background:rgba(0,0,0,.55); filter:blur(1.5px); transform:translateX(-50%); }
+.inv-wrap.delayed:has(> .inv-piece)::before { width:40px; height:5px; }
+/* delayed: the piece lies on its side, as the card does on the table, and wears a badge
+   since a round marker turned sideways looks no different */
+.inv-wrap { position:relative; display:inline-flex; }
+.inv-wrap.delayed > .inv-piece { transform:rotate(90deg); }
+/* the rotated standee is wider than its box, so the box turns with it */
+.inv-wrap.delayed:has(> .inv-piece) { width:52px; height:36px; align-items:center; justify-content:center; }
+/* the rim survives being delayed: greying a piece would otherwise drop it */
+.inv-wrap.delayed > .inv-tok, .inv-wrap.delayed > .inv-piece { filter:grayscale(.8) brightness(.75) var(--rim); }
+.inv-wrap.delayed > .inv-tok { box-shadow:0 0 0 2px var(--delayed), 0 2px 6px rgba(0,0,0,.8); }
+.inv-wrap.delayed::after { content:""; position:absolute; right:-3px; bottom:-3px; width:15px; height:15px; border-radius:50%;
+  background:var(--delayed) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.6' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='8.5'/%3E%3Cpath d='M12 6.8V12l3.6 2.1'/%3E%3C/svg%3E") center/10px 10px no-repeat;
+  box-shadow:0 1px 3px rgba(0,0,0,.7); pointer-events:none; }
+.player-area { display:flex; flex-wrap:wrap; gap:12px; padding:10px; border:1px solid var(--line); border-radius:8px; margin-bottom:10px; }
+/* whose turn it is reads from the tab's own marker and the name beside the sheet,
+so the panel needs no border of its own */
+.player-area.turn { box-shadow:none; }
+.player-area.out .sheet { filter:grayscale(1) brightness(.7); }
+.sheet { position:relative; width:min(420px, 100%); flex:none; align-self:flex-start; }
+.sheet > img { width:100%; display:block; border-radius:6px; }
+.sheet .sheet-text { display:none; }
+.sheet.no-art .sheet-text { display:block; padding:10px; border:1px dashed var(--line); border-radius:6px; }
+.sheet-text i { display:block; color:var(--muted); } .sheet-text p { margin:6px 0 0; }
+.sheet-skills { display:flex; flex-wrap:wrap; gap:10px; }
+.sheet-skills .ico { font-size:15px; }
+.sheet-focus { position:absolute; left:37%; transform:translate(-50%,-50%); }
+.sheet-lead { position:absolute; right:6px; top:6px; display:inline-flex; filter:drop-shadow(0 2px 4px rgba(0,0,0,.6)); }
+/* the tokens ride on the card, bottom right, clear of the skills down its left */
+.sheet .toks { position:absolute; right:6px; bottom:6px; gap:5px; padding:5px 7px; border-radius:10px; cursor:default;
+  background:color-mix(in srgb, var(--panel) 62%, transparent); backdrop-filter:blur(3px);
+  box-shadow:0 2px 10px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.08); }
+.pa-side { flex:1; min-width:220px; display:flex; flex-direction:column; gap:10px; }
+/* one status line under the card: place, player, and whatever is true of them now,
+each piece separated by a dot rather than a line of its own */
+.pa-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:12px; color:var(--muted); }
+.pa-bar > * + *::before { content:"\00b7"; margin-right:8px; color:color-mix(in srgb, var(--muted) 60%, transparent); }
+.pa-bar > .pa-delayed::before, .pa-bar > .pa-status::before { content:none; }
+.pa-where { color:var(--ink); font-weight:600; }
+/* hovering where they stand lights that space on the map */
+.pa-where-known { cursor:help; text-decoration:underline dotted color-mix(in srgb, var(--ink) 40%, transparent); text-underline-offset:3px; }
+.pa-where-known:hover { color:#ffd54f; text-decoration-color:#ffd54f; }
+.pa-turn { font-weight:600; color:var(--accent); }
+.pa-actions { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); }
+.pa-actions .pips { display:flex; gap:3px; }
+.pa-actions .pip { width:10px; height:10px; border-radius:50%; border:1.5px solid var(--accent); }
+.pa-actions .pip.used { background:var(--accent); }
+.pa-status { font-size:11px; color:var(--doom); font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+.pa-cards { display:flex; flex-wrap:wrap; gap:8px; }
+.asset { position:relative; width:110px; }
+.asset img { width:100%; display:block; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.5); }
+.asset .asset-name { display:none; }
+.asset.in-test img { outline:3px solid var(--accent); outline-offset:2px; box-shadow:0 0 16px color-mix(in srgb, var(--accent) 55%, transparent); }
+.asset .in-test-tag { position:absolute; top:-9px; left:50%; transform:translateX(-50%); padding:1px 8px; border-radius:999px; background:var(--accent); color:#fff; font-size:11px; font-weight:600; white-space:nowrap; box-shadow:0 2px 6px rgba(0,0,0,.4); }
+.q button.chosen { outline:2px solid var(--accent); outline-offset:2px; box-shadow:inset 0 0 0 2px rgba(255,255,255,.55); }
+.asset.no-art { height:170px; padding:8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); }
+.asset.no-art .asset-name { display:block; font-weight:600; }
+.asset-badges { position:absolute; left:4px; bottom:4px; display:flex; gap:4px; }
+/* One panel for the player areas: the tabs are its header strip, inside the same
+border, and each tab wears its investigator's role as a bar along its foot. */
+#investigators { border:1px solid var(--line); border-radius:10px; background:var(--panel); overflow:hidden; }
+.tabs-row { display:flex; align-items:stretch; background:color-mix(in srgb, var(--ink) 5%, transparent); border-bottom:1px solid var(--line); }
+ul.tabs__header { flex:1; display:flex; list-style:none; padding:0; margin:0; user-select:none; font-size:min(15px, 1.9vw); }
+ul.tabs__header > li { position:relative; display:inline-flex; align-items:center; margin:0; padding:0 4px 0 0; cursor:pointer;
+  color:var(--muted); border-right:1px solid var(--line);
+  box-shadow:inset 0 -3px 0 color-mix(in srgb, var(--role, var(--line)) 45%, transparent);
+  transition:background .12s, color .12s; }
+/* the 3px bar along the bottom eats into the space under the name, so the padding
+   leans that way to keep what you can see even above and below it */
+ul.tabs__header > li > span { display:block; width:fit-content; padding:5px 12px 8px; }
+ul.tabs__header > li:hover { color:var(--ink); background:color-mix(in srgb, var(--ink) 7%, transparent); }
+ul.tabs__header > li.tab--selected { font-weight:700; color:var(--ink);
+  background:color-mix(in srgb, var(--role, var(--accent)) 26%, var(--panel));
+  box-shadow:inset 0 -3px 0 var(--role, var(--accent)); }
+ul.tabs__header > li.tab--has-actions { color:var(--ink); }
+.tab-pulse { position:absolute; inset:0; pointer-events:none;
+  box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 88%, transparent), inset 0 0 9px color-mix(in srgb, var(--accent) 40%, transparent);
+  animation:tab-action-pulse 1.8s ease-in-out infinite alternate; }
+.tab--Guardian { --role:#2f7fc4; } .tab--Seeker { --role:#c98218; } .tab--Rogue { --role:#2d9a36; }
+.tab--Mystic { --role:#8a6bd1; } .tab--Survivor { --role:#c4444c; } .tab--Neutral { --role:#7a7686; }
+.tab--active-player::before { content:"▶"; font-size:.65em; margin-left:10px; align-self:center; color:var(--accent); }
+/* sits towards the tab's right edge, clear of the name */
+ul.tabs__header li > .waiting-indicator { display:inline-flex; align-items:center; justify-content:center; align-self:stretch;
+  padding:0 2px 0 4px; color:var(--accent); }
+/* a ring rather than a glyph: it fills its box, so it sits on the tab's middle and
+   turns about its own centre */
+.waiting-spinner { display:block; width:18px; height:18px; animation:waiting-on-spin 1.6s linear infinite; }
+@keyframes waiting-on-spin { to { transform:rotate(360deg); } }
+@keyframes tab-action-pulse { from { opacity:.45; } to { opacity:1; } }
+ul.tabs__header > li.inactive { filter:grayscale(100%); opacity:.6; }
+.tab { padding:10px; }
+.tab .player-area { margin:0; border:none; border-radius:0; padding:0; }
+.decks { display:flex; flex-wrap:wrap; gap:18px; justify-content:center; padding:14px 8px 4px; border-top:1px solid var(--line); margin-top:8px; }
+.deck { display:flex; flex-direction:column; align-items:center; gap:6px; width:96px; }
+.deck-stack { position:relative; width:84px; height:132px; }
+.deck-stack > img { width:84px; height:132px; object-fit:cover; border-radius:6px; }
+.deck-stack > img + .deck-empty { display:none; }
+.deck-stack.no-art > .deck-empty { display:flex; }
+.deck-empty { width:84px; height:132px; border:2px dashed var(--line); border-radius:6px; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:12px; }
+.deck-count { position:absolute; right:-6px; bottom:-6px; min-width:24px; height:24px; padding:0 6px; border-radius:12px; background:#111; color:#fff; font-size:13px; line-height:24px; text-align:center; box-shadow:0 0 0 1px rgba(255,255,255,.5); }
+.deck-clue { position:absolute; left:-8px; top:-8px; }
+.sheet-flip { perspective:1400px; }
+.sheet-flip .flip { position:relative; width:100%; aspect-ratio:1503/1200; transform-style:preserve-3d; transition:transform .9s cubic-bezier(.4,.1,.2,1); }
+.sheet-flip .flip.flipped { transform:rotateY(180deg); }
+.sheet-flip .face { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; backface-visibility:hidden; border-radius:8px; }
+.sheet-flip .front { transform:rotateY(180deg); }
+@media (prefers-reduced-motion: reduce) {
+  .sheet-flip .flip { transition:none; }
+  ::view-transition-group(*) { animation:none; }
+}
+::view-transition-group(*) { animation-duration:.4s; }
+/* a banner up when an update starts is captured too, and must stay above the tweening tokens */
+.phase-banner { view-transition-name:phase-banner; }
+::view-transition-group(phase-banner) { z-index:1000; animation:none; }
+.deck-group.lead { display:flex; flex-wrap:wrap; gap:18px; padding-right:18px; margin-right:4px; border-right:1px solid var(--line); }
+.anchor.unstable { box-shadow:0 0 0 2px var(--doom), 0 0 14px 4px rgba(179,38,30,.55); background:rgba(179,38,30,.16); }
+.space-outlines { position:absolute; left:0; top:0; overflow:visible; pointer-events:none; }
+.space-highlights { position:absolute; left:0; top:0; overflow:visible; pointer-events:none; }
+.space-highlights > g { display:none; }
+/* the generic .hl pulse animates CSS filter, which would replace the SVG filter that draws the outline */
+.space-highlights > g.hl { display:inline; animation:outlinePulse .9s ease-in-out infinite alternate; }
+@keyframes outlinePulse { from { opacity:1; } to { opacity:.6; } }
+@media (prefers-reduced-motion: reduce) { .space-highlights > g.hl { animation:none; } }
+/* the outline marks the whole space, so the ring around its tokens would only repeat it */
+.anchor.shaped.hl { box-shadow:none; background:none; animation:none; }
+.space-outlines.held { opacity:0; }
+.anchor.unstable.held { box-shadow:none; background:none; }
+.space-outlines.reveal { animation:unstableIn .7s ease-out; }
+@keyframes unstableIn { from { opacity:0; } 40% { opacity:1; filter:brightness(1.8); } to { opacity:1; } }
+@media (prefers-reduced-motion: reduce) { .space-outlines.reveal { animation:none; } }
+.mon-card.hl > img { outline:2px solid #ffd54f; outline-offset:1px; }
+/* the monster the open question is about wears the attention wash until it is
+   answered, the way a space being asked for does */
+.mon-card.acting { z-index:15; }
+.mon-card.acting::after { content:''; position:absolute; inset:0; z-index:1; border-radius:3px; pointer-events:none;
+  background:color-mix(in srgb, var(--accent) 34%, transparent);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 90%, transparent),
+    0 0 10px color-mix(in srgb, var(--accent) 55%, transparent); }
+.mon-card.acting > .mon-dmg { z-index:2; }
+.anchor.hl { box-shadow:0 0 0 3px #ffd54f, 0 0 18px 6px rgba(255,213,79,.45); background:rgba(255,213,79,.14); border-radius:14px; }
+.inv-tok.hl { outline:3px solid #ffd54f; outline-offset:2px; }
+.inv-piece.hl { filter:drop-shadow(0 0 3px #ffd54f) drop-shadow(0 0 6px #ffd54f); }
+.pa-delayed { display:inline-flex; align-items:center; gap:4px; padding:1px 7px 1px 5px; border-radius:999px;
+  background:var(--delayed); color:#fff; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; vertical-align:1px; }
+.pa-delayed::before { content:""; width:11px; height:11px; background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.6' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='8.5'/%3E%3Cpath d='M12 6.8V12l3.6 2.1'/%3E%3C/svg%3E") center/11px 11px no-repeat; }
+/* the clock rides beside the name itself; the tab's own ::after is the first-player token */
+.delayed-icon { display:inline-block; width:11px; height:11px; margin-left:5px; vertical-align:-1px; flex:none;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23e04a43' stroke-width='2.6' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='8.5'/%3E%3Cpath d='M12 6.8V12l3.6 2.1'/%3E%3C/svg%3E") center/11px 11px no-repeat; }
+.codex-card.hl, .asset.hl { outline:3px solid #ffd54f; outline-offset:2px; border-radius:8px; }
+#scenarioSheet.hl { outline:3px solid #ffd54f; outline-offset:3px; border-radius:10px; }
+.reckoning-pending { outline:2px dashed rgba(255,213,79,.85); outline-offset:3px; border-radius:8px; }
+.hl { animation:hlPulse .9s ease-in-out infinite alternate; }
+@keyframes hlPulse { from { filter:none; } to { filter:brightness(1.3); } }
+@media (prefers-reduced-motion: reduce) { .hl { animation:none; } }
+.mon-card { position:relative; display:inline-block; line-height:0; }
+/* debug controls for a monster hang below its card, which is too small to hold them,
+   and stay big enough to hit with a thumb */
+.mon-dbg { position:absolute; left:50%; top:calc(100% + 3px); transform:translateX(-50%); z-index:4; display:flex; gap:2px;
+  padding:2px; border-radius:999px; background:color-mix(in srgb, var(--panel) 92%, transparent); border:1px solid var(--line);
+  box-shadow:0 2px 6px rgba(0,0,0,.5); line-height:1; }
+.mon-dbg button { margin:0; width:22px; height:22px; padding:0; font-size:13px; font-weight:700; line-height:1; border-radius:7px; }
+.mon-dbg button[disabled] { opacity:.4; cursor:not-allowed; }
+.mon-dbg button.defeat { background:var(--doom); border-color:var(--doom); color:#fff; }
+/* the strip is wider than the card it hangs from, so the monster under the pointer
+   comes out on top -- and its space with it, since a space's own transform makes it
+   a stacking context that a child's z-index cannot climb out of */
+/* while a space is being chosen the ring is what is being aimed at: a monster on
+   the space neither climbs over its neighbours nor swallows the click */
+.map-wrap.picking-space .mon-card { pointer-events:none; }
+.map-wrap.picking-space .mon-card:hover, .map-wrap.picking-space .anchor:hover { z-index:auto; }
+.mon-card:hover { z-index:20; }
+.mon-card:hover > .mon-dbg { z-index:21; }
+/* The space comes forward, not the card: hovering the space itself covers the gaps
+   between its pieces, and the anchor keeps the absolute placement that lays them
+   out -- making it relative dropped it into the flow and the layout flickered. */
+.anchor:hover { z-index:20; }
+.pa-engaged-cards:has(.mon-card:hover) { z-index:20; position:relative; }
+/* taking a card from the display: a label rather than a corner dot, since it is a
+   deliberate act and the card is big enough to carry one */
+.dbg-take { position:absolute; left:50%; bottom:6px; transform:translateX(-50%); z-index:3; margin:0; padding:4px 12px;
+  border-radius:999px; font-size:11px; font-weight:700; background:var(--accent); color:#fff; border-color:var(--accent); }
+.mon-card > img { width:38px; height:60px; object-fit:cover; border-radius:3px; box-shadow:0 1px 3px rgba(0,0,0,.6); cursor:zoom-in; }
+.mon-card.engaged > img { outline:1px solid var(--doom); outline-offset:1px; }
+.mon-card > .chip { display:none; }
+.pa-engaged { margin:6px 0 10px; padding:8px 10px; border-radius:10px; border:1px solid color-mix(in srgb, var(--doom) 45%, transparent); background:color-mix(in srgb, var(--doom) 8%, transparent); }
+.pa-engaged-label { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--doom); margin-bottom:6px; }
+.pa-engaged-cards { display:flex; flex-wrap:wrap; gap:10px; }
+.pa-engaged .mon-card > img { width:90px; height:auto; }
+.pa-engaged .mon-card.engaged > img { outline:none; }
+.pa-engaged .mon-card > .mon-dmg { right:-8px; bottom:-8px; }
+.mon-card > .mon-dmg { position:absolute; right:-7px; bottom:-6px; line-height:normal; pointer-events:none; }
+.mon-card.no-art > .chip { display:inline-block; }
+.zoomable { cursor:zoom-in; }
+.draggable-inv { cursor:grab; }
+body.moving .draggable-inv { cursor:grabbing; }
+/* drag targets use the same small circle as the pick ring, just outside it, rather than
+   outlining every token in the space */
+.anchor.droppable::before, .anchor.droppable-paid::before { content:''; position:absolute; left:50%; top:50%; width:46px; height:46px; transform:translate(-50%,-50%); border-radius:50%; z-index:2; pointer-events:none; }
+.anchor.droppable::before { box-shadow:0 0 0 3px #4caf50, 0 0 14px 4px rgba(76,175,80,.45); background:rgba(76,175,80,.16); }
+.anchor.droppable-paid::before { box-shadow:0 0 0 3px #29b6f6, 0 0 14px 4px rgba(41,182,246,.4); background:rgba(41,182,246,.14); }
+.anchor.drop-hover::before { box-shadow:0 0 0 4px #ffd54f, 0 0 20px 8px rgba(255,213,79,.6); background:rgba(255,213,79,.28); }
+.display-group { display:flex; flex-wrap:wrap; gap:18px; }
+.deck-stack.face > img { box-shadow:0 0 0 1px rgba(255,255,255,.35); }
+.deck-stack.face .deck-empty { display:none; font-size:11px; padding:4px; text-align:center; }
+.deck-stack.face.no-art .deck-empty { display:flex; }
+.codex { display:flex; flex-wrap:wrap; gap:10px; }
+.codex-card { position:relative; margin:0; width:140px; cursor:zoom-in; }
+.codex-card img { width:100%; display:block; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.6); }
+.codex-card .asset-name { display:none; }
+.codex-card.no-art { height:220px; padding:8px; border:1px solid var(--line); border-radius:8px; }
+.codex-card.no-art .asset-name { display:block; font-weight:600; }
+.codex-tok { position:absolute; right:-6px; top:-6px; }
+.ask-row { display:grid; grid-template-columns:236px minmax(0,1fr); gap:12px; align-items:start; }
+@media (max-width: 900px) { .ask-row { grid-template-columns:1fr; } }
+.active-side .encounter { flex-wrap:wrap; gap:8px; padding-left:22px; }
+.active-side .encounter-card { width:calc(100% - 22px); }
+.active-side .encounter > div { flex:1 1 100%; }
+/* in the sheet column the card keeps a card's width; whose card it is, and where,
+is the chip in the heading rather than a paragraph under it */
+.sheet-col .active-side .encounter { flex-wrap:nowrap; gap:10px; }
+.sheet-col .active-side .encounter-card { flex:0 0 200px; width:200px; }
+.active-side h2 { display:flex; align-items:center; gap:6px; }
+.inv-chip { width:18px; height:18px; border-radius:50%; box-shadow:0 0 0 1px rgba(255,255,255,.55); }
+/* it rides over the board, so it carries its own surface rather than letting the
+   map show through the words */
+.drawn-token { display:flex; align-items:center; gap:12px; margin-bottom:10px; padding:10px 12px;
+  border:1px solid var(--line); border-radius:10px; background:color-mix(in srgb, var(--accent) 14%, var(--panel));
+  box-shadow:0 6px 18px rgba(0,0,0,.5); }
+.drawn-token-name { font-weight:600; }
+.drawn-token-sub { color:var(--muted); font-size:12px; }
+/* the token is pulled out of the cup: it arrives small and turned, then settles */
+.drawn-token .tok { animation:token-draw .55s cubic-bezier(.2,.8,.3,1.15) both; }
+@keyframes token-draw {
+  from { transform:scale(.25) rotate(-35deg); opacity:0; }
+  60%  { transform:scale(1.15) rotate(6deg); opacity:1; }
+  to   { transform:scale(1) rotate(0); opacity:1; }
+}
+@media (prefers-reduced-motion: reduce) { .drawn-token .tok { animation:none; } }
+.prompt .asker { width:26px; height:26px; }
+.prompt { display:flex; gap:8px; align-items:center; }
+.encounter { display:flex; gap:14px; align-items:flex-start; padding-left:26px; }
+.encounter-card { width:200px; }
+.zoom-marked { position:relative; display:inline-block; line-height:0; }
+.zoom-marked .read-arrow { left:-40px; border-width:18px 0 18px 26px; }
+.zoom .zoom-marked .zoom-marked-img { max-width:92vw; max-height:92vh; }
+.read-arrow { position:absolute; left:-24px; width:0; height:0; transform:translateY(-50%); border:11px solid transparent; border-left:16px solid var(--accent); border-right:0; filter:var(--rim) drop-shadow(0 1px 2px rgba(0,0,0,.6)); z-index:1; pointer-events:none; }
+.undo-btn { display:inline-flex; align-items:center; gap:6px; }
+.undo-btn[disabled] { opacity:.45; cursor:default; }
+.undo-btn .undo-icon { width:16px; height:16px; flex:none; }
+.undo-btn kbd { font:inherit; font-size:11px; padding:0 5px; border:1px solid var(--line); border-radius:4px; color:var(--muted); }
+/* the tooltip a token raises: fixed, so a panel that clips its own overflow cannot
+clip it, and never under the pointer */
+.tip { position:fixed; z-index:60; max-width:260px; pointer-events:none;
+  display:grid; gap:3px; padding:8px 10px; border-radius:10px; border:1px solid var(--line);
+  background:color-mix(in srgb, var(--panel) 94%, #000); color:var(--ink); font-size:12px; line-height:1.4;
+  box-shadow:0 10px 26px rgba(0,0,0,.55); }
+.tip.placed { animation:tip-in .12s ease-out; }
+.tip b { font-size:13px; }
+.tip span { color:var(--muted); }
+/* the arrow sits under the token even when the box has been pushed off its centre */
+.tip::after { content:''; position:absolute; left:var(--arrow, 50%); margin-left:-5px; border:5px solid transparent; }
+.tip:not(.below)::after { top:100%; border-top-color:var(--line); }
+.tip.below::after { bottom:100%; border-bottom-color:var(--line); }
+@keyframes tip-in { from { opacity:0; } }
+@media (prefers-reduced-motion: reduce) { .tip { animation:none; } }
+.flash { position:fixed; left:50%; bottom:28px; transform:translateX(-50%); z-index:20; padding:8px 16px; border-radius:999px; background:#111; color:#fff; font-weight:600; opacity:0; pointer-events:none; }
+.flash.show { animation:flash 1.2s ease-out; }
+@keyframes flash { 0% { opacity:0; transform:translate(-50%, 8px); } 15%, 70% { opacity:1; transform:translate(-50%, 0); } 100% { opacity:0; } }
+.log-toggle { position:relative; display:inline-flex; align-items:center; gap:6px; }
+/* unread lines colour the button rather than hang a badge off it */
+.log-toggle.unread { border-color:color-mix(in srgb, var(--accent) 65%, var(--line));
+  background:color-mix(in srgb, var(--accent) 22%, transparent); color:var(--ink); font-weight:600; }
+.log-panel { position:fixed; top:0; right:0; bottom:0; width:min(360px, 90vw); z-index:5; display:flex; flex-direction:column; background:var(--panel); border-left:1px solid var(--line); box-shadow:-8px 0 24px rgba(0,0,0,.35); transform:translateX(105%); transition:transform .2s ease-out; }
+body.log-open .log-panel { transform:none; }
+body.log-open { padding-right:min(360px, 90vw); }
+@media (max-width: 900px) { body.log-open { padding-right:0; } }
+.log-backdrop { display:none; }
+@media (max-width: 900px) { body.log-open .log-backdrop { display:block; position:fixed; inset:0; z-index:4; background:rgba(0,0,0,.5); } }
+.log-head { display:flex; align-items:center; justify-content:space-between; padding:14px 16px 10px; border-bottom:1px solid var(--line); }
+.log-head h2 { margin:0; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+.log-close { border:none; background:none; color:var(--muted); font-size:16px; padding:2px 6px; margin:0; }
+.log-list { list-style:none; margin:0; padding:10px 12px 20px; overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:6px; }
+.log-entry { display:flex; align-items:center; gap:8px; padding:8px 10px; border-radius:8px; background:var(--bg); border-left:3px solid var(--line); font-size:13px; line-height:1.4; }
+.log-round { display:flex; align-items:center; gap:10px; margin:10px 0 2px; color:var(--muted); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; }
+.log-round::before, .log-round::after { content:""; flex:1; height:1px; background:var(--line); }
+.log-mythos { border-left-color:#8a6d3b; }
+.log-roll { border-left-color:#607d8b; }
+.log-label { color:var(--muted); font-size:12px; }
+.log-dice { display:flex; flex-wrap:wrap; gap:4px; }
+.log-die { width:22px; height:22px; border-radius:5px; background:var(--panel); border:1px solid var(--line); display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:12px; }
+.q-row { display:flex; align-items:flex-start; gap:14px; }
+.q-row > .q { flex:1; min-width:0; }
+.spawning { flex:none; width:96px; display:grid; justify-items:center; gap:2px; text-align:center; font-size:13px; }
+.spawning img { width:96px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,.45); cursor:zoom-in; margin-bottom:4px; }
+.spawning-label { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
+.loose-roll { display:flex; align-items:center; gap:8px; margin:0 0 8px; color:var(--muted); font-size:13px; }
+.loose-roll .die { width:34px; height:34px; line-height:34px; margin:0; font-size:17px; border-radius:7px; color:var(--ink); }
+.log-die.hit { background:var(--ok); border-color:var(--ok); color:#fff; }
+.log-result.pass { border-left-color:var(--ok); } .log-result.fail { border-left-color:var(--doom); }
+.log-badge { font-size:11px; font-weight:700; text-transform:uppercase; padding:2px 7px; border-radius:10px; color:#fff; }
+.log-result.pass .log-badge { background:var(--ok); } .log-result.fail .log-badge { background:var(--doom); }
+.log-clue { border-left-color:var(--clue); }
+.log-doom { border-left-color:var(--doom); }
+.log-codex { border-left-color:var(--accent); font-weight:600; }
+.log-inv { border-left-color:#2e7d32; font-weight:600; }
+.log-warn { border-left-color:#e6a100; color:var(--muted); font-size:12px; }
+.log-story { display:block; border-left-color:transparent; background:none; font-family: Georgia, "Times New Roman", serif; font-style:italic; color:var(--muted); padding:4px 6px 4px 10px; }
+.log-end { justify-content:center; font-weight:700; font-size:15px; border-left:none; }
+.log-end.win { background:color-mix(in srgb, var(--ok) 25%, var(--bg)); } .log-end.lose { background:color-mix(in srgb, var(--doom) 25%, var(--bg)); }
+.log-empty { color:var(--muted); font-style:italic; padding:10px; }
+.zoom { position:fixed; inset:0; z-index:10; background:rgba(0,0,0,.8); display:flex; align-items:center; justify-content:center; cursor:zoom-out; }
+.zoom { gap:24px; flex-wrap:wrap; }
+@font-face { font-family:"Teutonic"; src:url("./assets/fonts/teutonic.ttf"); }
+.phase-banner { position:fixed; top:0; left:0; right:0; z-index:1000; height:clamp(4.5rem, 9vw, 7rem); display:grid; place-items:center; pointer-events:none; overflow:hidden;
+  background:color-mix(in srgb, var(--phase-color) 54%, rgba(8, 11, 13, .88)); box-shadow:0 14px 36px rgba(0, 0, 0, .42); animation:phase-banner-bloom 1.2s ease-out both; }
+.phase-banner span { color:rgba(242, 232, 207, .94); font-family:Teutonic, serif; font-size:clamp(1.8rem, 4vw, 3.8rem); letter-spacing:.08em; line-height:1; text-align:center;
+  text-shadow:0 0 35px color-mix(in srgb, var(--phase-color) 80%, transparent), 0 5px 26px rgba(0, 0, 0, .8); animation:phase-banner-title 1.2s ease-out both; }
+@keyframes phase-banner-bloom { 0% { opacity:0; } 14%, 78% { opacity:1; } 100% { opacity:0; } }
+@keyframes phase-banner-title {
+  0% { opacity:0; transform:translateX(-110%); filter:blur(8px); }
+  22%, 72% { opacity:1; transform:translateX(0); filter:blur(0); }
+  100% { opacity:0; transform:translateX(110%); filter:blur(8px); }
+}
+@media (prefers-reduced-motion: reduce) { .phase-banner span { animation:none; } }
+.sheet-zoom { width:min(92vw, calc(88vh * var(--ratio))); cursor:pointer; }
+.sheet-zoom .flip { aspect-ratio:var(--ratio); }
+.zoom .sheet-zoom .face { max-width:none; max-height:none; border-radius:12px; box-shadow:0 8px 30px rgba(0,0,0,.8); }
+.zoom-hint { flex-basis:100%; text-align:center; color:#ccc; font-size:13px; margin-top:-12px; }
+.fly-card { position:fixed; z-index:40; pointer-events:none; transform-origin:top left; perspective:900px; }
+.fly-inner { position:relative; width:100%; height:100%; transform-style:preserve-3d; }
+.fly-inner img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; border-radius:6px; backface-visibility:hidden; box-shadow:0 10px 24px rgba(0,0,0,.6); }
+.fly-back { transform:rotateY(180deg); }
+.zoom img { max-width:92vw; max-height:92vh; border-radius:12px; box-shadow:0 8px 30px rgba(0,0,0,.8); }
+.zoom img:not(:only-child) { max-width:min(45vw, 520px); max-height:88vh; }
+/* a page takes the width it is given and the cap decides how much it keeps: the
+table's #app is a flex column at wide sizes, where auto side margins would
+otherwise shrink a page to its own content */
+.screen { width:100%; max-width:760px; margin:24px auto; padding:0 16px; }
+/* the lobby and the new game page are whole pages rather than a panel in a table */
+.screen.lobby, .ng-page { max-width:1180px; }
+.screen h2 { font-size:20px; margin:0 0 4px; }
+.screen .sub { color:var(--muted); margin:0 0 16px; }
+.field { margin-bottom:16px; }
+/* undo the page header's bar styling: this is just the title above the cards */
+.ng-header { display:flex; align-items:center; gap:12px; padding:0; border:0; background:none; position:static; margin:0 0 18px; }
+.ng-cancel { margin:0 0 0 auto; }
+.ng-header h2 { margin:0; font-size:28px; letter-spacing:-.01em; }
+.ng { display:grid; gap:16px; }
+/* on the new game page the scenarios take the width and the setup rides beside them */
+.ng-page .ng { grid-template-columns:minmax(0, 1fr) 320px; align-items:start; }
+.ng-scenarios { display:grid; gap:16px; min-width:0; }
+.ng-config { display:grid; gap:12px; min-width:0; }
+.ng-page .ng-config { position:sticky; top:16px; }
+@media (max-width: 900px) { .ng-page .ng { grid-template-columns:minmax(0, 1fr); } .ng-page .ng-config { position:static; } }
+.ng-card .ng-title { font-size:13px; letter-spacing:.08em; }
+.ng-scenarios .ng-card { padding:14px; }
+.ng-scenarios .sc-grid { grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:12px; }
+/* the chosen sheet keeps the accent; the others stay quiet until hovered */
+.sc-pick.on { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent), 0 8px 22px rgba(0,0,0,.28); }
+.sc-pick.on .sc-exp { color:var(--accent); }
+/* beside the scenarios a box is a row, not a poster */
+.ng-config .ng-tiles { grid-template-columns:minmax(0, 1fr); }
+.ng-config .ng-tiles label { display:grid; grid-template-columns:72px minmax(0, 1fr); align-items:center; }
+.ng-config .ng-tiles label img { height:100%; aspect-ratio:auto; }
+/* a sheet keeps its place while its art is still coming: the image box already
+holds the height, and this fills it rather than flashing an empty panel */
+.sc-tile.loading .sc-pick img { visibility:hidden; }
+.sc-tile.loading .sc-pick { position:relative; }
+.sc-tile.loading .sc-pick::after { content:''; position:absolute; left:0; right:0; top:0;
+  aspect-ratio:1503 / 1200; pointer-events:none;
+  background:linear-gradient(100deg, color-mix(in srgb, var(--ink) 6%, transparent) 30%,
+    color-mix(in srgb, var(--ink) 14%, transparent) 50%, color-mix(in srgb, var(--ink) 6%, transparent) 70%);
+  background-size:220% 100%; animation:skeleton 1.2s linear infinite; }
+@keyframes skeleton { from { background-position:120% 0; } to { background-position:-120% 0; } }
+@media (prefers-reduced-motion: reduce) { .sc-tile.loading .sc-pick::after { animation:none; } }
+/* a hairline under each piece of art, so it reads as a card rather than bleeding
+into the name below it */
+.ng-page .ng-box img, .ng-page .ng-tiles label img, .ng-page .sc-pick img { border-bottom:1px solid rgba(255,255,255,.22); }
+/* the covers and sheets are buttons, so dragging one should not peel off a ghost image */
+.ng-box img, .ng-tiles label img, .sc-pick img { -webkit-user-drag:none; user-select:none; }
+/* the boxes as a row of covers; the open one shows its scenarios underneath */
+.ng-boxes { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:14px; }
+.ng-box { display:grid; gap:0; margin:0; padding:0; text-align:left; overflow:hidden; border-radius:10px;
+  border:1px solid var(--line); background:color-mix(in srgb, var(--ink) 4%, transparent); }
+.ng-box img { display:block; width:100%; aspect-ratio:1; object-fit:cover; filter:grayscale(.55) brightness(.7);
+  transition:filter .15s ease; }
+.ng-box:hover img, .ng-box.on img { filter:none; }
+.ng-box-text { display:grid; gap:2px; padding:8px 10px; }
+.ng-box-text small { color:var(--muted); font-size:12px; }
+.ng-box.on { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow:inset 0 0 0 1px var(--accent); }
+.ng-box.later { opacity:.7; }
+.ng-card { border-radius:12px; border:1px solid var(--line); background:var(--panel); padding:12px; box-shadow:0 8px 22px rgba(0,0,0,.12); }
+.ng-title { font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); margin-bottom:8px; }
+.ng-note { margin:8px 0 0; font-size:12px; color:var(--muted); }
+.ng input[type=radio], .ng input[type=checkbox] { position:absolute; opacity:0; pointer-events:none; }
+.ng-seg { display:grid; grid-template-columns:repeat(var(--n), 1fr); border-radius:12px; overflow:hidden; border:1px solid var(--line); }
+.ng-seg label { display:flex; align-items:center; justify-content:center; padding:10px 8px; text-transform:uppercase; letter-spacing:.06em; font-size:12px; cursor:pointer; user-select:none; border-right:1px solid var(--line); background:color-mix(in srgb, var(--ink) 4%, transparent); }
+.ng-seg label:last-of-type { border-right:0; }
+.ng-seg label:hover { background:color-mix(in srgb, var(--ink) 9%, transparent); }
+.ng-seg input:checked + label { background:var(--accent); color:#fff; }
+.ng-seg input:focus-visible + label, .ng-tiles input:focus-visible + label { outline:2px solid var(--accent); outline-offset:-2px; }
+.ng-tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:8px; }
+.ng-tiles label { display:block; padding:0; overflow:hidden; border-radius:10px; border:1px solid var(--line); cursor:pointer; user-select:none; background:color-mix(in srgb, var(--ink) 4%, transparent); }
+.ng-tiles label img { display:block; width:100%; aspect-ratio:1; object-fit:cover;
+  filter:grayscale(.55) brightness(.7); transition:filter .15s ease; }
+/* an expansion with no cover yet keeps the plain text tile */
+.ng-tiles label.no-art .ng-tile-text { padding-top:12px; }
+.ng-tiles input:checked + label img, .ng-tiles label:hover img { filter:none; }
+.ng-tile-text { display:grid; gap:2px; padding:10px 12px; }
+.ng-tiles input:disabled + label { cursor:default; }
+.ng-tiles label small { color:var(--muted); font-size:12px; }
+.ng-tiles label:hover { background:color-mix(in srgb, var(--ink) 9%, transparent); }
+.ng-tiles input:checked + label { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 16%, transparent); box-shadow:inset 0 0 0 1px var(--accent); }
+.ng-seed { display:flex; gap:8px; }
+.ng-text { flex:1; min-width:0; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:color-mix(in srgb, var(--ink) 4%, transparent); color:inherit; font:inherit; }
+.ng-actions { display:grid; }
+.ng-actions .primary { width:100%; padding:12px 18px; }
+.field > .name { font-weight:600; margin-bottom:6px; }
+.opts { display:flex; flex-wrap:wrap; gap:8px; }
+.opt { display:flex; gap:6px; align-items:center; border:1px solid var(--line); border-radius:6px; padding:6px 10px; background:var(--panel); }
+.opt small { color:var(--muted); }
+.cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:12px; }
+.sc-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:14px; }
+.sc-tile { position:relative; }
+.sc-pick { display:grid; gap:2px; width:100%; margin:0; padding:0 0 10px; text-align:left; border-radius:12px; overflow:hidden; border:1px solid var(--line); background:var(--panel); box-shadow:0 8px 22px rgba(0,0,0,.18); transition:transform .15s ease, border-color .15s ease; }
+.sc-pick img { display:block; width:100%; aspect-ratio:1503 / 1200; object-fit:cover; margin-bottom:8px; }
+.sc-pick .sc-name { font-weight:700; font-size:15px; padding:0 12px; }
+.sc-pick .sc-exp { color:var(--muted); font-size:12px; padding:0 12px; }
+.sc-pick:not([disabled]):hover { border-color:var(--accent); transform:translateY(-2px); }
+.sc-tile.waiting .sc-pick { cursor:not-allowed; }
+.sc-tile.waiting img { filter:grayscale(1) brightness(.6); }
+.sc-tile .label-zoom { top:8px; right:8px; }
+.scenario-card { text-align:left; padding:14px; margin:0; border-radius:8px; background:var(--panel); min-height:92px; }
+.scenario-card .title { font-weight:700; font-size:16px; }
+.scenario-card .exp { color:var(--muted); font-size:12px; margin-top:4px; }
+.waiting { color:var(--muted); }
+.scenario-card[disabled] { opacity:.5; cursor:not-allowed; border-style:dashed; }
+.scenario-card[disabled]:hover { border-color:var(--line); }
+input { font:inherit; width:70px; padding:3px 6px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); }
+details pre { max-height:400px; overflow:auto; font-size:11px; }
+
+/* ---- additions for the multiplayer app (not in the dev viewer) ---- */
+.home-link { color:inherit; text-decoration:none; margin-right:6px; }
+.home-link:hover { color:var(--accent); }
+.undo-btn[disabled] { cursor:default; }
+.table-actions button[disabled], .seat button[disabled], .table-buttons button[disabled], .ng-actions button[disabled], .sc-pick[disabled] { opacity:.5; cursor:not-allowed; }
+.pill-seats { max-width:32ch; overflow:hidden; text-overflow:ellipsis; color:var(--muted); }
+.q-user { font-weight:400; color:var(--muted); }
+.q-waiting { margin:2px 0 6px; font-style:italic; }
+.pa-user { font-size:12px; color:var(--muted); }
+/* the lobby: a heading and a start button over two lists of tables */
+.lobby-hero { display:flex; align-items:center; gap:16px; margin:0 0 20px; flex-wrap:wrap; }
+.lobby-hero h2 { margin:0; font-size:28px; letter-spacing:-.01em; }
+.lobby-start { margin:0 0 0 auto; padding:12px 22px; font-size:15px; }
+.lobby-section { margin-bottom:16px; padding:14px 16px; }
+.lobby-new { margin-bottom:16px; }
+.table-list { list-style:none; margin:0; padding:0; display:grid; gap:10px; }
+.table-row { display:flex; gap:14px; align-items:center; justify-content:space-between; flex-wrap:wrap; padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:var(--bg); }
+.table-row:hover { border-color:color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.table-art { width:104px; aspect-ratio:1503 / 1200; object-fit:cover; border-radius:8px; flex:none; }
+.table-info { flex:1 1 220px; min-width:0; display:grid; gap:3px; }
+.table-name { font-weight:700; font-size:17px; color:inherit; }
+.table-meta { font-size:13px; color:var(--muted); }
+.table-buttons { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.table-buttons button { margin:0; }
+.seat-list { list-style:none; margin:0; padding:0; display:grid; gap:6px; }
+.seat { display:grid; grid-template-columns:70px minmax(0,1fr) auto; gap:10px; align-items:center; padding:6px 10px; border:1px solid var(--line); border-radius:8px; }
+.seat.mine { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
+.seat .seat-no { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
+.seat button { margin:0; }
+.table-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.table-actions button { margin:0; padding:10px 18px; }
+.notice { display:flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:color-mix(in srgb, var(--doom) 10%, var(--panel)); }
+.notice .log-close { margin-left:auto; }
+.signed-out .sign-in { text-decoration:none; }
+.button-like { display:inline-block; font:inherit; border:1px solid var(--line); padding:10px 18px; border-radius:6px; }
+.button-like.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+.lobby-section h2 { font-size:15px; text-transform:none; letter-spacing:0; color:var(--ink); margin-bottom:10px; }

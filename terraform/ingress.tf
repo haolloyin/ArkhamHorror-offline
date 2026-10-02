@@ -2,6 +2,8 @@ locals {
   tls_domains = length(var.tls_domains) > 0 ? var.tls_domains : [
     var.domain,
     "www.${var.domain}",
+    # third edition frontend; nginx in each pod routes it by name (prod.nginxconf)
+    "3ed.${var.domain}",
   ]
 
   tls_annotations = var.tls_enabled ? {
@@ -34,7 +36,10 @@ locals {
 resource "digitalocean_certificate" "app" {
   count = var.tls_enabled ? 1 : 0
 
-  name    = "${local.name}-cert"
+  # A domain change replaces the cert, and create_before_destroy makes the new
+  # one while the old still exists; DO requires unique names, so the name
+  # follows the domain list.
+  name    = "${local.name}-cert-${substr(sha1(join(",", local.tls_domains)), 0, 8)}"
   type    = "lets_encrypt"
   domains = local.tls_domains
 

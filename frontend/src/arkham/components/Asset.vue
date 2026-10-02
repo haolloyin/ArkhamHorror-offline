@@ -3,6 +3,7 @@ import { computed, watch, ref } from 'vue';
 import { Dropdown } from 'floating-vue';
 import useHighlighter from '@/composable/useHighlighter';
 import { useDebug } from '@/arkham/debug';
+import { CARD_FLIGHT_ATTR, useCardFlight } from '@/arkham/cardFlight'
 import { TokenType } from '@/arkham/types/Token';
 import { imgsrc } from '@/arkham/helpers';
 import { cardArt, cardImage } from '@/arkham/cardImages';
@@ -28,6 +29,7 @@ import MissingCardBadge from '@/arkham/components/MissingCardBadge.vue';
 import Story from '@/arkham/components/Story.vue';
 import { useCardFlip } from '@/arkham/composables/useCardFlip';
 import SealedChaosTokens from '@/arkham/components/SealedChaosTokens.vue';
+import { assetTarget, cardDropHandlers } from '@/arkham/debugCardDrop';
 import * as Arkham from '@/arkham/types/Asset';
 import { useSettings } from '@/stores/settings';
 import { isManifestedSpiritAsset } from '@/arkham/spiritVisuals';
@@ -44,6 +46,9 @@ const props = withDefaults(defineProps<{
   // A target label on this asset means discarding it to free that slot
   discardToMakeRoom?: boolean
 }>(), { atLocation: false, pending: false, discardToMakeRoom: false })
+
+// Where a revealed asset lands when the revelation overlay hands it over.
+const cardFlightStyle = useCardFlight(() => props.asset.cardId)
 
 const debugging = ref(false)
 const frame = ref(null)
@@ -234,6 +239,17 @@ const cardsUnderneath = computed(() => props.asset.cardsUnderneath)
 const keys = computed(() => props.asset.keys)
 
 const debug = useDebug()
+// Debug: a chaos token dragged from the bag seals here; a token from the debug
+// token panel is placed here.
+// A resource dropped here becomes this card's own use type when it prints one.
+const printedUseType = computed(
+  () => cardStore.cards.find((def) => def.cardCode === cardCode.value)?.uses?.type ?? null
+)
+const cardDrop = cardDropHandlers(
+  props.game.id,
+  () => assetTarget(props.asset.id),
+  () => printedUseType.value
+)
 const settings = useSettings()
 const dragging = ref(false)
 
@@ -271,6 +287,7 @@ const forcedTokenItems = computed<TokenPoolItem[]>(() => [
   {
     key: 'health',
     type: 'health',
+    removeToken: 'Damage',
     amount: damage.value || 0,
     force: !isSpirit.value && (cardCode.value == 'c07189' || (props.asset.health !== null || (damage.value || 0) > 0)),
     class: { 'health--can-interact': healthAction.value !== -1 },
@@ -278,6 +295,7 @@ const forcedTokenItems = computed<TokenPoolItem[]>(() => [
   {
     key: 'sanity',
     type: 'sanity',
+    removeToken: 'Horror',
     amount: horror.value || 0,
     force: !isSpirit.value && (cardCode.value == 'c07189' || (props.asset.sanity !== null || (horror.value || 0) > 0)),
     class: { 'sanity--can-interact': sanityAction.value !== -1 },
@@ -370,9 +388,15 @@ function startDrag(event: DragEvent) {
 </script>
 
 <template>
-  <div class="asset--outer">
+  <div class="asset--outer" v-bind="cardDrop">
     <Story v-if="assetStory && !flipping" :story="assetStory" :game="game" :playerId="playerId" @choose="choose"/>
-    <div v-else class="asset" :data-index="asset.cardId">
+    <div
+      v-else
+      class="asset"
+      :data-index="asset.cardId"
+      :[CARD_FLIGHT_ATTR]="asset.cardId"
+      :style="cardFlightStyle"
+    >
       <div class="card-frame" ref="frame">
         <div v-if="asset.marketDeck" class="market-deck">
           <img
@@ -484,7 +508,12 @@ function startDrag(event: DragEvent) {
           <div class="keys" v-if="keys.length > 0">
             <KeyToken v-for="k in keys" :key="keyToId(k)" :keyToken="k" :game="game" :playerId="playerId" @choose="choose" />
           </div>
-          <TokenPool :tokens="assetTokens" :extra-items="forcedTokenItems" @choose="chooseTokenPoolItem" />
+          <TokenPool
+            :tokens="assetTokens"
+            :extra-items="forcedTokenItems"
+            :target="assetTarget(asset.id)"
+            @choose="chooseTokenPoolItem"
+          />
           <SealedChaosTokens
             :tokens="asset.sealedChaosTokens"
             :game="game"
@@ -540,7 +569,7 @@ function startDrag(event: DragEvent) {
         :attached="true"
       />
       <template v-if="debug.active">
-        <button @click="debugging = true">{{ $t('enemy.debug') }}</button>
+        <button class="debug-open" @click="debugging = true">{{ $t('enemy.debug') }}</button>
       </template>
       <template v-if="isTheBeyond">
         <div v-if="(asset.assets?.length ?? 0) > 0 || (asset.enemies?.length ?? 0) > 0" class="spirit-manifest-row">

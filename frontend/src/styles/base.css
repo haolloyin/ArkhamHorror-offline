@@ -26,12 +26,57 @@ body {
   flex-direction: column;
 }
 
+/* The baseline look for a button with no component styling of its own. Components
+ * that dress their own buttons (Question.vue, the debug panels, ScenarioDebug) are
+ * scoped, so they outrank this and are unaffected.
+ *
+ * Flat and neutral: a near-opaque dark fill and a hairline border, no inset highlight
+ * or drop shadow. The fill is nearly opaque on purpose -- these sit over card art as
+ * often as over a panel (the +/- doom buttons on an agenda), and a translucent one
+ * disappears into anything busy. --select means "the game wants a choice from you", so
+ * it appears only on the focus ring.
+ */
 button {
-  padding: 0px 5px;
-  font-family: Arial;
+  /* Tight vertically, roomy horizontally: these sit in dense rows and stacks, so
+     height is the expensive axis. */
+  padding: 1px 11px;
+  /* The platform UI face renders crisper at this size than the body font: none of
+     the bundled faces is a UI sans, they are all display/flavour faces. */
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: min(12px, 2vw);
-  transition: transform 80ms ease;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text);
+  background: rgba(22, 25, 30, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 6px;
+  cursor: pointer;
+  transition:
+    transform 80ms ease,
+    background-color 120ms ease,
+    border-color 120ms ease;
   i { display: contents; font-style: italic; }
+}
+
+button:hover:not(:disabled) {
+  background: rgba(44, 49, 58, 0.94);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+/* The press is the scale transform below; dropping the fill back is enough alongside
+   it without an inset shadow. */
+button:active:not(:disabled) {
+  background: rgba(12, 14, 18, 0.94);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
 }
 
 /* The press shrinks the button under the pointer, so a click aimed at its outer
@@ -94,4 +139,36 @@ footer {
 ::view-transition-old(main-header),
 ::view-transition-new(main-header) {
   mix-blend-mode: normal;
+}
+
+/* A card's flight from a full-screen reveal to wherever it landed: a drawn card
+   into your hand, a revealed encounter card into the threat area, onto a
+   location, or into play. The named group
+ * is the card morphing between the two positions; the old/new snapshots must not
+ * cross-fade through each other, or a 300px card dissolving into a 90px one
+ * reads as a smear rather than a card being put down.
+ *
+ * Selected by `view-transition-class` so one rule covers every card in a draw
+ * without the stylesheet knowing their ids. Browsers without class support fall
+ * back to the generic `::view-transition-group(*)` timing in components.css. */
+::view-transition-group(.card-flight) {
+  animation-duration: 460ms;
+  animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+::view-transition-old(.card-flight),
+::view-transition-new(.card-flight) {
+  animation-duration: 460ms;
+  animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+  mix-blend-mode: normal;
+}
+
+/* Game.vue skips the transition entirely under reduced motion, so this only
+ * catches a transition already in flight when the preference flips. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(.card-flight),
+  ::view-transition-old(.card-flight),
+  ::view-transition-new(.card-flight) {
+    animation-duration: 0.01s;
+  }
 }

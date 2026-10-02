@@ -232,6 +232,26 @@ sylvesterBlake =
       , cdEvade = evade 3
       , cdHealth = healthPerInvestigator 4
       , cdCardTraits = setFromList [Humanoid, Performer, Elite]
+      , cdKeywords = setFromList [Keyword.Massive, Keyword.Retaliate, Keyword.Alert]
+      }
+
+theBlackGoat :: CardDef
+theBlackGoat =
+  doubleSided ":circus-ex-mortis:118"
+    $ ( enemy
+          ":circus-ex-mortis:118b"
+          ("The Black Goat" <:> "Consort of Shub-Niggurath")
+          Set.PiperAtTheGatesOfDawn
+          1
+      )
+      { cdHealthDamage = healthDamage 2
+      , cdSanityDamage = sanityDamage 1
+      , cdFight = fight 4
+      , cdEvade = evade 4
+      , cdHealth = healthPerInvestigator 6
+      , cdCardTraits = setFromList [Monster, Abomination, Avatar, Elite]
+      , cdKeywords = singleton Keyword.Massive
+      , cdVictoryPoints = Just 2
       }
 
 -- bacchanalia
@@ -244,6 +264,8 @@ goatspawnCorruptor =
     , cdEvade = evade 4
     , cdHealth = healthPerInvestigator 6
     , cdCardTraits = setFromList [Humanoid, Monster, Elite]
+    , -- Victory 0: it belongs in the victory display, but is worth no experience.
+      cdVictoryPoints = Just 0
     }
 
 brashLothario :: CardDef
@@ -254,6 +276,7 @@ brashLothario =
     , cdEvade = evade 3
     , cdHealth = health 3
     , cdCardTraits = setFromList [Humanoid, Cultist]
+    , cdKeywords = setFromList [Keyword.Aloof, Keyword.Hunter]
     }
 
 partyAnimal :: CardDef
@@ -264,6 +287,7 @@ partyAnimal =
     , cdEvade = evade 2
     , cdHealth = health 4
     , cdCardTraits = setFromList [Humanoid, Cultist]
+    , cdKeywords = setFromList [Keyword.Aloof, Keyword.Hunter]
     }
 
 sadisticSocialite :: CardDef
@@ -274,6 +298,7 @@ sadisticSocialite =
     , cdEvade = evade 2
     , cdHealth = health 3
     , cdCardTraits = setFromList [Humanoid, Cultist]
+    , cdKeywords = setFromList [Keyword.Aloof, Keyword.Hunter]
     }
 
 struttingPeacock :: CardDef
@@ -284,6 +309,7 @@ struttingPeacock =
     , cdEvade = evade 4
     , cdHealth = health 3
     , cdCardTraits = setFromList [Humanoid, Cultist]
+    , cdKeywords = setFromList [Keyword.Aloof, Keyword.Hunter]
     }
 
 -- red_sunrise

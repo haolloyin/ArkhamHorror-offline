@@ -61,6 +61,8 @@ import Arkham.Game.State
 import Arkham.Game.Utils
 import Arkham.GameEnv
 import Arkham.Helpers
+import Arkham.Helpers.Ability (abilityRidesAlong)
+import Arkham.Helpers.ChaosBag (getBagChaosTokens)
 import Arkham.Helpers.Criteria
 import Arkham.Helpers.Customization
 import Arkham.Helpers.Enemy (getModifiedKeywords, spawnAt)
@@ -264,6 +266,24 @@ resolvingEventId = go
     Priority x -> go (x : ms)
     Retain x -> go (x : ms)
     _ -> go ms
+
+{- | Whether a seat's window ask consists solely of non-blocking reactions (plus the Skip
+Triggers button). Such an ask is dropped unless some other seat is stopping the window
+anyway -- see the @WindowAsk@ handler. A question with no ability choices at all is not
+"only non-blocking": it has something real to offer.
+-}
+questionIsOnlyNonBlocking :: HasGame m => Question Message -> m Bool
+questionIsOnlyNonBlocking q = case q of
+  ChooseOne cs -> go cs
+  WindowChooseOne cs -> go cs
+  PlayerWindowChooseOne cs -> go cs
+  _ -> pure False
+ where
+  go cs = if null [() | AbilityLabel {} <- cs] then pure False else allM ok cs
+  ok = \case
+    AbilityLabel {investigatorId = i, ability = ab, windows = ws} -> abilityRidesAlong i ws ab
+    SkipTriggersButton {} -> pure True
+    _ -> pure False
 
 runGameMessage :: Runner Game
 runGameMessage msg g = case msg of
@@ -1391,6 +1411,9 @@ runGameMessage msg g = case msg of
               attrs
                 { enemyTokens = enemyTokens oldAttrs
                 , enemyPlacement = enemyPlacement oldAttrs
+                , -- Swap is the same physical card flipped over, so an enemy that
+                  -- is its own location keeps its grid cell.
+                  enemyAsSelfLocation = enemyAsSelfLocation oldAttrs
                 , enemyAssignedDamage = enemyAssignedDamage oldAttrs
                 , enemyExhausted = enemyExhausted oldAttrs
                 , enemyMovedFromHunterKeyword = enemyMovedFromHunterKeyword oldAttrs
@@ -1951,12 +1974,22 @@ runGameMessage msg g = case msg of
       WindowAsk ws' _ _ -> ws == ws'
       _ -> False
 
+    -- A non-blocking reaction rides along with any prompt this window raises but never
+    -- creates one. Only here is that decidable: `runWindow` runs per seat and cannot see
+    -- whether another seat is stopping the window, so every seat pushes its ask and the
+    -- purely non-blocking ones are dropped once the whole set is in hand. With nothing
+    -- blocking anywhere the window raises no prompt at all -- and must NOT re-check, or
+    -- the same set would be rebuilt and dropped forever. #5784
+    let allAsks = (pid, q) : [(pid', q') | WindowAsk _ pid' q' <- others]
+    anyBlocking <- anyM (fmap not . questionIsOnlyNonBlocking . snd) allAsks
+    let kept = if anyBlocking then allAsks else []
     pushAll
-      $ ( if notNull others
-            then AskMap $ Map.fromList $ (pid, q) : [(pid', q') | WindowAsk _ pid' q' <- others]
-            else Ask pid q
-        )
-      : [Do (CheckWindows ws) | notNull ws]
+      $ [ case kept of
+            [(pid', q')] -> Ask pid' q'
+            _ -> AskMap (Map.fromList kept)
+        | notNull kept
+        ]
+      <> [Do (CheckWindows ws) | notNull ws, notNull kept]
 
     pure g
   PlayCard iid card mtarget payment windows' False -> do
@@ -2802,7 +2835,12 @@ runGameMessage msg g = case msg of
     pure $ g & phaseL .~ InvestigationPhase & undoPhaseStepL ?~ (gameScenarioSteps g + 1)
   BeginTurn x -> do
     player <- getPlayer x
-    pushM $ checkWindows [mkWhen (Window.TurnBegins x), mkAfter (Window.TurnBegins x)]
+    -- Two checks, not one batch: a `When your turn begins` reaction is a different timing
+    -- point from an `After your turn begins` Forced, and `runWindow`'s forced branch would
+    -- otherwise resolve the Forced first and offer the reaction only afterwards. #5784
+    whenWindow <- checkWindows [mkWhen (Window.TurnBegins x)]
+    afterWindow <- checkWindows [mkAfter (Window.TurnBegins x)]
+    pushAll [whenWindow, afterWindow]
     pure
       $ g
       & (activeInvestigatorIdL .~ x)
@@ -2903,6 +2941,11 @@ runGameMessage msg g = case msg of
   DebugAddToEncounterDeck deck cardId -> do
     card <- getCard cardId
     push $ ShuffleCardsIntoDeck deck [card]
+    pure g
+  DebugSealChaosToken tokenId target -> do
+    tokens <- getBagChaosTokens
+    for_ (find ((== tokenId) . (.id)) tokens) \token ->
+      pushAll [SealChaosToken token, SealedChaosToken token Nothing target]
     pure g
   DebugMoveCard cardId destination -> do
     card <- getCard cardId

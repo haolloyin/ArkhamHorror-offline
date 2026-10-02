@@ -40,7 +40,11 @@ import AbilityButton from '@/arkham/components/AbilityButton.vue'
 import Act from '@/arkham/components/Act.vue';
 import CardView from '@/arkham/components/Card.vue';
 import Draggable from '@/components/Draggable.vue';
-import ChaosBag from '@/arkham/components/ChaosBag.vue';
+import ChaosBag from '@/arkham/components/ChaosBag.vue'
+import DebugCardDropHint from '@/arkham/components/DebugCardDropHint.vue';
+import DebugTokenPanel from '@/arkham/components/DebugTokenPanel.vue';
+import { cardDropHandlers, scenarioTarget } from '@/arkham/debugCardDrop';
+import { cardDropInFlight } from '@/arkham/debugCardDrop'
 import ChaosBagWindow from '@/arkham/components/ChaosBagWindow.vue';
 import Agenda from '@/arkham/components/Agenda.vue';
 import Investigator from '@/arkham/components/Investigator.vue';
@@ -417,6 +421,14 @@ const hasAnyOffset = computed(() =>
 // "into" the grid (e.g. a bottom-row cell nudged up) shouldn't grow padding.
 const layoutPadding = ref({ left: 0, right: 0, top: 0, bottom: 0 })
 
+// A card placed *between* two locations (Broken Couplings) is drawn centred on
+// the connection, so the default gutter leaves it sitting on top of both cards
+// and everything they hold. Widen every gutter while such a card is in play --
+// it is 70px in grid coordinates, so this clears it with room on either side.
+const gridGap = computed(() =>
+  Object.values(props.game.treacheries).some(t => t.placement.tag === 'BetweenLocations') ? 110 : 20
+)
+
 async function updateLayoutPadding() {
   await nextTick()
   const grid = (locationMap.value as any)?.$el ?? locationMap.value as HTMLElement | null
@@ -433,8 +445,8 @@ async function updateLayoutPadding() {
     const userOffset = pendingOffsets.value[id] ?? locationOffsets.value[id] ?? { x: 0, y: 0 }
     const gridOffset = locationGridOffsets.value[id] ?? { column: 0, row: 0 }
     allOffsets[id] = {
-      x: userOffset.x + gridOffset.column * (cellDimensions.value.w + 20),
-      y: userOffset.y + gridOffset.row * (cellDimensions.value.h + 20),
+      x: userOffset.x + gridOffset.column * (cellDimensions.value.w + gridGap.value),
+      y: userOffset.y + gridOffset.row * (cellDimensions.value.h + gridGap.value),
     }
   }
 
@@ -492,8 +504,8 @@ function locationOffsetStyle(location: { id: string }) {
   const userOffset = effectiveOffset(location.id)
   const gridOffset = locationGridOffsets.value[location.id] ?? { column: 0, row: 0 }
   const canonical = {
-    x: userOffset.x + gridOffset.column * (cellDimensions.value.w + 20),
-    y: userOffset.y + gridOffset.row * (cellDimensions.value.h + 20),
+    x: userOffset.x + gridOffset.column * (cellDimensions.value.w + gridGap.value),
+    y: userOffset.y + gridOffset.row * (cellDimensions.value.h + gridGap.value),
   }
   // Apply the user's current rotation so the offset moves with the rotated
   // layout instead of staying in absolute screen space.
@@ -989,7 +1001,7 @@ addEntry({
   id: "viewChaosBag",
   icon: QuestionMarkCircleIcon,
   content: t('gameBar.viewChaosBag'),
-  shortcut: "c",
+  binding: "viewChaosBag",
   nested: 'view',
   action: () => showChaosBag.value = !showChaosBag.value
 })
@@ -1015,7 +1027,7 @@ addEntry({
   id: "rotateLayout",
   icon: ArrowPathIcon,
   content: t('gameBar.rotateLayout'),
-  shortcut: ">",
+  binding: "rotateLayout",
   nested: 'view',
   action: () => {
     rotationSteps.value = (rotationSteps.value + 1) % 4
@@ -1026,7 +1038,7 @@ addEntry({
   id: "rotateLayoutCounterClockwise",
   icon: ArrowPathIcon,
   content: t('gameBar.rotateLayout'),
-  shortcut: "<",
+  binding: "rotateLayoutCcw",
   nested: 'hidden',
   action: () => {
     rotationSteps.value = (rotationSteps.value - 1) % 4
@@ -1320,7 +1332,7 @@ const locationStyles = computed(() => {
   const mobileEdgePadding = isMobile.value ? 140 : 0
   return {
     display: 'grid',
-    gap: '20px',
+    gap: `${gridGap.value}px`,
     'grid-template-areas': gridAreas.value ?? '',
     gridAutoColumns: 'max-content',
     gridAutoRows: 'max-content',
@@ -1488,6 +1500,12 @@ const encounterDiscardAccepts = computed(() =>
 
 function onDragOverEncounterDiscard(event: DragEvent) {
   if (!debug.active) return
+  // A chaos token seals onto a card in play; a deck or discard is not a seal
+  // target, so refuse it outright rather than advertising a card move.
+  if (cardDropInFlight()) {
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'
+    return
+  }
   encounterDiscardDraggedOver.value = true
   if (event.dataTransfer) {
     event.dataTransfer.dropEffect = encounterDiscardAccepts.value === false ? 'none' : 'copy'
@@ -1665,6 +1683,9 @@ const showCthulhuBoard = computed(() => props.scenario.id === 'c11688a')
 const spiritualDisturbance = computed(() =>
   props.scenario.id === 'c90054' ? props.scenario.tokens[TokenType.Horror] : undefined)
 const gameOver = computed(() => props.game.gameState.tag === "IsOver")
+// Debug: a token from the debug token panel is placed on the scenario reference card
+// (Piper's skull counts resources on it). It has no sealed pool, so it refuses seals.
+const scenarioCardDrop = cardDropHandlers(props.game.id, () => scenarioTarget)
 
 // Reactive
 const showCards = reactive<RefWrapper<any>>({ ref: noCards })
@@ -1694,7 +1715,7 @@ watchEffect(() => {
       icon: EyeIcon,
       content: t('gameBar.showOutOfPlay'),
       nested: 'view',
-      shortcut: 'o',
+      binding: 'showOutOfPlay',
       action: () => showOutOfPlay.value = !showOutOfPlay.value
     })
   }
@@ -2206,6 +2227,7 @@ async function addChaosToken(face: any){
         </div>
         <button v-if="!forcedShowOutOfPlay" class="close button" @click="showOutOfPlay = false">{{$t('close')}}</button>
       </Draggable>
+      <DebugCardDropHint />
       <ChaosBagWindow v-if="showChaosBag" :game="game" @close="showChaosBag = false">
         <ChaosBag :game="game" :skillTest="null" :chaosBag="scenario.chaosBag" :playerId="playerId" @choose="choose" />
         <div v-if="debug.active" class="buttons buttons-row">
@@ -2613,7 +2635,7 @@ async function addChaosToken(face: any){
         <div class="scenario-guide">
           <div class="scenario-guide-main">
             <div class="scenario-guide-card-wrapper">
-              <div class="scenario-guide-card">
+              <div class="scenario-guide-card" v-bind="scenarioCardDrop">
                 <img
                   class="card"
                   :src="scenarioGuide"
@@ -2866,6 +2888,7 @@ async function addChaosToken(face: any){
           :class="locationsFullscreen ? 'zoom-control--fullscreen' : 'zoom-control--docked'"
           @dblclick.stop
         >
+          <DebugTokenPanel v-if="debug.active" :game-id="game.id" />
           <button class="zoom-btn" @pointerdown.stop="startHold(decreaseZoom)" @pointerup="stopHold" @pointerleave="stopHold">−</button>
           <input v-model.number="locationsZoom" type="range" min="0.25" max="6" step="0.05" class="zoom-slider" />
           <button class="zoom-btn" @pointerdown.stop="startHold(increaseZoom)" @pointerup="stopHold" @pointerleave="stopHold">+</button>
@@ -3039,6 +3062,7 @@ async function addChaosToken(face: any){
           @choose="choose"
         >
           <div v-if="!splitView" class="zoom-control">
+            <DebugTokenPanel v-if="debug.active" :game-id="game.id" />
             <button class="zoom-btn" @pointerdown.stop="startHold(decreaseZoom)" @pointerup="stopHold" @pointerleave="stopHold">−</button>
             <input v-model.number="locationsZoom" type="range" min="0.25" max="6" step="0.05" class="zoom-slider" />
             <button class="zoom-btn" @pointerdown.stop="startHold(increaseZoom)" @pointerup="stopHold" @pointerleave="stopHold">+</button>
@@ -3385,7 +3409,7 @@ async function addChaosToken(face: any){
   grid-area: 1 / 1;
   justify-self: center;
   position: relative;
-  z-index: 1;
+  z-index: var(--z-board-locations);
   transition: transform 0.2s ease;
 }
 
@@ -4374,7 +4398,7 @@ async function addChaosToken(face: any){
 }
 
 .location-cell--can-interact {
-  z-index: var(--z-index-20);
+  z-index: var(--z-board-location-active);
 }
 
 /* While a swarm is fanned open (hovering the swarm, or its abilities menu is open),
@@ -4383,7 +4407,7 @@ async function addChaosToken(face: any){
 .location-cell:has(.enemy--outer:hover),
 .location-cell:has(.swarm:hover),
 .location-cell:has(.enemy--swarming.showAbilities) {
-  z-index: var(--z-index-30);
+  z-index: var(--z-board-location-raised);
 }
 
 .location-wrapper {

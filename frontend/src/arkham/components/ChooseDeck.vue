@@ -4,7 +4,7 @@ import { computed, ref, inject, watch, nextTick } from 'vue'
 import type { Game } from '@/arkham/types/Game';
 import { fetchDecks } from '@/arkham/api'
 import { cardImg, imgsrc, type InvestigatorClass } from '@/arkham/helpers'
-import { stripCardCodePrefix } from '@/arkham/customCards'
+import { bareCardCode, customCardDef, isCustomCardCode, stripCardCodePrefix } from '@/arkham/customCards'
 import { overlayIsEmpty } from '@/arkham/deckOverlay'
 import { hasLibraryCards, loadLibrary } from '@/arkham/customCardLibrary'
 import { portraitImage as portraitImageHelper } from '@/arkham/cardImages'
@@ -17,13 +17,16 @@ import Question from '@/arkham/components/Question.vue';
 import OverlayEditor, { type DeckOverlay } from '@/arkham/components/debug/OverlayEditor.vue';
 import { storeToRefs } from 'pinia';
 import { useSettings } from '@/stores/settings';
+import { useDbCardStore } from '@/stores/dbCards';
 import UltimatumsAndBoonsQuestion from '@/arkham/components/UltimatumsAndBoonsQuestion.vue';
+import LogIcons from '@/arkham/components/LogIcons.vue'
 import NewDeck from '@/arkham/components/NewDeck.vue'
 import DeckToolbar from '@/arkham/components/DeckToolbar.vue'
 import { useI18n } from 'vue-i18n'
 import { handleEmbeddedI18n } from '@/arkham/i18n'
 
 const { t } = useI18n()
+const dbCards = useDbCardStore()
 
 const decks = ref<Arkham.Deck[]>([])
 const ready = ref(false)
@@ -43,7 +46,7 @@ const validOnly = ref(false)
 function deckPortraitCode(deck: Arkham.Deck): string {
   // The overlay edited here applies to this game only, but the row should still
   // show who you are about to play.
-  if (deck.id === deckId.value && overlay.value?.investigator) {
+  if (deck.id === overlayFor.value && overlay.value?.investigator) {
     return stripCardCodePrefix(overlay.value.investigator)
   }
   return deckInvestigatorCode(Arkham.deckPlayList(deck))
@@ -235,8 +238,9 @@ async function addDeck(d: Arkham.Deck) {
   // back into the existing-deck list to hunt for what they just made (a filter or search
   // could even be hiding it). Reset the pool state up front instead of waiting on the
   // currentDeckList watcher -- it flushes after this function, so a pool left selected on a
-  // PREVIOUS deck would otherwise be applied to this one.
+  // PREVIOUS deck would otherwise be applied to this one. Same for the overlay.
   resetWeaknessPoolFromDeck()
+  resetOverlayFromDeck()
   await choose()
 }
 
@@ -258,6 +262,43 @@ function deckUsedThisCampaign(deckList: SelectableDeckList): boolean {
   return usedInvestigators.value.includes(deckInvestigatorCode(deckList))
 }
 
+/* Who an investigator is, rather than which printing of them you own: a
+ * parallel front and the original are the same person and cannot both sit at
+ * the table. Game state serialises codes with a leading 'c' while a decklist
+ * carries the bare code, so neither side can be compared raw -- both resolve
+ * through the card store to a name instead. */
+function investigatorIdentity(cardCode: string): string {
+  if (isCustomCardCode(cardCode)) {
+    return (customCardDef(cardCode)?.name?.title ?? bareCardCode(cardCode)).toLowerCase()
+  }
+  const code = bareCardCode(cardCode)
+  return (dbCards.getDbCard(code)?.real_name ?? code).toLowerCase()
+}
+
+const seatedIdentities = computed(
+  () => new Set(Object.values(props.game.investigators).map((i) => investigatorIdentity(i.cardCode)))
+)
+
+const otherScenarioIdentities = computed(
+  () => new Set(Object.values(props.game.otherInvestigators).map((i) => investigatorIdentity(i.id)))
+)
+
+function deckInvestigatorTaken(deckList: SelectableDeckList): boolean {
+  return seatedIdentities.value.has(investigatorIdentity(deckInvestigatorCode(deckList)))
+}
+
+// Anything the table cannot seat: the row dims and its "use" button is dead,
+// rather than letting the pick through to an error.
+function deckUnavailable(deckList: SelectableDeckList): boolean {
+  return deckUsedThisCampaign(deckList) || deckInvestigatorTaken(deckList)
+}
+
+function deckUnavailableReason(deckList: SelectableDeckList): string | undefined {
+  if (deckUsedThisCampaign(deckList)) return t('chooseDeck.alreadyPlayedThisCampaign')
+  if (deckInvestigatorTaken(deckList)) return t('chooseDeck.investigatorAlreadyChosen')
+  return undefined
+}
+
 function deckError(deckList: SelectableDeckList): string | null {
   if (deckUsedThisCampaign(deckList)) {
     return t('chooseDeck.alreadyPlayedThisCampaign')
@@ -272,21 +313,12 @@ function deckError(deckList: SelectableDeckList): string | null {
   }, t, { isLastPlayer: isLastPlayerChoosing.value })
   if (restrictionError) return restrictionError
 
-  const investigator = deckInvestigatorCode(deckList)
-  const alreadyTaken = Object.values(props.game.investigators).some((i) => {
-    return i.id === investigator
-  })
-
-  if (alreadyTaken) {
-    return 'This investigator is already taken'
+  if (deckInvestigatorTaken(deckList)) {
+    return t('chooseDeck.investigatorAlreadyChosen')
   }
 
-  const inOtherScenario = Object.values(props.game.otherInvestigators).some((i) => {
-    return i.id === investigator
-  })
-
-  if (inOtherScenario) {
-    return 'This investigator is already taken in this campaign'
+  if (otherScenarioIdentities.value.has(investigatorIdentity(deckInvestigatorCode(deckList)))) {
+    return t('chooseDeck.investigatorInAnotherScenario')
   }
 
   return null
@@ -322,12 +354,47 @@ const { customCardsEnabled } = storeToRefs(settings)
 if (customCardsEnabled.value) loadLibrary()
 
 /* Applies to this game only: it rides along with the answer rather than being
- * saved onto the deck. */
+ * saved onto the deck.
+ *
+ * An overlay is built against one deck's slots -- the signatures it takes out
+ * are that deck's -- so it belongs to that deck and nothing else.
+ * `overlayFor` is what says which, and everything reading `overlay` checks it. */
 const overlay = ref<DeckOverlay | null>(null)
+const overlayFor = ref<string | null>(null)
 const overlayOpen = ref(false)
 
+function resetOverlayFromDeck() {
+  overlay.value = null
+  overlayFor.value = null
+  overlayOpen.value = false
+}
+
+/* The overlay of the deck currently selected, or nothing. */
+const selectedOverlay = computed(() =>
+  overlayFor.value !== null && overlayFor.value === deckId.value ? overlay.value : null
+)
+
+async function toggleOverlayForDeck(deck: Arkham.Deck) {
+  if (deckId.value === deck.id) {
+    overlayOpen.value = !overlayOpen.value
+    overlayFor.value = deck.id
+    return
+  }
+
+  deckId.value = deck.id
+  // The reset watcher flushes on the deck change; opening before it does would
+  // close the panel this click is opening.
+  await nextTick()
+  overlayFor.value = deck.id
+  overlayOpen.value = true
+}
+
+// Same trigger as the weakness pool: a deck change drops what was built for the
+// deck before it.
+watch(currentDeckList, resetOverlayFromDeck)
+
 const overlaySummary = computed(() => {
-  const o = overlay.value
+  const o = selectedOverlay.value
   if (!o) return 'none'
   const parts: string[] = []
   if (o.investigator) parts.push('investigator')
@@ -348,7 +415,7 @@ async function choose() {
     if (weaknessPoolTouched.value && chooseDeckList && selectedDeck.value) {
       await chooseDeckList(deckListWithWeaknessPool(deckToArkhamDbDecklist(selectedDeck.value)))
     } else if (chooseDeck) {
-      await chooseDeck(deckId.value, overlay.value)
+      await chooseDeck(deckId.value, selectedOverlay.value)
     }
   }
 }
@@ -380,6 +447,8 @@ const players = computed<Player[]>(() => {
   })
 })
 
+const chosenCount = computed(() => players.value.filter((p) => p.tag === 'Chosen').length)
+
 // A challenge scenario only needs one player to use the required deck. The
 // required investigator is therefore only enforced on the final player still
 // choosing, and only if nobody else has already provided it.
@@ -407,34 +476,76 @@ const needsReply = computed(() => {
 
 <template>
   <div class="container scroll-container">
+    <LogIcons />
     <div class="investigators">
       <h2 class="page-title">{{$t('create.chooseYourDeck', players.length)}}</h2>
+      <p v-if="players.length > 1" class="page-progress">
+        {{ $t('create.decksChosen', { chosen: chosenCount, total: players.length }) }}
+      </p>
       <div class="portraits">
-        <div class="investigator-row" v-for="player in players" :key="player.id">
+        <div
+          class="investigator-row"
+          :class="{ 'investigator-row--choosing': needsReply && player.id == playerId }"
+          v-for="(player, index) in players"
+          :key="player.id"
+        >
           <template v-if="player.tag === 'Chosen'">
-            <div class="portrait">
-              <img :src="portraitImage(player.contents)" />
-            </div>
-            <div v-if="question && playerId == player.contents.playerId" class="question">
-              <UltimatumsAndBoonsQuestion
-                v-if="isUltimatumsAndBoonsQuestion"
-                :game="game"
-                :playerId="playerId"
-                @choose="chooseChoice"
-              />
-              <template v-else>
-                <h2 v-if="questionLabel" class="title question-label">{{ questionLabel }}</h2>
-                <Question :game="game" :playerId="playerId" @choose="chooseChoice" />
-              </template>
-            </div>
-            <div v-else>
-              <div v-if="tabooList(player.contents)" class="taboo-list">
-                {{$t('create.tabooList', {tabooList: tabooList(player.contents)})}}
+            <!-- Setup still wants something from this seat, so the investigator
+                 becomes a sidebar for the question rather than a summary. -->
+            <template v-if="question && playerId == player.contents.playerId">
+              <div class="seated">
+                <div class="portrait">
+                  <img :src="portraitImage(player.contents)" />
+                </div>
+                <div class="seated-stats">
+                  <span class="stat-chip stat-health">
+                    <svg class="icon"><use xlink:href="#icon-health"></use></svg>
+                    <span class="stat-value">{{ player.contents.health }}</span>
+                  </span>
+                  <span class="stat-chip stat-sanity">
+                    <svg class="icon"><use xlink:href="#icon-sanity"></use></svg>
+                    <span class="stat-value">{{ player.contents.sanity }}</span>
+                  </span>
+                </div>
+                <p class="seated-name">{{ player.contents.name.title }}</p>
+              </div>
+              <div class="question">
+                <UltimatumsAndBoonsQuestion
+                  v-if="isUltimatumsAndBoonsQuestion"
+                  :game="game"
+                  :playerId="playerId"
+                  @choose="chooseChoice"
+                />
+                <template v-else>
+                  <h2 v-if="questionLabel" class="title question-label">{{ questionLabel }}</h2>
+                  <Question :game="game" :playerId="playerId" @choose="chooseChoice" />
+                </template>
+              </div>
+            </template>
+            <!-- Settled: nothing is being asked, so the seat reads across the
+                 row at the same height as one still waiting for a deck. -->
+            <div v-else class="seated-summary">
+              <img class="seated-summary-portrait" :src="portraitImage(player.contents)" :alt="player.contents.name.title" />
+              <div class="seated-summary-text">
+                <span class="seated-summary-name">{{ player.contents.name.title }}</span>
+                <span v-if="tabooList(player.contents)" class="taboo-list">
+                  {{$t('create.tabooList', {tabooList: tabooList(player.contents)})}}
+                </span>
+              </div>
+              <div class="seated-summary-stats">
+                <span class="stat-chip stat-health">
+                  <svg class="icon"><use xlink:href="#icon-health"></use></svg>
+                  <span class="stat-value">{{ player.contents.health }}</span>
+                </span>
+                <span class="stat-chip stat-sanity">
+                  <svg class="icon"><use xlink:href="#icon-sanity"></use></svg>
+                  <span class="stat-value">{{ player.contents.sanity }}</span>
+                </span>
               </div>
             </div>
           </template>
-          <template v-else>
-            <div v-if="needsReply && player.id == playerId" class="deck-main">
+          <template v-else-if="needsReply && player.id == playerId">
+            <div class="deck-main">
               <div v-if="deckRequirements.length" class="deck-requirements-card">
                 <div class="deck-requirements-title">Deck Requirements</div>
                 <div class="deck-requirements-body">
@@ -472,8 +583,8 @@ const needsReply = computed(() => {
                   <template v-for="deck in filteredDecks" :key="deck.id">
                     <div
                       class="deck-item"
-                      :class="[deckClass(deck), { selected: deckId === deck.id, 'has-error': deckId === deck.id && error, 'deck-item--used': deckUsedThisCampaign(deck.list) }]"
-                      v-tooltip="deckUsedThisCampaign(deck.list) ? $t('chooseDeck.alreadyPlayedThisCampaign') : undefined"
+                      :class="[deckClass(deck), { selected: deckId === deck.id, 'has-error': deckId === deck.id && error, 'deck-item--used': deckUnavailable(deck.list) }]"
+                      v-tooltip="deckUnavailableReason(deck.list)"
                       @click.prevent="deckId = deck.id"
                     >
                       <img class="deck-item-portrait" :src="cardImg(deckPortraitCode(deck))" />
@@ -495,8 +606,9 @@ const needsReply = computed(() => {
                         v-if="customCardsEnabled && hasLibraryCards"
                         type="button"
                         class="deck-item-overlay"
+                        :class="{ active: overlayFor === deck.id && overlay }"
                         :title="`Overlay: ${overlaySummary}`"
-                        @click.stop.prevent="deckId = deck.id; overlayOpen = !overlayOpen"
+                        @click.stop.prevent="toggleOverlayForDeck(deck)"
                       >
                         <font-awesome-icon icon="layer-group" />
                       </button>
@@ -510,10 +622,10 @@ const needsReply = computed(() => {
                       >
                         <font-awesome-icon icon="shuffle" />
                       </button>
-                      <button class="deck-item-use" :disabled="deckUsedThisCampaign(deck.list)" @click.stop.prevent="selectAndChoose(deck)" :title="$t('chooseDeck.useThisDeck')">
+                      <button class="deck-item-use" :disabled="deckUnavailable(deck.list)" @click.stop.prevent="selectAndChoose(deck)" :title="$t('chooseDeck.useThisDeck')">
                         <font-awesome-icon icon="chevron-right" />
                       </button>
-                      <div v-if="deckId === deck.id && overlayOpen" class="weakness-pool-panel deck-item-weakness-pool" @click.stop>
+                      <div v-if="overlayFor === deck.id && overlayOpen" class="weakness-pool-panel deck-item-weakness-pool" @click.stop>
                         <div class="weakness-pool-heading">
                           <span>Overlay</span>
                           <span class="weakness-pool-summary">{{ overlaySummary }}</span>
@@ -588,6 +700,17 @@ const needsReply = computed(() => {
               </div>
             </div>
           </template>
+          <template v-else>
+            <div class="seat-pending">
+              <div class="seat-pending-portrait">
+                <img :src="imgsrc('slots/ally.png')" alt="" />
+              </div>
+              <div class="seat-pending-text">
+                <span class="seat-pending-name">{{ $t('create.seatNumber', { number: index + 1 }) }}</span>
+                <span class="seat-pending-status">{{ $t('create.seatNoDeckYet') }}</span>
+              </div>
+            </div>
+          </template>
         </div>
       </div>
     </div>
@@ -624,10 +747,66 @@ const needsReply = computed(() => {
   letter-spacing: 0.04em;
 }
 
+.page-progress {
+  margin: -6px 0 12px 0;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.78em;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .portraits {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* A seat nobody has filled yet still belongs to the table, so it keeps the row
+   shape rather than collapsing to an empty box -- but it is secondary, so it
+   sits at a fraction of the height of the seat actually being chosen for. */
+.seat-pending {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  opacity: 0.55;
+}
+
+.seat-pending-portrait {
+  width: 40px;
+  height: 58px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+
+  img {
+    width: 55%;
+    opacity: 0.5;
+  }
+}
+
+.seat-pending-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.seat-pending-name {
+  font-size: 0.86em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.seat-pending-status {
+  font-size: 0.74em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
 }
 
 .investigator-row {
@@ -638,6 +817,14 @@ const needsReply = computed(() => {
   display: flex;
   gap: 12px;
   align-items: flex-start;
+
+  /* The one seat the table is waiting on you for. Same accent the deck list
+     uses for a selected deck, so "this is the thing to act on" reads the same
+     way at both levels. */
+  &.investigator-row--choosing {
+    background: rgba(110, 134, 64, 0.10);
+    border-color: rgba(110, 134, 64, 0.40);
+  }
 
   & :deep(.choices) {
     margin: 0;
@@ -668,7 +855,136 @@ const needsReply = computed(() => {
         }
       }
     }
+    /* The amount panel's in-game mauve fights the coloured trauma fields, but a
+       flat black wash leaves the purple submit stranded on blue-grey. A faint
+       violet cast stays dark enough for the red and blue fields to read while
+       giving the button a ground it belongs to. */
+    & :deep(.amount-contents) {
+      background: rgba(38, 28, 47, 0.45);
+      border: 1px solid rgba(255, 255, 255, 0.09);
+
+      /* In game the submit bleeds edge to edge, so the form carries the side
+         padding and none at the bottom. Here it is an ordinary button sitting
+         under the fields, which wants the panel padded evenly instead. */
+      .amount-form {
+        padding: 16px;
+      }
+
+      /* The in-game #3f2f48 lands at the same lightness as this panel, so it
+         read as a smudge rather than a button. Same hue family, lifted clear of
+         the ground; white on it is 5.8:1. */
+      .amount-submit {
+        transform: none;
+        border-radius: 6px;
+        background: #7e4f9e;
+      }
+
+      .amount-submit:hover:not([disabled]) {
+        background: #8d5bb0;
+      }
+
+      /* The global disabled grey is !important, and a flat #999 slab is the
+         first thing this prompt shows (both fields start at 0). Mute the purple
+         instead of replacing it. */
+      .amount-submit[disabled] {
+        background-color: rgba(126, 79, 158, 0.38) !important;
+        color: rgba(255, 255, 255, 0.6);
+      }
+    }
   }
+}
+
+.seated {
+  width: 100px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stat-chip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  font-size: 0.9em;
+  font-weight: 700;
+}
+
+.stat-chip .icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  stroke-width: 0;
+  stroke: currentColor;
+  fill: currentColor;
+}
+
+.stat-health .icon { color: #f88; }
+.stat-sanity .icon { color: #8af; }
+
+.seated-stats {
+  display: flex;
+  gap: 6px;
+
+  .stat-chip {
+    flex: 1;
+    padding: 5px 0;
+  }
+}
+
+.seated-name {
+  margin: 0;
+  font-size: 0.7em;
+  line-height: 1.3;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* A seat that is done: same height as one still waiting, so the row being
+   acted on is the only tall thing on the page. */
+.seated-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+
+.seated-summary-portrait {
+  width: 40px;
+  height: 58px;
+  flex-shrink: 0;
+  object-fit: cover;
+  object-position: top center;
+  border-radius: 4px;
+  box-shadow: 1px 1px 5px rgba(0, 0, 0, 0.45);
+}
+
+.seated-summary-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.seated-summary-name {
+  font-size: 0.94em;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.seated-summary-stats {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .portrait {
@@ -927,6 +1243,10 @@ const needsReply = computed(() => {
 .deck-item-use,
 .deck-item-weakness-button {
   flex-shrink: 0;
+  /* The global button rule pads 1px 11px, which leaves a fixed-width icon button
+     no content box at all -- the icon then has zero width and Font Awesome paints
+     its path at full 512px scale over the rows below. */
+  padding: 0;
   width: 34px;
   height: 34px;
   border-radius: 5px;
@@ -954,6 +1274,13 @@ const needsReply = computed(() => {
   &:hover {
     background: rgba(110, 134, 64, 1);
   }
+}
+
+/* Lit only on the deck the pending overlay was built for, so it is clear which
+   row it belongs to. */
+.deck-item-overlay.active {
+  background: rgba(235, 235, 235, 0.30);
+  color: white;
 }
 
 .deck-item-weakness-button {
