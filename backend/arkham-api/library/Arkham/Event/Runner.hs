@@ -179,8 +179,12 @@ runEventMessage msg a@EventAttrs {..} = runQueueT $ case msg of
         Lifted.checkAfter $ Window.EntersThreatArea iid' (toCard a)
         handleWindows
         pure updated
+      -- An enemy that cannot have attachments refuses the attach outright, the same way
+      -- an enemy that has already left play does.
       AttachedToEnemy eid' -> do
+        cannotAttach <- hasModifier eid' CannotHaveAttachments
         fieldMay EnemyPlacement eid' >>= \case
+          _ | cannotAttach -> pure a
           Nothing -> pure a
           Just p -> do
             case p of
@@ -353,6 +357,9 @@ runEventMessage msg a@EventAttrs {..} = runQueueT $ case msg of
   -- for them. Adding an InDiscard handler would push `Do (UseAbility)` twice and resolve the
   -- ability (and pay its cost) twice — see issue #4764 (Parallel Wendy's Amulet + Intel Report).
   InHand iid msg'@(UseAbility iid' ab _) | iid == iid' && (isSource a ab.source || isProxySource a ab.source) -> do
+    push $ Do msg'
+    pure a
+  Committed iid msg'@(UseAbility iid' ab _) | iid == iid' && (isSource a ab.source || isProxySource a ab.source) -> do
     push $ Do msg'
     pure a
   SetLocationOutOfGame lid -> do

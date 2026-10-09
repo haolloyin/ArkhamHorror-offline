@@ -1,0 +1,12 @@
+{
+  "name": "The Symphony of Erich Zann",
+  "key": {
+    "youSavedAllTheMusicians": "You saved all the musicians.",
+    "allIsQuietAtRueDAuseilForNow": "All is quiet at Rue d'Auseil... for now."
+  },
+  "tooltips": {
+    "gallery": {
+      "investigate": "_{'{'}action{'}'} Investigate._ If you succeed, discover 1 additional clue from the Auditorium."
+    }
+  }
+}

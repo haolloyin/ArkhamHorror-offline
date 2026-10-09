@@ -10,6 +10,7 @@ import Arkham.Asset.Types qualified as Field
 import Arkham.Calculation
 import Arkham.Card
 import Arkham.ChaosBag.Base (chaosBagChaosTokens)
+import Arkham.ChaosBag.RevealStrategy
 import Arkham.ChaosToken
 import Arkham.ClassSymbol
 import Arkham.Classes.HasChaosTokenValue
@@ -1109,6 +1110,27 @@ getSkillTestValueBreakdown s = do
         , stvbFailTies = FailTies `elem` modifiers'
         , stvbAutoFailIfSucceedByAtLeast = [n | AutomaticallyFailIfSucceedByAtLeast n <- modifiers']
         }
+
+{- | The reveal strategy the test would use right now, folded from the same
+modifiers 'TriggerSkillTest' reads. Read before the reveal step it is a
+prediction; after it, it is what was used.
+-}
+getSkillTestRevealStrategy :: HasGame m => SkillTest -> m RevealStrategy
+getSkillTestRevealStrategy s = do
+  investigatorModifiers <- getModifiers s.investigator
+  testModifiers <- getModifiers (SkillTestTarget s.id)
+  pure $ foldl' applyRevealStrategyModifier (Reveal 1) (investigatorModifiers <> testModifiers)
+ where
+  applyRevealStrategyModifier (MultiReveal _ b) (ChangeRevealStrategy n) = MultiReveal n b
+  applyRevealStrategyModifier _ (ChangeRevealStrategy n) = n
+  applyRevealStrategyModifier n RevealAnotherChaosToken = MultiReveal n (Reveal 1)
+  applyRevealStrategyModifier n (DrawAdditionalChaosTokens m reveals) = case (n, reveals) of
+    (Reveal x, ResolveEach) -> Reveal (x + m)
+    (Reveal x, ResolveOne) -> RevealAndChoose (x + m) 1
+    (RevealAndChoose x z, ResolveEach) -> RevealAndChoose (x + m) (z + m)
+    (RevealAndChoose x z, ResolveOne) -> RevealAndChoose (x + m) z
+    (other, _) -> other
+  applyRevealStrategyModifier n _ = n
 
 getAdditionalChaosTokenValues :: HasGame m => SkillTest -> m Int
 getAdditionalChaosTokenValues s = do

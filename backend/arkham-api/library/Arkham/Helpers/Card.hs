@@ -20,7 +20,7 @@ import Arkham.Helpers.Campaign
 import Arkham.Helpers.ChaosToken
 import Arkham.Helpers.GameValue (gameValueMatches)
 import Arkham.Helpers.Modifiers
-import Arkham.Helpers.Scenario (scenarioFieldMap)
+import Arkham.Helpers.Scenario (getCardCodeAliases, scenarioFieldMap)
 import {-# SOURCE #-} Arkham.Helpers.Window (windowMatches)
 import Arkham.Id
 import Arkham.Investigator.Types qualified as Field
@@ -50,6 +50,18 @@ isWeakness c = case toCard c of
   PlayerCard pc -> isJust $ cdCardSubType $ toCardDef pc
   EncounterCard _ -> True -- maybe?
   VengeanceCard _ -> False -- should be an error
+
+{- | Filter by a 'CardMatcher', letting a card the setup substituted in also answer to
+the def it replaced -- an agenda shuffling the original back in, a search for it.
+-}
+filterCardsSubstituted :: HasGame m => CardMatcher -> [Card] -> m [Card]
+filterCardsSubstituted matcher cards = do
+  aliases <- getCardCodeAliases
+  let asOriginal c = case lookup (toCardCode c) aliases of
+        Nothing -> False
+        Just old -> lookupCard old c.id `cardMatch` matcher
+  pure $ filter (\c -> c `cardMatch` matcher || asOriginal c) cards
+
 extendedCardMatch
   :: (HasGame m, IsCard c) => c -> ExtendedCardMatcher -> m Bool
 extendedCardMatch (toCard -> c) matcher =
@@ -167,10 +179,15 @@ getCardEntityTarget card = case toCardType card of
 -- weren't triggering Foresight (1). If we have to revert this, remember to
 -- check foresight (1).
 drawThisCardFrom :: IsCard card => InvestigatorId -> card -> Maybe DeckSignifier -> [Message]
-drawThisCardFrom iid card mdeck = case toCard card of
-  c@(PlayerCard pc) -> [InvestigatorDrewPlayerCardFrom iid pc mdeck, ResolvedCard iid c]
+drawThisCardFrom iid card mdeck = drawThisCardFromBy iid card mdeck Nothing
+
+-- | As 'drawThisCardFrom', naming what caused the draw so the log can say so.
+drawThisCardFromBy
+  :: IsCard card => InvestigatorId -> card -> Maybe DeckSignifier -> Maybe Source -> [Message]
+drawThisCardFromBy iid card mdeck msource = case toCard card of
+  c@(PlayerCard pc) -> [InvestigatorDrewPlayerCardFrom iid pc mdeck msource, ResolvedCard iid c]
   EncounterCard _ -> error "Not yet implemented"
-  VengeanceCard c -> drawThisCardFrom iid c mdeck
+  VengeanceCard c -> drawThisCardFromBy iid c mdeck msource
 
 -- drawThisPlayerCard :: InvestigatorId -> PlayerCard -> [Message]
 -- drawThisPlayerCard iid card = case toCardType card of
@@ -288,8 +305,9 @@ passesLimits iid c = do
 perLocationLimitTraits :: Card -> [(Trait, Int)]
 perLocationLimitTraits c = [(t, m) | LimitPerTraitPerLocation t m <- cdLimits (toCardDef c)]
 
--- | Every card currently attached to a location (events, assets, treacheries).
--- Used by the per-trait-per-location limit checks.
+{- | Every card currently attached to a location (events, assets, treacheries).
+Used by the per-trait-per-location limit checks.
+-}
 attachedCardsAt :: HasGame m => LocationId -> m [Card]
 attachedCardsAt lid = do
   let target = TargetIs (toTarget lid)
@@ -299,10 +317,11 @@ attachedCardsAt lid = do
     traverse (field TreacheryCard) =<< select (TreacheryAttachedToLocation $ LocationWithId lid)
   pure $ eventCards <> assetCards <> treacheryCards
 
--- | Resolve 'LimitPerTraitPerLocation' at the location(s) where @c@ would be
--- played: the investigator's location plus any locations granted by a
--- @CanPlayAtLocation@ modifier. The card is allowed if it satisfies the limit
--- at any one candidate location.
+{- | Resolve 'LimitPerTraitPerLocation' at the location(s) where @c@ would be
+played: the investigator's location plus any locations granted by a
+@CanPlayAtLocation@ modifier. The card is allowed if it satisfies the limit
+at any one candidate location.
+-}
 passesPerLocationLimits :: HasGame m => InvestigatorId -> Card -> m Bool
 passesPerLocationLimits iid c = do
   baseLids <- select (locationWithInvestigator iid)
@@ -326,16 +345,17 @@ passesPerLocationLimits iid c = do
           extraLids <- nub . concat <$> traverse select extraMatchers
           anyM (cardPassesLimitsAtLocation c) extraLids
 
--- | Whether @c@ may be placed at @lid@ under the "N <trait> per location"
--- rules. This enforces both directions:
---
---   * @c@'s own 'LimitPerTraitPerLocation' limits, counting every attached card
---     (event, asset, or treachery) that shares the limited trait; and
---   * the mirror rule, that @c@ may not join a location already holding a card
---     that limits one of @c@'s traits to "N per location".
---
--- Together these guarantee a limited trap is always alone: it cannot be placed
--- where any trap exists, and no trap can be placed where it sits.
+{- | Whether @c@ may be placed at @lid@ under the "N <trait> per location"
+rules. This enforces both directions:
+
+  * @c@'s own 'LimitPerTraitPerLocation' limits, counting every attached card
+    (event, asset, or treachery) that shares the limited trait; and
+  * the mirror rule, that @c@ may not join a location already holding a card
+    that limits one of @c@'s traits to "N per location".
+
+Together these guarantee a limited trap is always alone: it cannot be placed
+where any trap exists, and no trap can be placed where it sits.
+-}
 cardPassesLimitsAtLocation :: HasGame m => Card -> LocationId -> m Bool
 cardPassesLimitsAtLocation c lid = do
   attached <- attachedCardsAt lid

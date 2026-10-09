@@ -143,6 +143,46 @@ export function imgsrc(src: string, ignoreVariants = false): string {
   return fullPath
 }
 
+/* Box art for the campaign/scenario a game belongs to. A homebrew campaign keeps its
+ * boxes in its own folder, named by the part of the id after the leading colon -- the
+ * same shape as its set icons below. */
+export function campaignBox(campaignId: string): string {
+  if (campaignId.startsWith(':')) {
+    const homebrewId = campaignId.slice(1)
+    return imgsrc(`homebrew/${homebrewId}/boxes/${homebrewId}.jpg`)
+  }
+  return imgsrc(`boxes/${campaignId}.jpg`)
+}
+
+export function scenarioBox(scenarioId: string): string {
+  const homebrew = scenarioId.match(/^c?:([^:]+):(.+)$/)
+  if (homebrew) {
+    const [, homebrewId, boxId] = homebrew
+    return imgsrc(`homebrew/${homebrewId}/boxes/${boxId}.jpg`)
+  }
+  return imgsrc(`boxes/${scenarioId.replace(/^c/, '')}.jpg`)
+}
+
+/* Set icons for the campaign/scenario a game belongs to. A homebrew campaign keeps its
+ * icons in its own folder, and names them by the part of the id after the campaign: its
+ * own id is `:campaign`, a scenario's is `c:campaign:set`. */
+export function campaignSetIcon(campaignId: string): string {
+  if (campaignId.startsWith(':')) {
+    const homebrewId = campaignId.slice(1)
+    return imgsrc(`homebrew/${homebrewId}/sets/${homebrewId}.png`)
+  }
+  return imgsrc(`sets/${campaignId}.png`)
+}
+
+export function scenarioSetIcon(scenarioId: string, variant?: string | null): string {
+  const homebrew = scenarioId.match(/^c?:([^:]+):(.+)$/)
+  if (homebrew) {
+    const [, homebrewId, setId] = homebrew
+    return imgsrc(`homebrew/${homebrewId}/sets/${setId}.png`)
+  }
+  return imgsrc(`sets/${scenarioId.replace(/^c/, '')}${variant ? `-${variant}` : ''}.png`)
+}
+
 // Homebrew card art (prefixed codes) lives under its campaign folder.
 // `art` is a c-stripped card code, optionally with suffixes (e.g. "circus-ex-mortis:001b", "dark-matter:063aa").
 export function cardImgPath(art: string): string {

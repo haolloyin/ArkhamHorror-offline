@@ -40,14 +40,49 @@ library
       AH3e.Content.Headlines
       AH3e.Content.ItemBehaviors
       AH3e.Content.Items
+      AH3e.Content.MonsterBehaviors
       AH3e.Content.Monsters
       AH3e.Content.Scenarios
+      AH3e.Content.SecretsOfTheOrder.Anomalies
+      AH3e.Content.SecretsOfTheOrder.Archive
+      AH3e.Content.SecretsOfTheOrder.BoundToServe
+      AH3e.Content.SecretsOfTheOrder.BoundToServeBehaviors
+      AH3e.Content.SecretsOfTheOrder.EncounterBehaviors
+      AH3e.Content.SecretsOfTheOrder.InvestigatorBehaviors
+      AH3e.Content.SecretsOfTheOrder.Investigators
+      AH3e.Content.SecretsOfTheOrder.Mysteries
+      AH3e.Content.SecretsOfTheOrder.NeighborhoodCards
+      AH3e.Content.SecretsOfTheOrder.StartingBehaviors
+      AH3e.Content.SecretsOfTheOrder.TheDeadCryOut
+      AH3e.Content.SecretsOfTheOrder.TheDeadCryOutBehaviors
+      AH3e.Content.SecretsOfTheOrder.TheKeyAndTheGate
+      AH3e.Content.SecretsOfTheOrder.TheKeyAndTheGateBehaviors
+      AH3e.Content.SecretsOfTheOrder.Thresholds
       AH3e.Content.Special
       AH3e.Content.SpecialBehaviors
       AH3e.Content.SpellBehaviors
       AH3e.Content.Spells
       AH3e.Content.StreetCards
       AH3e.Content.Tiles
+      AH3e.Content.UnderDarkWaves.Anomalies
+      AH3e.Content.UnderDarkWaves.Archive
+      AH3e.Content.UnderDarkWaves.Codex
+      AH3e.Content.UnderDarkWaves.DreamsOfRlyeh
+      AH3e.Content.UnderDarkWaves.DreamsOfRlyehBehaviors
+      AH3e.Content.UnderDarkWaves.InvestigatorBehaviors
+      AH3e.Content.UnderDarkWaves.Investigators
+      AH3e.Content.UnderDarkWaves.IthaquasChildren
+      AH3e.Content.UnderDarkWaves.IthaquasChildrenBehaviors
+      AH3e.Content.UnderDarkWaves.Mysteries
+      AH3e.Content.UnderDarkWaves.NeighborhoodCards
+      AH3e.Content.UnderDarkWaves.StartingBehaviors
+      AH3e.Content.UnderDarkWaves.TerrorBehaviors
+      AH3e.Content.UnderDarkWaves.Terrors
+      AH3e.Content.UnderDarkWaves.ThePaleLantern
+      AH3e.Content.UnderDarkWaves.ThePaleLanternBehaviors
+      AH3e.Content.UnderDarkWaves.TravelRoutes
+      AH3e.Content.UnderDarkWaves.TyrantsOfRuin
+      AH3e.Content.UnderDarkWaves.TyrantsOfRuinBehaviors
       AH3e.Content.Vocabulary
       AH3e.Engine
       AH3e.Engine.Behavior

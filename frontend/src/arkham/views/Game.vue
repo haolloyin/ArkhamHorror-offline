@@ -32,6 +32,7 @@ import {
   ExclamationTriangleIcon,
   FlagIcon,
   RectangleStackIcon,
+  TableCellsIcon,
 } from '@heroicons/vue/20/solid'
 import { LottieAnimation } from 'lottie-web-vue'
 import * as JsonDecoder from 'ts.data.json'
@@ -46,6 +47,7 @@ import {
   undoTurn,
   undoPhase,
   undoRound,
+  undoToStep,
   markEventReady,
   eventTimeUp,
 } from '@/arkham/api'
@@ -70,6 +72,7 @@ import {
 } from '@/arkham/debugCardDrop'
 import useEmitter from '@/composable/useEmitter'
 import { useDebug } from '@/arkham/debug'
+import EntityBrowser from '@/arkham/components/debug/EntityBrowser.vue'
 import { cardImg, imgsrc, isTypingTarget } from '@/arkham/helpers'
 import { cardFaceImages, cardHasDistinctBack } from '@/arkham/cardImages'
 import { handleEmbeddedI18n } from '@/arkham/i18n'
@@ -103,6 +106,12 @@ import CardOverlay from '@/arkham/components/CardOverlay.vue'
 import CardView from '@/arkham/components/Card.vue'
 import MultiplayerLobby from '@/arkham/components/MultiplayerLobby.vue'
 import GameLog from '@/arkham/components/GameLog.vue'
+import type { LogEntry, LogRow } from '@/arkham/types/GameLog'
+import {
+  legacyLogEntry,
+  logRowsToEntries,
+  type LegacyLocationLookup,
+} from '@/arkham/legacyLogParse'
 import HistoryPanel from '@/arkham/components/HistoryPanel.vue'
 import ScenarioSettings from '@/arkham/components/ScenarioSettings.vue'
 import Settings from '@/arkham/components/Settings.vue'
@@ -113,6 +122,7 @@ import EventActAdvanceBarrier from '@/arkham/components/EventActAdvanceBarrier.v
 import StandaloneScenario from '@/arkham/components/StandaloneScenario.vue'
 import StoryQuestion from '@/arkham/components/StoryQuestion.vue'
 import AchievementToast from '@/arkham/components/AchievementToast.vue'
+import { achievementEntryScope } from '@/arkham/achievements'
 import DrawSpotlight from '@/arkham/components/DrawSpotlight.vue'
 import Draggable from '@/components/Draggable.vue'
 import Menu from '@/components/Menu.vue'
@@ -155,6 +165,11 @@ type ServerResult =
   | { tag: 'GameAudio'; contents: string }
   | { tag: 'SharedStateUpdate'; contents: SharedEventState }
   | { tag: 'EventChanged' }
+  /* The room is gone -- the game was deleted, or an admin dropped it. The server
+   * closes the socket right behind this, and `autoReconnect` would otherwise
+   * recreate the very room that was just removed, so this leaves rather than
+   * retries. */
+  | { tag: 'RoomClosed'; contents: string }
 
 export interface Props {
   gameId: string
@@ -164,6 +179,7 @@ export interface Props {
 const props = withDefaults(defineProps<Props>(), { spectate: false })
 
 const debug = useDebug()
+const showEntityBrowser = ref(false)
 const emitter = useEmitter()
 const router = useRouter()
 const route = useRoute()
@@ -410,7 +426,11 @@ const isCthulhuDeckReveal = computed(() => {
 })
 const showTheSilenceModal = ref(false)
 const playabilityInfo = ref<PlayabilityInfo | null>(null)
-const gameLog = shallowRef<readonly string[]>(Object.freeze([]))
+/* Append-only. Replaced wholesale only when a full game payload arrives; the
+   socket appends. The previous shape copied and froze the entire history on
+   every update and again on every appended line, which is O(n) per line and
+   O(n^2) across a scenario setup. */
+const gameLog = shallowRef<readonly LogEntry[]>(Object.freeze([]))
 const playerId = ref<string | null>(null)
 const ready = ref(false)
 const resultQueue = ref<any>([])
@@ -701,17 +721,58 @@ function handleSettingChange(event: Event) {
   }
 }
 
-function updateGameLog(nextLog: readonly string[]) {
-  const currentLog = gameLog.value
+/* What the legacy parser needs to tell a revealed location from an unrevealed
+   one. Only legacy rows consult it; structured refs carry faceDown already. */
+function legacyLocations(): LegacyLocationLookup {
+  const locations = game.value?.locations ?? {}
+  const lookup: LegacyLocationLookup = {}
+  for (const [id, location] of Object.entries(locations)) {
+    lookup[id] = { cardCode: location.cardCode, revealed: location.revealed }
+  }
+  return lookup
+}
+
+/* Scrollback: fetch the page before what we hold and prepend it.
+ *
+ * Replaces rather than merges, because `updateGameLog` would otherwise discard
+ * the older rows on the next GameUpdate -- the payload carries only the tail,
+ * so a live update must not be allowed to truncate what the reader has paged
+ * back to. `loadedOlder` keeps them. */
+const loadedOlder = shallowRef<readonly LogEntry[]>(Object.freeze([]))
+
+async function loadOlderLog(beforeSeq: number) {
+  try {
+    const rows = await Api.fetchLogBefore(props.gameId, beforeSeq)
+    if (rows.length === 0) return
+    const older = logRowsToEntries(rows, legacyLocations())
+    loadedOlder.value = Object.freeze([...older, ...loadedOlder.value])
+    gameLog.value = Object.freeze([...older, ...gameLog.value])
+  } catch (e) {
+    console.log(e)
+  }
+}
+
+function updateGameLog(nextLog: readonly LogRow[]) {
+  /* The payload carries a bounded tail and the log is append-only, so comparing
+     the ends is enough to skip a no-op rebuild without walking the rows. */
+  const current = gameLog.value
+  const last = nextLog[nextLog.length - 1]
   if (
-    currentLog.length === nextLog.length &&
-    currentLog[0] === nextLog[0] &&
-    currentLog[currentLog.length - 1] === nextLog[nextLog.length - 1]
+    current.length === nextLog.length &&
+    last?.tag === 'LogRowStructured' &&
+    last.contents.seq > 0 &&
+    current[current.length - 1]?.seq === last.contents.seq
   ) {
     return
   }
 
-  gameLog.value = Object.freeze([...nextLog])
+  /* Anything paged back to stays in front of the tail: the payload only carries
+     the newest rows, so rebuilding from it alone would throw the scrollback
+     away every time the game moved. */
+  gameLog.value = Object.freeze([
+    ...loadedOlder.value,
+    ...logRowsToEntries(nextLog, legacyLocations()),
+  ])
 }
 
 addEntry({
@@ -1266,6 +1327,16 @@ const { send, close } = useWebSocket(websocketUrl, {
   onMessage,
 })
 
+/* The room was deleted. Close before navigating: `autoReconnect` would
+ * otherwise bring the socket straight back up against a room the server has
+ * just removed, and recreate it. Going home rather than showing a dead board,
+ * because there is nothing left here to look at. */
+function roomClosed() {
+  close()
+  toast.info(t('gameClosed'), { timeout: 6000 })
+  router.push({ name: 'Home' })
+}
+
 /*
  * A GameUpdate is the only message carrying new board state, and it reaches us
  * over a different path than the log lines do: the server broadcasts log lines
@@ -1338,6 +1409,9 @@ function sendAnswer(payload: string) {
 const handleResult = (result: ServerResult) => {
   processing.value = false
   switch (result.tag) {
+    case 'RoomClosed':
+      roomClosed()
+      return
     case 'GameError':
       if (props.spectate) return
       storyAnswerPending.value = false
@@ -1347,8 +1421,13 @@ const handleResult = (result: ServerResult) => {
       }
       return
     case 'GameMessage':
-      // Raw, like the game payload's entries: GameMessage.vue localizes at render
-      gameLog.value = Object.freeze([...gameLog.value, result.contents])
+      /* A legacy flat line, parsed to parts once here rather than in a render
+         function. Structured entries do not come this way: they ride in the
+         game payload's log tail, so the log and the board move together. */
+      gameLog.value = Object.freeze([
+        ...gameLog.value,
+        legacyLogEntry(result.contents, 0, legacyLocations()),
+      ])
       return
     case 'GameShowDiscard':
       emitter.emit('showDiscards', result.contents)
@@ -1426,8 +1505,8 @@ const handleResult = (result: ServerResult) => {
           component: markRaw(AchievementToast),
           props: {
             title: t('achievements.toastTitle'),
-            name: t(`achievements.entries.${tag}.name`),
-            text: t(`achievements.entries.${tag}.text`),
+            name: t(`${achievementEntryScope(tag)}.name`),
+            text: t(`${achievementEntryScope(tag)}.text`),
           },
         },
         { timeout: 8000, icon: false, closeButton: false, toastClassName: 'achievement-toast' },
@@ -1558,6 +1637,11 @@ watch(uiLock, async () => {
 })
 
 const confirmingUndoScenario = ref(false)
+
+/* "Undo back to here", picked off a log entry. Holds the game step the entry
+   was written under plus a flat rendering of it, so the confirmation can name
+   what is about to be thrown away. */
+const confirmingUndoStep = ref<{ step: number; label: string } | null>(null)
 
 /* A menu entry names its shortcut so it follows the active keybinding profile;
  * `shortcut` remains the raw-key escape hatch for keys no profile remaps. */
@@ -1963,6 +2047,37 @@ async function undo() {
 async function undoScenario() {
   confirmingUndoScenario.value = false
   await runUndo(undoScenarioChoice)
+}
+
+/* Who a typed line is attributed to: this client's own seat, falling back to
+   whoever is active (a multihanded-solo player holds several seats, and any of
+   them is a truthful attribution). */
+const chatInvestigatorId = computed(() => {
+  const g = game.value
+  if (!g) return null
+  const mine = Object.values(g.investigators).find((i) => i.playerId === playerId.value)
+  return mine?.id ?? g.activeInvestigatorId ?? null
+})
+
+async function say(text: string) {
+  const iid = chatInvestigatorId.value
+  if (!iid) return
+  try {
+    await Api.sayInLog(props.gameId, iid, text)
+  } catch (e) {
+    console.log(e)
+  }
+}
+
+function requestUndoToStep(step: number, label: string) {
+  confirmingUndoStep.value = { step, label }
+}
+
+async function undoToStepConfirmed() {
+  const pending = confirmingUndoStep.value
+  confirmingUndoStep.value = null
+  if (!pending) return
+  await runUndo((gameId) => undoToStep(gameId, pending.step))
 }
 
 const undoActionStart = () => runUndo(undoAction)
@@ -2690,6 +2805,11 @@ onUnmounted(() => {
                 <DocumentArrowDownIcon aria-hidden="true" /> {{ $t('gameBar.debugExportFull') }}
               </button>
             </MenuItem>
+            <MenuItem v-slot="{ active }">
+              <button :class="{ active }" @click="showEntityBrowser = true">
+                <TableCellsIcon aria-hidden="true" /> {{ $t('gameBar.debugEntities') }}
+              </button>
+            </MenuItem>
           </template>
         </Menu>
       </div>
@@ -2961,7 +3081,6 @@ onUnmounted(() => {
         <Campaign
           v-else-if="game.campaign"
           :game="game"
-          :gameLog="gameLog"
           :playerId="playerId"
           :campaign="game.campaign"
           :realityAcidLightDevoured="realityAcidLightDevoured"
@@ -3004,7 +3123,15 @@ onUnmounted(() => {
             isActualScenarioView
           "
         >
-          <GameLog :game="game" :gameLog="gameLog" @undo="undo" />
+          <GameLog
+            :entries="gameLog"
+            :can-undo="!spectate"
+            :can-chat="!spectate && !!chatInvestigatorId"
+            :player-id="playerId"
+            @undo="requestUndoToStep"
+            @say="say"
+            @load-older="loadOlderLog"
+          />
         </div>
         <div class="game-over" v-if="gameOver">
           <p>{{ $t('gameOver') }}</p>
@@ -3030,6 +3157,24 @@ onUnmounted(() => {
       :yes="undoScenario"
       :no="() => confirmingUndoScenario = false"
     />
+    <Prompt
+      v-if="confirmingUndoStep"
+      :prompt="
+        confirmingUndoStep.label
+          ? $t('log.undoToHereConfirm', { entry: confirmingUndoStep.label })
+          : $t('log.undoToHereConfirmPlain')
+      "
+      :yes="undoToStepConfirmed"
+      :no="() => (confirmingUndoStep = null)"
+    />
+    <Teleport to="body">
+      <EntityBrowser
+        v-if="showEntityBrowser && game !== null && playerId !== null"
+        :game="game"
+        :playerId="playerId"
+        @close="showEntityBrowser = false"
+      />
+    </Teleport>
   </div>
 </template>
 

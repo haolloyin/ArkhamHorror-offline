@@ -30,6 +30,7 @@ import Data.IntMap.Strict qualified as IntMap
 import UnliftIO.Exception qualified as UnliftIO
 
 import Arkham.Card.CardCode
+import Arkham.Log.Entry (LogRow)
 import Auth.ApiKey qualified as ApiKey
 import Auth.JWT qualified as JWT
 import Control.Monad.Logger (LogSource)
@@ -70,6 +71,13 @@ the overflow flag, which closes the WebSocket and triggers cleanup.
 data Subscriber = Subscriber
   { subQueue :: TBQueue BSL.ByteString
   , subOverflow :: TVar Bool
+  , subClosed :: TVar Bool
+  {- ^ Set when the room this socket is attached to has been deleted. The
+  sender loop drains whatever is still queued and then ends, which drops out
+  of its 'race_' and closes the connection -- so a client cannot keep a
+  deleted room alive, and cannot be left attached to one that no longer
+  exists. See 'closeRoomSubscribers'.
+  -}
   }
 
 data Room = Room
@@ -99,7 +107,10 @@ locked game's step doesn't match.
 -}
 data RoomLogCache = RoomLogCache
   { cacheStep :: !Int
-  , cacheEntries :: ![Text]
+  , cacheEntries :: ![LogRow]
+  {- ^ A bounded tail, not the whole history; see
+  'Api.Arkham.Helpers.gameLogTailSize'.
+  -}
   }
 
 instance HasField "broker" Room RedisChannel where
@@ -129,7 +140,8 @@ subscribeToRoom :: MonadIO m => Room -> m (Int, Subscriber)
 subscribeToRoom room = liftIO $ atomically do
   q <- newTBQueue roomQueueBound
   overflow <- newTVar False
-  let sub = Subscriber q overflow
+  closed <- newTVar False
+  let sub = Subscriber q overflow closed
   subId <- readTVar (roomNextSubId room)
   writeTVar (roomNextSubId room) (subId + 1)
   modifyTVar' (roomSubscribers room) (IntMap.insert subId sub)
@@ -138,6 +150,19 @@ subscribeToRoom room = liftIO $ atomically do
 unsubscribeFromRoom :: MonadIO m => Room -> Int -> m ()
 unsubscribeFromRoom room subId = liftIO $ atomically do
   modifyTVar' (roomSubscribers room) (IntMap.delete subId)
+
+{- | Evict every socket on the room.
+
+Each sender loop finishes what it already has queued and then ends, so a
+message broadcast immediately before this one -- the notice saying why -- still
+reaches the client. Used when the room is being deleted rather than emptied:
+'releaseRoomIfEmpty' is for the ordinary case where the last subscriber has
+already left of their own accord.
+-}
+closeRoomSubscribers :: MonadIO m => Room -> m ()
+closeRoomSubscribers room = liftIO $ atomically do
+  subs <- readTVar (roomSubscribers room)
+  for_ (IntMap.elems subs) \Subscriber {subClosed} -> writeTVar subClosed True
 
 -- | Number of currently registered subscribers (used by the admin UI).
 roomClientCount :: MonadIO m => Room -> m Int
@@ -439,6 +464,16 @@ getRequestUserId :: Handler UserId
 getRequestUserId = do
   mToken <- JWT.lookupToken
   maybe notAuthenticated pure . join =<< for mToken tokenToUserId
+
+{- | Who is calling, when the route does not require anyone to be.
+
+For a route that answers everyone but can answer a signed-in caller with more:
+the investigator list is the same for the world and carries your own custom
+investigators on top. Deliberately not a key caller -- a route that widens its
+answer for whoever is asking should widen it for the owner only.
+-}
+lookupRequestUserId :: Handler (Maybe UserId)
+lookupRequestUserId = fmap join . traverse tokenToUserId =<< JWT.lookupToken
 
 {- | Who is calling, and what they are allowed to do.
 

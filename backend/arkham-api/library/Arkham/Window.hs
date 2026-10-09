@@ -113,9 +113,17 @@ defaultWindows iid =
   , mkWindow Timing.When FastPlayerWindow
   ]
 
-hasEliminatedWindow :: [Window] -> Bool
-hasEliminatedWindow = any $ \case
-  (windowType -> InvestigatorEliminated {}) -> True
+{- | Whether an eliminated seat should still process this window check.
+
+It must see the end of the game and its OWN elimination -- 'defeatedL' is set in
+the same handler that pushes that window -- but another investigator's
+elimination is none of its business: it would pick up every initiation in that
+window with no @You@ affinity, e.g. the resigning investigator's own weakness or
+an act's @Objective $ forced AnyWindow@. #5812
+-}
+hasOwnEliminatedWindow :: InvestigatorId -> [Window] -> Bool
+hasOwnEliminatedWindow iid = any $ \case
+  (windowType -> InvestigatorEliminated iid') -> iid' == iid
   (windowType -> EndOfGame {}) -> True
   _ -> False
 
@@ -227,6 +235,12 @@ data WindowType
   | VehicleLeaves AssetId LocationId
   | VehicleEnters AssetId LocationId
   | VehicleWouldEnter AssetId LocationId
+  | {- | An increase to this location's flood level is about to be applied. Raised
+    whether or not the level can actually change, so an ability that answers "when
+    its flood level would be increased" still gets its chance on a location that is
+    already at its maximum -- 'FloodLevelChanged' only fires when the level moves.
+    -}
+    WouldIncreaseFloodLevel LocationId FloodLevel FloodLevel
   | FloodLevelChanged LocationId FloodLevel FloodLevel
   | FloodLevelIncreased LocationMatcher
   | FirstTimeParleyingThisRound InvestigatorId

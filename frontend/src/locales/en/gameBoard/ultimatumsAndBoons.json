@@ -2,6 +2,7 @@
   "title": "Boons & Ultimatums",
   "boons": "Boons",
   "ultimatums": "Ultimatums",
+  "refractions": "Refractions",
   "selectedCount": "{count} selected",
   "noneSelected": "None selected",
   "settingsToggleTitle": "Ultimatums & Boons enabled",
@@ -135,6 +136,78 @@
     "UltimatumOfMalevolence": {
       "name": "Ultimatum of Malevolence",
       "text": "Easy or Standard difficulty only. While playing, use the \"Hard/Expert\" side of the scenario's reference card."
+    },
+    "UltimatumOfVenom": {
+      "name": "Ultimatum of Venom",
+      "text": "The Forgotten Age. Each copy of Poisoned gains “Forced – When the game ends, if you have not been eliminated: Suffer 1 physical trauma.”"
+    },
+    "UltimatumOfAmbuscade": {
+      "name": "Ultimatum of Ambuscade",
+      "text": "The Forgotten Age. After each successful exploration, the performing investigator reveals the top card of the encounter deck. If the revealed card is an enemy, they draw it. Otherwise, they discard it."
+    },
+    "UltimatumOfAnnoyance": {
+      "name": "Ultimatum of Annoyance",
+      "text": "Edge of the Earth. When the campaign begins, shuffle 3 random cards from the Tekeli-li encounter set into each investigator's deck."
+    },
+    "BoonOfAtonement": {
+      "name": "Boon of Atonement",
+      "text": "Shades of Suffering (The Scarlet Keys). Each agenda gets +1 doom threshold."
+    },
+    "BoonOfBliss": {
+      "name": "Boon of Bliss",
+      "text": "Fate of the Vale (The Feast of Hemlock Vale). Each agenda gets +2 doom threshold."
+    },
+    "UltimatumOfTheUnspeakableName": {
+      "name": "Ultimatum of the Unspeakable Name",
+      "text": "The Path to Carcosa. If you heeded Daniel's warning is recorded in your Campaign Log, each time you speak the name of HASTUR aloud during setup or play of a scenario, in addition to taking 1 horror, suffer 1 mental trauma."
+    },
+    "UltimatumOfTheBrassCrown": {
+      "name": "Ultimatum of the Brass Crown",
+      "text": "The Path to Carcosa. If you heeded Daniel's warning is recorded in your Campaign Log, at the beginning of each scenario, take 1 horror for each time you spoke, wrote, or typed the name of HASTUR since the end of the previous scenario."
+    },
+    "UltimatumOfTheFaultyCarburetor": {
+      "name": "Ultimatum of the Faulty Carburetor",
+      "text": "Horror in High Gear (The Innsmouth Conspiracy). During scenario setup, if you are playing with exactly 2 investigators, each investigator must choose to board the same vehicle."
+    },
+    "UltimatumOfTheSleeper": {
+      "name": "Ultimatum of the Sleeper",
+      "text": "The Doom of Arkham Pt II (The Drowned City). The health value of each Cthulhu enemy's Enraged side now reads “X per investigator.”"
+    },
+    "UltimatumOfInvisibility": {
+      "name": "Ultimatum of Invisibility",
+      "text": "Undimensioned and Unseen (The Dunwich Legacy). Each Brood of Yog-Sothoth gains the Elite trait and is immune to all player card effects except for the effects of Esoteric Formula."
+    },
+    "UltimatumOfTheMan": {
+      "name": "Ultimatum of The Man",
+      "text": "The Pallid Mask (The Path to Carcosa). For the purposes of Corpse Dweller's spawn ability, The Man in the Pallid Mask does not count as a Humanoid enemy. While it is Act 2, The Man in the Pallid Mask cannot leave the Tomb of Shadows."
+    },
+    "UltimatumOfSpoilage": {
+      "name": "Ultimatum of Spoilage",
+      "text": "The Drowned City. Investigators cannot trigger abilities on or assign damage to Artifact assets. If an Item asset from the Expedition encounter set is ever defeated or discarded, it cannot be chosen during setup for the remainder of the campaign."
+    },
+    "UltimatumOfDeath": {
+      "name": "Ultimatum of Death",
+      "text": "The Pallid Mask (The Path to Carcosa). After setup, immediately advance Agenda 1a to Specter of Death and spawn it at your starting location, exhausted. Agenda 2a gains +6 doom threshold. Specter of Death gains: “Forced – When Specter of Death is defeated: Instead of adding it to the victory display, heal all damage from it and exhaust it. It does not ready during the next upkeep phase.”"
+    },
+    "BoonOfTheDreamer": {
+      "name": "Boon of The Dreamer",
+      "text": "Where the Gods Dwell (The Dream-Eaters). After advancing to Act 5, advance to agenda 3a and remove all doom from it. This agenda gets +2 doom threshold."
+    },
+    "UltimatumOfMultiplication": {
+      "name": "Ultimatum of Multiplication",
+      "text": "Undimensioned and Unseen (The Dunwich Legacy). Instead of the standard setup instructions, begin the game with all five Brood of Yog-Sothoth cards in play: one in each of the five locations besides Dunwich Village. During this scenario, whenever an effect would cause you to spawn a set-aside Brood of Yog-Sothoth, you must instead place one doom on the current agenda."
+    },
+    "UltimatumOfTheDrowned": {
+      "name": "Ultimatum of the Drowned",
+      "text": "Into the Maelstrom (The Innsmouth Conspiracy). Each agenda gets –1 doom threshold. The Forced effect on Dagon's and Hydra's (Awakened and Enraged) sides instead reads: “Forced – After it is evaded or dealt damage: Do the same to a copy of its Brood in play, as well. Ready it.”"
+    },
+    "BoonOfTheMiners": {
+      "name": "Boon of The Miners",
+      "text": "Fate of the Vale (The Feast of Hemlock Vale). Fate of the Vale (v.III)'s first ability now reads “{'{'}action{'}'} Spend X clues: Place X resources on your location, as kindling…” and its second ability instead reads “{'{'}fast{'}'} If your location has 1 {'{'}perPlayer{'}'} kindling on it, remove all kindling from it: Draw 1 set-aside Fire! treachery. (Group limit once per location.)”"
+    },
+    "BoonOfTheDance": {
+      "name": "Boon of The Dance",
+      "text": "The Feast of Hemlock Vale. When choosing residents to share a dance with during Prelude: The Second Evening, players may check the Relationship Level requirements of a codex entry before resolving it."
     }
   },
   "morrigan": {

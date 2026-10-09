@@ -1,4 +1,8 @@
-module Arkham.Scenario.Scenarios.TheInnsmouthConspiracy.HorrorInHighGear (horrorInHighGear) where
+module Arkham.Scenario.Scenarios.TheInnsmouthConspiracy.HorrorInHighGear (
+  HorrorInHighGear (..),
+  horrorInHighGear,
+  setupHorrorInHighGear,
+) where
 
 import Arkham.Act.CardDefs.TheInnsmouthConspiracy.HorrorInHighGear qualified as Acts
 import Arkham.Agenda.CardDefs.TheInnsmouthConspiracy.HorrorInHighGear qualified as Agendas
@@ -25,6 +29,8 @@ import Arkham.Scenario.Deck
 import Arkham.Scenario.Import.Lifted
 import Arkham.Scenarios.TheInnsmouthConspiracy.HorrorInHighGear.Helpers
 import Arkham.Trait (Trait (Vehicle))
+import Arkham.UltimatumsAndBoons (hasUltimatum)
+import Arkham.UltimatumsAndBoons.Types (Ultimatum (UltimatumOfTheFaultyCarburetor))
 
 newtype HorrorInHighGear = HorrorInHighGear ScenarioAttrs
   deriving anyclass (IsScenario, HasModifiersFor)
@@ -37,13 +43,7 @@ horrorInHighGear difficulty =
     "07198"
     "Horror in High Gear"
     difficulty
-    [ ".      .      .    "
-    , ".      .      .    "
-    , "road1a road2a road3a"
-    , "road1a road2a road3a"
-    , ".      .      .    "
-    , ".      .      .    "
-    ]
+    scenarioLayout
 
 instance HasChaosTokenValue HorrorInHighGear where
   getChaosTokenValue iid tokenFace (HorrorInHighGear attrs) = case tokenFace of
@@ -63,6 +63,73 @@ chaosTokens =
   , AutoFail , ElderSign
   ]
 {- FOURMOLU_ENABLE -}
+
+{- | The Campaign Guide's setup. A wrapping scenario runs it as-is and declares its
+differences as builder overrides beforehand.
+-}
+setupHorrorInHighGear
+  :: ReverseQueue m => ScenarioAttrs -> ScenarioBuilderT m ()
+setupHorrorInHighGear _attrs = scenarioI18n do
+  theTerrorOfDevilReefIsDead <- getHasRecord TheTerrorOfDevilReefIsDead
+  playerCount <- getPlayerCount
+  gather Set.HorrorInHighGear
+  gather Set.FogOverInnsmouth
+  gather Set.Malfunction
+  gather Set.ShatteredMemories
+  gather Set.AncientEvils
+
+  let agenda1 = if theTerrorOfDevilReefIsDead then Agendas.theChaseIsOnV2 else Agendas.theChaseIsOnV1
+
+  setAgendaDeck [agenda1, Agendas.hotPursuit]
+  setActDeck [Acts.pedalToTheMetal]
+
+  (bottom, top) <-
+    splitAt 2
+      <$> shuffledPool
+        "roads"
+        [ Locations.dimlyLitRoad_a
+        , Locations.dimlyLitRoad_b
+        , Locations.dimlyLitRoad_c
+        , Locations.cliffsideRoad_a
+        , Locations.cliffsideRoad_b
+        , Locations.forkInTheRoad_a
+        , Locations.forkInTheRoad_b
+        , Locations.intersection_a
+        , Locations.intersection_b
+        , Locations.tightTurn_a
+        , Locations.tightTurn_b
+        , Locations.tightTurn_c
+        , Locations.desolateRoad_a
+        , Locations.desolateRoad_b
+        ]
+
+  bottom' <- shuffleM $ Locations.falconPointApproach : bottom
+  setAside $ replicate 6 Locations.longWayAround
+
+  let (inPlay, roadDeck) = splitAt 3 (top <> bottom')
+
+  placed <- for (withIndex1 inPlay) $ \(n, location) -> placeLabeled ("road" <> tshow n <> "a") location
+
+  for_ (zip placed (drop 1 placed)) \(left, right) -> do
+    push $ PlacedLocationDirection left LeftOf right
+
+  for_ (headMay $ reverse placed) \front -> do
+    assetAt_ Assets.thomasDawsonsCarRunning front
+    assetAt_ Assets.elinaHarpersCarRunning front
+    eachInvestigator (`forInvestigator` DoStep 1 Setup)
+    doStep 2 Setup
+    reveal front
+
+  addExtraDeck RoadDeck roadDeck
+
+  lead <- getLead
+  case playerCount of
+    2 -> findRandomEncounterCard lead ScenarioTarget (#enemy <> CardWithTrait Vehicle)
+    3 -> findRandomEncounterCard lead ScenarioTarget (#enemy <> CardWithTrait Vehicle)
+    4 -> do
+      findRandomEncounterCard lead ScenarioTarget (#enemy <> CardWithTrait Vehicle)
+      findRandomEncounterCard lead ScenarioTarget (#enemy <> CardWithTrait Vehicle)
+    _ -> pure ()
 
 instance RunMessage HorrorInHighGear where
   runMessage msg s@(HorrorInHighGear attrs) = runQueueT $ scenarioI18n $ case msg of
@@ -100,67 +167,20 @@ instance RunMessage HorrorInHighGear where
           li.validate (not theTerrorOfDevilReefIsDead) "theChaseIsOnV1"
         unscoped $ li "shuffleRemainder"
 
-      gather Set.HorrorInHighGear
-      gather Set.FogOverInnsmouth
-      gather Set.Malfunction
-      gather Set.ShatteredMemories
-      gather Set.AncientEvils
-
-      let agenda1 = if theTerrorOfDevilReefIsDead then Agendas.theChaseIsOnV2 else Agendas.theChaseIsOnV1
-
-      setAgendaDeck [agenda1, Agendas.hotPursuit]
-      setActDeck [Acts.pedalToTheMetal]
-
-      (bottom, top) <-
-        splitAt 2
-          <$> shuffleM
-            [ Locations.dimlyLitRoad_a
-            , Locations.dimlyLitRoad_b
-            , Locations.dimlyLitRoad_c
-            , Locations.cliffsideRoad_a
-            , Locations.cliffsideRoad_b
-            , Locations.forkInTheRoad_a
-            , Locations.forkInTheRoad_b
-            , Locations.intersection_a
-            , Locations.intersection_b
-            , Locations.tightTurn_a
-            , Locations.tightTurn_b
-            , Locations.tightTurn_c
-            , Locations.desolateRoad_a
-            , Locations.desolateRoad_b
-            ]
-
-      bottom' <- shuffleM $ Locations.falconPointApproach : bottom
-      setAside $ replicate 6 Locations.longWayAround
-
-      let (inPlay, roadDeck) = splitAt 3 (top <> bottom')
-
-      placed <- for (withIndex1 inPlay) $ \(n, location) -> placeLabeled ("road" <> tshow n <> "a") location
-
-      for_ (zip placed (drop 1 placed)) \(left, right) -> do
-        push $ PlacedLocationDirection left LeftOf right
-
-      for_ (headMay $ reverse placed) \front -> do
-        assetAt_ Assets.thomasDawsonsCarRunning front
-        assetAt_ Assets.elinaHarpersCarRunning front
-        eachInvestigator (`forInvestigator` DoStep 1 Setup)
-        doStep 2 Setup
-        reveal front
-
-      addExtraDeck RoadDeck roadDeck
-
-      lead <- getLead
-      case playerCount of
-        2 -> findRandomEncounterCard lead ScenarioTarget (#enemy <> CardWithTrait Vehicle)
-        3 -> findRandomEncounterCard lead ScenarioTarget (#enemy <> CardWithTrait Vehicle)
-        4 -> do
-          findRandomEncounterCard lead ScenarioTarget (#enemy <> CardWithTrait Vehicle)
-          findRandomEncounterCard lead ScenarioTarget (#enemy <> CardWithTrait Vehicle)
-        _ -> pure ()
+      setupHorrorInHighGear attrs
     ForInvestigator iid (DoStep 1 Setup) -> do
-      vehicles <- selectWithFilterM (AssetWithTrait Vehicle) \vehicle -> do
-        passengers <- selectCount $ InVehicleMatching $ AssetWithId vehicle
-        pure $ passengers < 2
+      cars <- select (AssetWithTrait Vehicle)
+      withPassengers <- for cars \vehicle ->
+        (vehicle,) <$> selectCount (InVehicleMatching $ AssetWithId vehicle)
+      {- Ultimatum of the Faulty Carburetor: at exactly two investigators, the
+      second has to board the car the first took. One candidate means
+      'chooseOrRunOneM' resolves it without asking, and the empty car is already
+      removed from the game by DoStep 2. -}
+      faulty <-
+        andM [hasUltimatum UltimatumOfTheFaultyCarburetor, (== 2) <$> getPlayerCount]
+      let boarded = [vehicle | (vehicle, passengers) <- withPassengers, passengers > 0]
+      let roomy = [vehicle | (vehicle, passengers) <- withPassengers, passengers < 2]
+      let vehicles = if faulty && notNull boarded then boarded else roomy
 
       chooseOrRunOneM iid do
         questionLabeled "whichVehicle"
@@ -235,10 +255,10 @@ instance RunMessage HorrorInHighGear where
     ScenarioResolution r -> scope "resolutions" do
       case r of
         NoResolution -> do
-          story $ i18nWithTitle "noResolution"
+          resolution "noResolution"
           record TheInvestigatorsReachedFalconPointAfterSunrise
         Resolution 1 -> do
-          story $ i18nWithTitle "resolution1"
+          resolution "resolution1"
           record TheInvestigatorsReachedFalconPointBeforeSunrise
         other -> throw $ UnknownResolution other
 

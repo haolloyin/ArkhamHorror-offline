@@ -265,6 +265,9 @@ defaultCampaignRunner msg a = case msg of
       let weaknessMessages =
             if morrigan then [] else map (AddCampaignCardToDeck iid ShuffleIn) randomWeaknesses
       ancients <- hasBoon BoonOfTheAncients
+      -- Ultimatum of Annoyance (Edge of the Earth Refraction).
+      annoyance <- hasUltimatum UltimatumOfAnnoyance
+      tekelili <- if annoyance then annoyanceTekeliliMessages iid else pure []
       purchaseTrauma <- initDeckTrauma deck' iid CampaignTarget
       initXp <- initDeckXp deck' iid CampaignTarget
       pid <- getPlayer iid
@@ -281,6 +284,7 @@ defaultCampaignRunner msg a = case msg of
       -- messages follow it, so the whole tail defers together and keeps its order.
       pushAll
         $ weaknessMessages
+        <> tekelili
         <> [ DeferPastSimultaneousAsk pid
                $ morriganSwaps
                <> purchaseTrauma
@@ -453,7 +457,8 @@ defaultCampaignRunner msg a = case msg of
       . overRecordedCount key (const Nothing)
       . (logL . orderedKeysL %~ removeOrderedKey)
   Record key -> do
-    send $ "Record \"" <> format key <> "\""
+    -- The log line is the narrator's now (log.recorded); this used to send its
+    -- own brace-DSL copy, which showed up beside the structured one.
     pure
       $ updateAttrs a
       $ ( logL
@@ -500,8 +505,9 @@ defaultCampaignRunner msg a = case msg of
             )
         )
         key
-  RecordCount key int -> do
-    send $ "Record \"" <> format key <> "\" (" <> tshow int <> ")"
+  RemoveRecordSetEntries key recs ->
+    pure $ updateAttrs a $ logL . recordedSetsL %~ adjustMap (filter (`notElem` recs)) key
+  RecordCount key int ->
     pure $ updateAttrs a $ overRecordedCount key (const $ Just int)
   IncrementRecordCount key int ->
     pure $ updateAttrs a $ overRecordedCount key (Just . maybe int (+ int))

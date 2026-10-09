@@ -58,7 +58,6 @@ import Arkham.Matcher (
   EnemyMatcher (..),
   InvestigatorMatcher (..),
   LocationMatcher (..),
-  accessibleTo,
   be,
   enemyAt,
   investigatorAt,
@@ -67,7 +66,6 @@ import Arkham.Matcher (
  )
 import Arkham.Message (Message (MoveAction, RevealLocation))
 import Arkham.Message qualified as Msg
-import Arkham.Name (display, toName)
 import Arkham.Placement
 import Arkham.Prelude
 import Arkham.Projection
@@ -179,10 +177,11 @@ instance RunMessage LocationAttrs where
           [ UpdateHistory iid (HistoryItem HistorySuccessfulInvestigations 1)
           , Successful (Action.Investigate, toTarget a) iid source (toTarget a) n
           ]
+      lbl <- getInvestigateResultLabel source a
       push
         $ SkillTestResultOption
           ( SkillTestOption
-              { option = Label ("Discover Clue at " <> display (toName a)) option
+              { option = Label lbl option
               , kind = OriginalOptionKind
               , criteria = Nothing
               }
@@ -195,10 +194,11 @@ instance RunMessage LocationAttrs where
           source
           locationId
           [Successful (Action.Investigate, toTarget a) iid source actual n]
+      lbl <- getInvestigateResultLabel source a
       push
         $ SkillTestResultOption
           ( SkillTestOption
-              { option = Label ("Discover Clue at " <> display (toName a)) option
+              { option = Label lbl option
               , kind = OriginalOptionKind
               , criteria = Nothing
               }
@@ -223,6 +223,8 @@ instance RunMessage LocationAttrs where
       pure $ a & cardsUnderneathL %~ filter ((`notElem` removedIds) . toCardId)
     SetLocationLabel lid label' | lid == locationId -> do
       pure $ a & labelL .~ label'
+    SetLocationGroup lid membership | lid == locationId -> do
+      pure $ a & groupL ?~ membership
     PlacedLocationDirection lid direction lid2 | lid2 == locationId -> do
       pure $ a & (directionsL %~ Map.insertWith (<>) direction [lid])
     PlacedLocationDirection lid direction lid2 | lid == locationId -> do
@@ -273,7 +275,7 @@ instance RunMessage LocationAttrs where
         $ a
         & (revealedConnectedMatchersL <>~ [LocationWithId toLid])
         & (connectedMatchersL <>~ [LocationWithId toLid])
-    EnterLocation iid lid | lid == locationId -> do
+    EnterLocation iid lid _ | lid == locationId -> do
       unless locationRevealed $ push (RevealLocation (Just iid) lid)
       pure a
     PlaceAsset aid (AtLocation lid) | lid == locationId -> do
@@ -291,7 +293,7 @@ instance RunMessage LocationAttrs where
           Helpers.checkWindows [Window.mkAfter (Window.VehicleEnters aid lid)]
         pushAll
           $ [ WhenWillEnterLocation iid lid
-            , EnterLocation iid lid
+            , EnterLocation iid lid Nothing
             , afterMoveButBeforeEnemyEngagement
             ]
           <> map EnemyCheckEngagement enemies
@@ -488,18 +490,29 @@ instance RunMessage LocationAttrs where
       pure $ a & sealsL %~ insertSet k
     PlaceSeal (isTarget a -> False) k -> do
       pure $ a & sealsL %~ deleteSet k
+    {- Every change to a flood level goes through 'SetFloodLevel', in three phases:
+    the request raises the windows, @Do@ clamps and announces the change, and
+    'ApplyFloodLevel' writes it.
+
+    'IncreaseFloodLevel' and 'DecreaseFloodLevel' only work out the level being asked
+    for and hand off, so there is one place that raises "would be increased" and one
+    message for an ability to cancel. The level handed over is deliberately /not/
+    clamped: the window has to fire for a location that cannot actually rise (an
+    Underground River already at its cap), and clamping first would hide that. -}
     IncreaseFloodLevel lid | lid == locationId -> do
-      mods <- getModifiers a
-      let
-        newFloodLevel =
-          if
-            | CannotBeFlooded `elem` mods -> Unflooded
-            | CannotBeFullyFlooded `elem` mods -> PartiallyFlooded
-            | otherwise -> maybe PartiallyFlooded increaseFloodLevel locationFloodLevel
-      liftRunMessage (SetFloodLevel lid newFloodLevel) a
+      let currentFloodLevel = fromMaybe Unflooded locationFloodLevel
+      liftRunMessage (SetFloodLevel lid $ increaseFloodLevel currentFloodLevel) a
     DecreaseFloodLevel lid | lid == locationId -> do
       liftRunMessage (SetFloodLevel lid $ maybe Unflooded decreaseFloodLevel locationFloodLevel) a
     SetFloodLevel lid level | lid == locationId -> do
+      let currentFloodLevel = fromMaybe Unflooded locationFloodLevel
+      before <-
+        if level > currentFloodLevel
+          then pure <$> checkWhen (Window.WouldIncreaseFloodLevel lid currentFloodLevel level)
+          else pure []
+      pushAll $ before <> [Do (SetFloodLevel lid level)]
+      pure a
+    Do (SetFloodLevel lid level) | lid == locationId -> do
       mods <- getModifiers a
       let
         maxFloodLevel =
@@ -510,14 +523,12 @@ instance RunMessage LocationAttrs where
         newFloodLevel = min maxFloodLevel level
         currentFloodLevel = fromMaybe Unflooded locationFloodLevel
       when (currentFloodLevel /= newFloodLevel) do
-        before <-
-          checkWhen (Window.FloodLevelChanged lid (fromMaybe Unflooded locationFloodLevel) newFloodLevel)
-        -- Must defer the *clamped* level: `Do msg` would carry the original level
-        -- and write it unclamped, letting effects like The Water Rises fully flood
-        -- a location that cannot be fully flooded (e.g. Underground River).
-        pushAll [before, Do (SetFloodLevel lid newFloodLevel)]
+        before <- checkWhen (Window.FloodLevelChanged lid currentFloodLevel newFloodLevel)
+        -- The *clamped* level is what gets written: carrying the original would let
+        -- effects like The Water Rises fully flood a location that cannot be.
+        pushAll [before, ApplyFloodLevel lid newFloodLevel]
       pure a
-    Do (SetFloodLevel lid level) | lid == locationId -> do
+    ApplyFloodLevel lid level | lid == locationId -> do
       after <- checkAfter (Window.FloodLevelChanged lid (fromMaybe Unflooded locationFloodLevel) level)
       push after
       pure $ a & floodLevelL ?~ level
@@ -563,7 +574,7 @@ instance RunMessage LocationAttrs where
       pure $ a & cardsUnderneathL %~ filter ((/= ec.id) . (.id))
     InvestigatorDrewEncounterCardFrom _iid ec _ -> do
       pure $ a & cardsUnderneathL %~ filter ((/= ec.id) . (.id))
-    InvestigatorDrewPlayerCardFrom _iid pc _ -> do
+    InvestigatorDrewPlayerCardFrom _iid pc _ _ -> do
       pure $ a & cardsUnderneathL %~ filter ((/= pc.id) . (.id))
     UseDrawCardUnderneath iid source | isSource a source ->
       case locationCardsUnderneath of
@@ -676,7 +687,7 @@ instance HasAbilities LocationAttrs where
           l
           AbilityMove
           ( CanMoveTo (LocationWithId l.id)
-              <> OnLocation (IncludeEmptySpace $ accessibleTo ForMovement l)
+              <> AccessibleToYou (LocationWithId l.id)
               <> exists (You <> can.move <> noModifier (CannotEnter l.id))
           )
         $ ActionAbility #move Nothing moveCost

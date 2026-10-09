@@ -2341,6 +2341,7 @@
   {
     "id": "07",
     "name": "The Innsmouth Conspiracy",
+    "floodRules": true,
     "difficultyLevels": {
       "Easy": [
         "PlusOne",
@@ -2692,7 +2693,7 @@
   {
     "id": "11",
     "name": "The Drowned City",
-    "beta": true,
+    "floodRules": true,
     "difficultyLevels": {
       "Easy": [
         "PlusOne",
@@ -2855,7 +2856,7 @@
   {
     "id": "13",
     "name": "Children of Blood",
-    "alpha": true,
+    "beta": true,
     "difficultyLevels": {
       "Easy": [
         "PlusOne",

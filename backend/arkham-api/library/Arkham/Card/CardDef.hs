@@ -266,6 +266,10 @@ cdCardPendingCommitEffects :: CardDef -> Bool
 cdCardPendingCommitEffects CardDef {cdOutOfPlayEffects} =
   PendingCommitEffect `elem` cdOutOfPlayEffects
 
+cdCardCommittedEffects :: CardDef -> Bool
+cdCardCommittedEffects CardDef {cdOutOfPlayEffects} =
+  CommittedEffect `elem` cdOutOfPlayEffects
+
 data CardDef = CardDef
   { cdCardCode :: CardCode
   , cdName :: Name
@@ -323,6 +327,13 @@ data CardDef = CardDef
   , cdBeforeEffect :: Bool
   , cdCustomizations :: Map Customization Int
   , cdOtherSide :: Maybe CardCode
+  , {- | Set on the extra defs that stand in for the second, third, ... physical copy
+    of one printed card. Copies need distinct card codes wherever an entity is keyed
+    by code rather than by card id -- 'Arkham.Id.StoryId' is the card code, so two
+    copies of one story could not otherwise be in play at once -- but the card browser
+    should still list the printed card only once, so these are filtered out of it.
+    -}
+    cdDuplicateOf :: Maybe CardCode
   , cdWhenDiscarded :: DiscardType
   , cdCanCommitWhenNoIcons :: Bool
   , cdCommitTrigger :: Bool
@@ -369,6 +380,14 @@ data OutOfPlayEffect
   | InSearchEffect
   | OnTopOfDeckEffect
   | PendingCommitEffect
+  | {- | The card needs a live entity for as long as it sits on a skill test as a
+    committed card, so that abilities can trigger from there. Only a committed
+    *skill* gets one for free (a 'Skill' entity parked in 'Limbo'); everything
+    else is filed in @skillTestCommittedCards@ and 'ObtainCard'ed out of its old
+    zone, leaving no entity at all. See 'Arkham.Game.Runner.preloadCommittedEntities',
+    and gate the abilities themselves on 'Arkham.Criteria.IsCommitted'.
+    -}
+    CommittedEffect
   deriving stock (Show, Eq, Ord, Data)
 
 instance HasField "attackOfOpportunityModifiers" CardDef [AttackOfOpportunityModifier] where
@@ -500,6 +519,7 @@ emptyCardDef cCode name cType =
     , cdBeforeEffect = False
     , cdCustomizations = mempty
     , cdOtherSide = Nothing
+    , cdDuplicateOf = Nothing
     , cdWhenDiscarded = ToDiscard
     , cdCanCommitWhenNoIcons = False
     , cdCommitTrigger = False
@@ -642,6 +662,7 @@ cardDefKeyValues CardDef {..} =
     , pairWhen cdBeforeEffect "beforeEffect" cdBeforeEffect
     , pairWhen (not $ null cdCustomizations) "customizations" cdCustomizations
     , pairJust "otherSide" cdOtherSide
+    , pairJust "duplicateOf" cdDuplicateOf
     , pairWhen (cdWhenDiscarded /= ToDiscard) "whenDiscarded" cdWhenDiscarded
     , pairWhen
         (cdCanCommitWhenNoIcons /= (null cdSkills && cdCardType == SkillType))
@@ -724,6 +745,7 @@ instance FromJSON CardDef where
     cdBeforeEffect <- o .:? "beforeEffect" .!= False
     cdCustomizations <- o .:? "customizations" .!= mempty
     cdOtherSide <- o .:? "otherSide"
+    cdDuplicateOf <- o .:? "duplicateOf"
     cdWhenDiscarded <- o .:? "whenDiscarded" .!= ToDiscard
     cdCanCommitWhenNoIcons <-
       o .:? "canCommitWhenNoIcons" .!= (null cdSkills && cdCardType == SkillType)

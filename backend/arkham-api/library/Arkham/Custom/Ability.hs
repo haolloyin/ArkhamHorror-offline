@@ -112,7 +112,11 @@ import Arkham.Id
 import Arkham.Matcher
 import Arkham.Message
 import Arkham.Message.Lifted (withInvestigatorAmounts)
-import Arkham.Message.Lifted.Placement (Placeable, Placement (InPlayArea, InThreatArea), place)
+import Arkham.Message.Lifted.Placement (
+  Placeable,
+  Placement (HiddenInHand, InPlayArea, InThreatArea),
+  place,
+ )
 import Arkham.Message.Lifted.Queue (ReverseQueue)
 import Arkham.Prelude
 import Arkham.Query (QueryElement)
@@ -437,11 +441,19 @@ runCustomRevelation a iid = do
   for_ (customRevelationPlacement (toCardDef a) iid) (place a)
   runCustomSteps a iid revelationMetaKey
 
+{- | Where the revelation leaves the card.
+
+Hidden is answered before the author is asked, because the keyword is itself the
+answer -- a hidden card's revelation "secretly adds that card to your hand" --
+and it is printed on the card, where a placement chosen in the builder is not.
+-}
 customRevelationPlacement :: CardDef -> InvestigatorId -> Maybe Placement
-customRevelationPlacement def iid = case customMetaMaybe revelationPlacementMetaKey def of
-  Just ("threatArea" :: Text) -> Just (InThreatArea iid)
-  Just "playArea" -> Just (InPlayArea iid)
-  _ -> Nothing
+customRevelationPlacement def iid
+  | isHiddenCustomCard def = Just (HiddenInHand iid)
+  | otherwise = case customMetaMaybe revelationPlacementMetaKey def of
+      Just ("threatArea" :: Text) -> Just (InThreatArea iid)
+      Just "playArea" -> Just (InPlayArea iid)
+      _ -> Nothing
 
 {- | Pick up a @distribute@ block where its ask left off.
 
@@ -473,9 +485,22 @@ entity -- by its target, its source, or its id. Without that check a handler
 would fire for every copy of the card and for messages aimed at other entities
 entirely.
 -}
+{- | Pick up steps that were deferred to the queue.
+
+A @choose@ that re-asks has to read the board again after each choice, so it
+hands the rest of itself back through the queue rather than resolving it all at
+the moment the card was played. 'RunCustomSteps' is that trip, and this is where
+it lands.
+-}
+resumeCustomSteps :: (CustomEntity a, HasGameLogger m, ReverseQueue m) => a -> Message -> m ()
+resumeCustomSteps a = \case
+  RunCustomSteps target (Object env) steps | target == toTarget a -> runSteps env (subSteps steps)
+  _ -> pure ()
+
 runCustomHandlers :: (CustomEntity a, HasGameLogger m, ReverseQueue m) => a -> Message -> m ()
 runCustomHandlers a msg = do
   resumeDistribute a msg
+  resumeCustomSteps a msg
   case toJSON msg of
     Object o -> handlers o
     _ -> pure ()

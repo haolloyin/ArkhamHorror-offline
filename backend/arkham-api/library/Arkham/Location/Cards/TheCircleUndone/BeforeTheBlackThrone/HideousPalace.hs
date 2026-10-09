@@ -8,6 +8,7 @@ import Arkham.Location.Import.Lifted
 import Arkham.Location.Types qualified as Field
 import Arkham.Matcher
 import Arkham.Message.Lifted.Move
+import Arkham.Placement
 import Arkham.Projection
 import Arkham.Scenario.Deck
 import Arkham.Scenarios.TheCircleUndone.BeforeTheBlackThrone.Helpers
@@ -38,8 +39,10 @@ instance RunMessage HideousPalace where
       pure l
     UseThisAbility _ (ProxySource (LocationSource lid) (isSource attrs -> True)) 1 -> do
       investigators <- select $ investigatorAt lid
+      enemies <- select $ EnemyWithPlacement (AtLocation lid)
       card <- field Field.LocationCard lid
       for_ investigators \iid -> moveTo (attrs.ability 1) iid attrs
+      for_ enemies \enemy -> enemyMoveTo (attrs.ability 1) enemy attrs
       removedLocation lid
       shuffleCardsIntoDeck CosmosDeck (only card)
       pure l

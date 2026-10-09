@@ -51,6 +51,45 @@ const sortByDataId = (a: HTMLElement, b: HTMLElement) => {
   if (!aId || !bId) return 0
   return aId < bId ? -1 : aId > bId ? 1 : 0
 }
+/* A location inside a group is drawn in that group's box, and the box is what the map
+ * connects: every member of a row connecting to every member of the next would otherwise
+ * draw a dozen lines where one belongs. So an endpoint resolves to its box element when
+ * it has one, connections between two members of the SAME box are dropped, and the many
+ * member-to-member edges between two boxes collapse into a single box-to-box edge. */
+const groupKeyOf = (locationId: string): string | null =>
+  props.game.locations[locationId]?.group?.key ?? null
+
+/** A group's box if the id is a group key, else the location's own element. */
+const elementFor = (id: string): HTMLElement | null =>
+  document.querySelector<HTMLElement>(`.location-group[data-id="${id}"]`)
+    ?? document.querySelector<HTMLElement>(`[data-id="${id}"]`)
+
+const connectionsOf = (locationId: string): string[] => {
+  const cs = props.game.locations[locationId]?.connectedLocations
+  if (!cs) return []
+  return Array.isArray(cs) ? cs : Object.values(cs)
+}
+
+/* A box stands in for its members only for the connections the cards are printed with,
+ * which is what the group was for: a whole row connects to the row below by symbol. A
+ * granted connection belongs to the one location that was granted it -- Path Forward
+ * opens the way up from a single location -- so that edge is drawn from the location
+ * itself, to each location it actually reaches. */
+const isGranted = (fromId: string, toId: string): boolean =>
+  props.game.locations[fromId]?.grantedConnections?.includes(toId) ?? false
+
+/** The pair the map actually joins: the two boxes, or the two locations. */
+const resolvedEdge = (fromId: string, toId: string): [string, string] =>
+  isGranted(fromId, toId)
+    ? [fromId, toId]
+    : [groupKeyOf(fromId) ?? fromId, groupKeyOf(toId) ?? toId]
+
+/** True when both ends sit in the same box, so there is nothing to draw between them. */
+const sameGroup = (a: string, b: string): boolean => {
+  const ka = groupKeyOf(a)
+  return ka !== null && ka === groupKeyOf(b)
+}
+
 const toConnection = (div1: HTMLElement, div2: HTMLElement): string | undefined => {
   const [leftDiv, rightDiv] = [div1, div2].sort(sortByDataId)
   const { id: leftDivId } = leftDiv.dataset
@@ -62,11 +101,13 @@ const svgRef = ref<SVGSVGElement | null>(null)
 const protoRef = ref<SVGLineElement | null>(null)
 const connectionProtoRef = ref<SVGPathElement | null>(null)
 const chevronProtoRef = ref<SVGPathElement | null>(null)
+const groupFrameProtoRef = ref<SVGRectElement | null>(null)
 let svgEl: SVGSVGElement | null = null
 let defsEl: SVGDefsElement | null = null
 let lineProto: SVGLineElement | null = null
 let connectionProto: SVGPathElement | null = null
 let chevronProto: SVGPathElement | null = null
+let groupFrameProto: SVGRectElement | null = null
 
 const EPS = 0.5
 const close = (a: number, b: number) => Math.abs(a - b) < EPS
@@ -74,6 +115,47 @@ const linesByConn = new Map<string, SVGLineElement>()
 const connectionPathsByConn = new Map<string, SVGPathElement>()
 const fateGlowLinesByConn = new Map<string, SVGLineElement>()
 const chevronsByConn = new Map<string, SVGPathElement>()
+/* The group boxes are drawn here rather than as the div's own border so the connections
+ * sit on top of them: the div lives inside the scaled location grid, which transform
+ * makes a stacking context, so nothing outside it can ever paint between the box and its
+ * members. The div keeps the layout; this draws the frame. */
+const groupFramesByKey = new Map<string, SVGRectElement>()
+
+function drawGroupFrames(): Set<string> {
+  const live = new Set<string>()
+  if (!svgEl) return live
+  const svgRect = svgEl.getBoundingClientRect()
+  for (const box of document.querySelectorAll<HTMLElement>('.location-group[data-id]')) {
+    const key = box.dataset.id
+    if (!key) continue
+    const rect = box.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) continue
+    live.add(key)
+    let frame = groupFramesByKey.get(key)
+    if (!frame) {
+      // Cloned from the proto like every other element here, so it carries the scoped
+      // style attribute -- a freshly created node would match no rule and paint black.
+      if (!groupFrameProto) continue
+      frame = groupFrameProto.cloneNode(true) as SVGRectElement
+      frame.classList.remove('original')
+      // First child, so every line and chevron paints over it.
+      svgEl.insertBefore(frame, svgEl.firstChild)
+      groupFramesByKey.set(key, frame)
+    }
+    setSvgAttr(frame, 'x', String(rect.left - svgRect.left))
+    setSvgAttr(frame, 'y', String(rect.top - svgRect.top))
+    setSvgAttr(frame, 'width', String(rect.width))
+    setSvgAttr(frame, 'height', String(rect.height))
+    setSvgAttr(frame, 'rx', String(scaled(12)))
+    setSvgAttr(frame, 'stroke-width', String(scaled(2)))
+  }
+  for (const [key, frame] of groupFramesByKey) {
+    if (live.has(key)) continue
+    frame.remove()
+    groupFramesByKey.delete(key)
+  }
+  return live
+}
 
 type GridDirection = 'North' | 'East' | 'South' | 'West'
 
@@ -209,12 +291,31 @@ function connectionPoints(div1: HTMLElement, div2: HTMLElement) {
   const offsetTrackLine = isWrittenInRockAct2.value
   const vertical = Math.abs(rCenterY - lCenterY) > Math.abs(rCenterX - lCenterX)
 
-  return {
-    x1: offsetTrackLine && vertical ? (lRect.left - svgRect.left) + (lRect.width * 0.78) : lCenterX,
-    y1: offsetTrackLine && !vertical ? (lRect.top - svgRect.top) + (lRect.height * 0.8) : lCenterY,
-    x2: offsetTrackLine && vertical ? (rRect.left - svgRect.left) + (rRect.width * 0.78) : rCenterX,
-    y2: offsetTrackLine && !vertical ? (rRect.top - svgRect.top) + (rRect.height * 0.8) : rCenterY,
-  }
+  const x1 = offsetTrackLine && vertical ? (lRect.left - svgRect.left) + (lRect.width * 0.78) : lCenterX
+  const y1 = offsetTrackLine && !vertical ? (lRect.top - svgRect.top) + (lRect.height * 0.8) : lCenterY
+  const x2 = offsetTrackLine && vertical ? (rRect.left - svgRect.left) + (rRect.width * 0.78) : rCenterX
+  const y2 = offsetTrackLine && !vertical ? (rRect.top - svgRect.top) + (rRect.height * 0.8) : rCenterY
+
+  /* A line runs centre to centre, which a location's own card hides. A group's box is
+   * mostly empty, so the stretch from its centre out to its edge would be drawn across
+   * the inside of the box -- pull those endpoints back to the edge. */
+  const a = clipToGroupEdge(div1, x1, y1, x2, y2, lRect)
+  const b = clipToGroupEdge(div2, x2, y2, x1, y1, rRect)
+  return { x1: a.x, y1: a.y, x2: b.x, y2: b.y }
+}
+
+/** Endpoint pulled back to the boundary of a group's box, along the line it lies on. */
+function clipToGroupEdge(
+  div: HTMLElement, cx: number, cy: number, towardX: number, towardY: number, rect: DOMRect,
+) {
+  if (!div.classList.contains('location-group')) return { x: cx, y: cy }
+  const dx = towardX - cx
+  const dy = towardY - cy
+  if (dx === 0 && dy === 0) return { x: cx, y: cy }
+  const scaleX = dx === 0 ? Infinity : (rect.width / 2) / Math.abs(dx)
+  const scaleY = dy === 0 ? Infinity : (rect.height / 2) / Math.abs(dy)
+  const scale = Math.min(scaleX, scaleY)
+  return { x: cx + dx * scale, y: cy + dy * scale }
 }
 
 function segmentsConflict(a: ConnectionCandidate, b: ConnectionCandidate): boolean {
@@ -384,6 +485,63 @@ function obstructedChevronCurve(candidate: ConnectionCandidate): number | null {
   // A shallow lane clears a card without swinging into the next row.
   const magnitude = Math.min(Math.max(distance * 0.28, 100), 140)
   return (outwardDot >= 0 ? 1 : -1) * magnitude
+}
+
+/** Distance from a point to a segment, clamped to the segment's ends. */
+function distanceToSegment(px: number, py: number, segment: ConnectionCandidate): number {
+  const dx = segment.x2 - segment.x1
+  const dy = segment.y2 - segment.y1
+  const lengthSquared = dx * dx + dy * dy
+  const t = lengthSquared === 0
+    ? 0
+    : Math.max(0, Math.min(1, ((px - segment.x1) * dx + (py - segment.y1) * dy) / lengthSquared))
+  return Math.hypot(px - (segment.x1 + t * dx), py - (segment.y1 + t * dy))
+}
+
+/* 'segmentsConflict' answers whether two segments cross or lie on one line, which is too
+ * exact for two routes that merely run alongside each other: a row connects to the row
+ * below from its box's centre while the location a Path Forward connects back up sits a
+ * couple of pixels off that centre, so the two never quite coincide and neither crosses
+ * the other. Walking the shorter route and asking how much of it runs within a few pixels
+ * of the longer one catches that, and the exact overlap too. */
+function routesShareALane(a: ConnectionCandidate, b: ConnectionCandidate): boolean {
+  // Routes out of the same place are expected to start together and fan apart.
+  if (a.start.dataset.id === b.start.dataset.id || a.start.dataset.id === b.end.dataset.id ||
+      a.end.dataset.id === b.start.dataset.id || a.end.dataset.id === b.end.dataset.id) return false
+
+  const lengthSquared = (c: ConnectionCandidate) => (c.x2 - c.x1) ** 2 + (c.y2 - c.y1) ** 2
+  const [shorter, longer] = lengthSquared(a) <= lengthSquared(b) ? [a, b] : [b, a]
+  const lane = scaled(12)
+  const samples = 20
+  let alongside = 0
+  for (let step = 0; step <= samples; step++) {
+    const t = step / samples
+    const x = shorter.x1 + (shorter.x2 - shorter.x1) * t
+    const y = shorter.y1 + (shorter.y2 - shorter.y1) * t
+    if (distanceToSegment(x, y, longer) <= lane) alongside++
+  }
+  return alongside / (samples + 1) >= 0.5
+}
+
+/* Two arrows can share a lane without either crossing a card, which 'obstructedChevronCurve'
+ * is the only other reason to bend one: a row's printed connection down to the row below and
+ * the single location a Path Forward connects back up both run between the same two boxes.
+ * Bend one of them so they read as two routes rather than one. Which one bends follows
+ * 'curveOffsets' -- the longer route gives way, ties by the stable connection key. */
+function overlappingRouteCurve(candidate: ConnectionCandidate, others: ConnectionCandidate[]): number {
+  const lengthSquared = (c: ConnectionCandidate) => (c.x2 - c.x1) ** 2 + (c.y2 - c.y1) ** 2
+  let conflicts = 0
+  for (const other of others) {
+    if (other.connection === candidate.connection) continue
+    if (!segmentsConflict(candidate, other) && !routesShareALane(candidate, other)) continue
+    const bend = lengthSquared(candidate) === lengthSquared(other)
+      ? candidate.connection > other.connection
+      : lengthSquared(candidate) > lengthSquared(other)
+    if (bend) conflicts++
+  }
+  if (conflicts === 0) return 0
+  const sign = Array.from(candidate.connection).reduce((sum, char) => sum + char.charCodeAt(0), 0) % 2 === 0 ? 1 : -1
+  return sign * scaled(Math.min(34 + (conflicts - 1) * 10, 64))
 }
 
 function makeOrUpdateConnectionPath(candidate: ConnectionCandidate, curveOffset = 0) {
@@ -871,32 +1029,44 @@ function handleConnections(includeFateOfTheVale = true) {
   const live = new Set<string>()
   nextMidpoints = {}
 
+  drawGroupFrames()
+
   // Build directed edge set so we can detect one-way connections by absence of
   // the reverse edge. connectedLocations is symmetric for normal connections
   // but asymmetric when a location's connectedMatchers don't match back.
+  // Keyed by RESOLVED endpoints: a row's symbols collapse onto the two boxes while the
+  // grant that opens the climb stays on its own location, so the box-to-box edge and the
+  // location's edge back are two different pairs -- each one-way, which is the truth.
   const directed = new Set<string>()
   for (const loc of allLocations.value) {
-    const cs = Array.isArray(loc.connectedLocations)
-      ? loc.connectedLocations
-      : Object.values(loc.connectedLocations)
-    for (const dst of cs) directed.add(`${loc.id}->${dst}`)
+    for (const dst of connectionsOf(loc.id)) {
+      if (sameGroup(loc.id, dst)) continue
+      const [from, to] = resolvedEdge(loc.id, dst)
+      directed.add(`${from}->${to}`)
+    }
   }
 
   const normalConnections = new Map<string, ConnectionCandidate>()
+  const chevronCandidates: ConnectionCandidate[] = []
   for (const location of locations.value) {
     const { id, connectedLocations } = location
     const connections = Array.isArray(connectedLocations)
       ? connectedLocations
       : Object.values(connectedLocations)
 
-    const start = document.querySelector<HTMLElement>(`[data-id="${id}"]`)
-    if (!start) continue
-
     for (const dst of connections) {
-      const end = document.querySelector<HTMLElement>(`[data-id="${dst}"]`)
-      if (!end) continue
+      const dstId = dst as string
+      // Members of one box need no line between them.
+      if (sameGroup(id, dstId)) continue
+      const [fromId, toId] = resolvedEdge(id, dstId)
+      const start = elementFor(fromId)
+      const end = elementFor(toId)
+      if (!start || !end) continue
+      // Both ends resolved to the same element (two members of one box, or a box
+      // connecting to itself) -- nothing to draw.
+      if (start === end) continue
 
-      const reverseExists = directed.has(`${dst}->${id}`)
+      const reverseExists = directed.has(`${toId}->${fromId}`)
 
       if (reverseExists) {
         const conn = toConnection(start, end)
@@ -912,7 +1082,9 @@ function handleConnections(includeFateOfTheVale = true) {
           if (points) normalConnections.set(conn, { connection: conn, start: left, end: right, ...points })
         }
       } else {
-        const conn = `${id}->${dst}`
+        // Keyed by resolved endpoints, so the many member-to-member edges between two
+        // boxes collapse into one arrow instead of one per pair.
+        const conn = `${fromId}->${toId}`
         if (location.modifiers?.some(m =>
           m.type?.tag === 'DoNotDrawConnection' &&
           (
@@ -920,15 +1092,12 @@ function handleConnections(includeFateOfTheVale = true) {
             (m.type.contents?.[0] === dst && m.type.contents?.[1] === id)
           )
         )) continue
+        if (live.has(conn)) continue
         live.add(conn)
         const points = connectionPoints(start, end)
-        const candidate = points
-          ? { connection: conn, start, end, ...points }
-          : null
-        const curveOffset = props.allowCurvedPaths && candidate
-          ? (obstructedChevronCurve(candidate) ?? 0)
-          : 0
-        makeOrUpdateChevrons(start, end, conn, curveOffset)
+        // Deferred: an arrow's lane depends on the others, and the rest are not known yet.
+        if (points) chevronCandidates.push({ connection: conn, start, end, ...points })
+        else makeOrUpdateChevrons(start, end, conn, 0)
       }
     }
   }
@@ -937,6 +1106,14 @@ function handleConnections(includeFateOfTheVale = true) {
   const offsets = props.allowCurvedPaths ? curveOffsets(candidates) : new Map<string, number>()
   for (const candidate of candidates) {
     makeOrUpdateConnectionPath(candidate, offsets.get(candidate.connection) ?? 0)
+  }
+
+  const everyRoute = [...candidates, ...chevronCandidates]
+  for (const candidate of chevronCandidates) {
+    const curveOffset = props.allowCurvedPaths
+      ? (obstructedChevronCurve(candidate) ?? overlappingRouteCurve(candidate, everyRoute))
+      : 0
+    makeOrUpdateChevrons(candidate.start, candidate.end, candidate.connection, curveOffset)
   }
 
   const invalidMineCart = mineCartInvalidDirection()
@@ -1075,6 +1252,7 @@ onMounted(async () => {
   lineProto = protoRef.value
   connectionProto = connectionProtoRef.value
   chevronProto = chevronProtoRef.value
+  groupFrameProto = groupFrameProtoRef.value
   // First draw immediately so a cold refresh shows lines at once, then redraw
   // after layout/images/cached Cosmic Emissary transforms settle. The normal
   // animation tick intentionally skips Fate of the Vale enemy lines, so without
@@ -1149,6 +1327,7 @@ onBeforeUnmount(()=> {
   lineProto = null
   connectionProto = null
   chevronProto = null
+  groupFrameProto = null
 })
 </script>
 
@@ -1164,6 +1343,7 @@ onBeforeUnmount(()=> {
     <line ref="protoRef" class="line original" stroke-dasharray="5, 5"/>
     <path ref="connectionProtoRef" class="line original" stroke-dasharray="5, 5"/>
     <path ref="chevronProtoRef" class="chevrons original"/>
+    <rect ref="groupFrameProtoRef" class="location-group-frame original"/>
   </svg>
   <div ref="laserLayerRef" class="connections-lasers" aria-hidden="true"></div>
   <div class="connections-between">
@@ -1179,6 +1359,13 @@ onBeforeUnmount(()=> {
 </template>
 
 <style scoped>
+/* The frame of a location group. Drawn here, under the lines, rather than as the box
+ * div's own border -- see drawGroupFrames. */
+.location-group-frame {
+  fill: var(--location-group-fill, rgba(255, 255, 255, 0.04));
+  stroke: var(--location-group-border, rgba(255, 255, 255, 0.28));
+}
+
 .connections-svg{
   pointer-events: none;
   position: absolute;

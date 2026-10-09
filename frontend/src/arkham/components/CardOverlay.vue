@@ -224,7 +224,27 @@ const targetFromEvent = (e: Event): HTMLElement | null => {
       && clientX <= rect.right
       && clientY >= rect.top
       && clientY <= rect.bottom
+      && !clippedAt(el, clientX, clientY)
   }) ?? null
+}
+
+/* Whether an ancestor's clipping means nothing is drawn there.
+
+This scan works on layout rects, and `overflow: hidden` does not change those:
+a card strip clipped to one row still lays out the rows beneath it, and those
+cards keep full-size rects behind whatever is painted below the strip. Without
+this, pointing at the page under a clipped strip found a card nobody can see
+and opened its overlay. Hit testing gets this right on its own -- the fallback
+exists for transformed cards, whose ancestors do not clip, so they are
+unaffected. */
+const clippedAt = (el: HTMLElement, x: number, y: number): boolean => {
+  for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+    const { overflowX, overflowY } = getComputedStyle(parent)
+    if (overflowX === 'visible' && overflowY === 'visible') continue
+    const rect = parent.getBoundingClientRect()
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return true
+  }
+  return false
 }
 
 const queueHover = (el: HTMLElement) => {
@@ -463,6 +483,19 @@ const sideways = computed<boolean>(() => {
   // fall back to natural aspect for dataset image
   const url = el.dataset.image ?? (el.dataset.imageId ? cardImg(el.dataset.imageId) : null)
   if (url) {
+    /* An <img> already showing that same picture knows its own shape now; the
+       cache below only answers on a later tick, because it re-loads the URL
+       through a fresh Image(). That tick is visible: the overlay opened
+       portrait and snapped to landscape on the first hover of every
+       investigator. Guarded on the src matching, since a card showing one face
+       can have the overlay resolve to the other. */
+    if (
+      el instanceof HTMLImageElement
+      && el.naturalWidth > 0
+      && el.getAttribute('src') === url
+    ) {
+      return el.naturalWidth > el.naturalHeight
+    }
     const ar = imgARCache.get(url)
     if (ar != null) return ar > 1
   }

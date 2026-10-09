@@ -112,6 +112,7 @@ export const MYTHOS: Record<string, string> = {
   ReckoningToken: 'mythos-reckoning',
   BlankToken: 'mythos-blank',
   SpreadTerrorToken: 'mythos-spread-terror',
+  WhiteMarkerToken: 'white-marker',
 }
 export const FOCUS: Record<string, string> = {
   Lore: 'focus-lore',
@@ -141,6 +142,7 @@ export const TOKEN_TIP: Record<string, [string, string]> = {
   'mythos-reckoning': ['Reckoning', 'Every reckoning effect in play resolves, one source at a time.'],
   'mythos-blank': ['Blank', 'Nothing happens, unless a card reacts to drawing a blank.'],
   'mythos-spread-terror': ['Spread terror', 'Terror spreads through a neighborhood holding an unstable space.'],
+  'white-marker': ['White marker', 'A marker a card has added to the cup; that card alone says what drawing it does.'],
 }
 
 // skill rows on the investigator sheet front, as fractions of the image
@@ -197,8 +199,44 @@ export const PHASE_BANNERS: Record<string, [string, string]> = {
 
 export const TILE_W = 240
 export const TILE_H = (TILE_W * 2) / Math.sqrt(3)
-export const STREET_W = 0.534 * TILE_W
-export const STREET_H = 0.537 * TILE_W
+/* A tile's picture is wider than the hexagon it holds: the hexagon's points touch the top
+and bottom of the picture, and a regular hexagon 907 across stands 1047 tall, not the 1000
+the picture is. The hexagon is 0.9548 of the picture, so the picture is drawn this much
+wider for the hexagon in it to come out TILE_W across -- and then its height is TILE_H,
+which is what a hexagon that wide stands anyway. Drawn any other shape, the tiles no
+longer meet the pieces laid between them. */
+export const TILE_ART_W = (TILE_H * 907) / 1000
+export const TILE_ART_H = TILE_H
+/* A street's length along the join, and how wide it is across that -- the size it is on
+the table, measured off the tabletop version by fitting this same art onto a photograph of
+its board. The art is square and is drawn square; stretching it along the join is what used
+to push the streets over the tiles they join. */
+export const STREET_W = 0.4189 * TILE_W
+export const STREET_H = (STREET_W * 813) / 808
+/* A connector hangs off one edge instead of spanning two tiles, so what sets its size is
+how deep it stands, not a street's length. The backend seats it as a piece this deep with a
+fifth of that tucked behind the tile's edge (@connectorDepth@ and @connectorTab@ in
+Tiles.hs), and that fifth is its tab: at this depth the tab is 0.068 long, which is exactly
+how deep the notch in a tile's edge is, so the tab bottoms out in the notch just as the
+piece's body comes up against the edge. Deeper and the tab's flared tip drives into the
+notch's walls, which is what buried the piece's corners in the tile. The
+box is as wide as the widest connector art and each picture is fitted inside it, which
+keeps every connector's own proportions -- they run from 1.01:1 to 1.20:1 -- and brings
+them all out at the same depth. */
+export const CONNECTOR_D = 0.349 * TILE_W
+export const CONNECTOR_W = 1.2 * CONNECTOR_D
+/* A corner piece stands in the junction three tiles leave between them, which the backend
+puts at the middle of their three centres. This is the size it is on the table, and it
+checks out against the hole it has to fill: that middle is 0.773 of a tile from each
+centre and their corners reach 0.562, so an arm has 0.211 to cross, and the art's arms run
+to 0.509 of the piece's width. */
+export const CORNER_W = 0.4158 * TILE_W
+/* A portal spans the same gap but is drawn square and a little larger, also measured. */
+export const PORTAL_W = 0.4409 * TILE_W
+/* Where the piece's own middle sits inside its art, as a fraction of the art: the point
+its three joining edges stand evenly round, which is not the middle of the picture. The
+art is turned about its box, so this offset has to be taken out, turned with it. */
+export const CORNER_ART_MIDDLE = { x: 0.4991, y: 0.4585 }
 export const HUB_R = 0.135
 
 export const DECK_KEYS = [
@@ -240,6 +278,6 @@ export const TEST_STEPS: [string, string][] = [
 ]
 
 export const archiveImage = (n: number, back: boolean) =>
-  img(`archive/core/${String(n).padStart(3, '0')}${back ? 'b' : ''}.avif`)
+  img(`archive/${String(n).padStart(3, '0')}${back ? 'b' : ''}.avif`)
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))

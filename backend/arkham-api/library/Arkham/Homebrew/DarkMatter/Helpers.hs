@@ -13,6 +13,7 @@ import Arkham.Calculation (
     SumCalculation
   ),
  )
+import Arkham.Campaign.Option (CampaignOption (CampaignVariant))
 import Arkham.CampaignLog (campaignLogRecordedCounts)
 import Arkham.CampaignLogKey (toCampaignLogKey)
 import Arkham.Card
@@ -53,6 +54,7 @@ import Arkham.Homebrew.DarkMatter.CardDefs.Treacheries qualified as Treacheries
 import Arkham.Homebrew.DarkMatter.Key
 import Arkham.Homebrew.DarkMatter.ScenarioDeckKeys (pattern EvidenceDeck, pattern ScanningDeck)
 import Arkham.Homebrew.DarkMatter.Traits (pattern Brain, pattern Carcosa)
+import Arkham.Homebrew.DarkMatter.UltimatumDefs
 import Arkham.I18n
 import Arkham.Id
 import Arkham.Investigator.Types (Field (InvestigatorLog, InvestigatorMentalTrauma))
@@ -66,7 +68,7 @@ import Arkham.Matcher (
   AssetMatcher (AssetAt, AssetFacedownInThreatAreaOf, AssetWithPlacement, AssetWithTrait),
   CardMatcher (AnyCard, CardWithTrait),
   EnemyMatcher (EnemyFacedownInThreatAreaOf, EnemyWithPlacement, IncludeOutOfPlayEnemy),
-  ExtendedCardMatcher (VictoryDisplayCardMatch),
+  ExtendedCardMatcher (ControlledBy, OwnedBy, VictoryDisplayCardMatch),
   InvestigatorMatcher (Anyone, InvestigatorAt, InvestigatorCanGainXp, InvestigatorWithId, You),
   LocationMatcher (
     LocationCanBeFlipped,
@@ -142,7 +144,9 @@ import Arkham.Source
 import Arkham.Story.Types (StoryAttrs)
 import Arkham.Target
 import Arkham.Token qualified as Token
-import Arkham.Trait (Trait (Cave, Crew))
+import Arkham.Trait (Trait (Cave, Crew, Science))
+import Arkham.UltimatumsAndBoons (hasUltimatum)
+import Arkham.UltimatumsAndBoons.Types (homebrewUltimatum)
 import Arkham.Window qualified as Window
 import Arkham.Xp
 
@@ -422,12 +426,28 @@ scanEventForCardType =
     EncounterAssetType -> AssetType
     cardType -> cardType
 
+-- | Is one of this campaign's own ultimatums active?
+hasDarkMatterUltimatum :: HasGame m => DarkMatterUltimatum -> m Bool
+hasDarkMatterUltimatum = hasUltimatum . homebrewUltimatum ultimatumCampaign . tshow
+
 {- | Announce a finished scan. All the keys fire as one window batch so that
 reactions to the same scan are simultaneous, rather than the narrower keys
 resolving after the general one.
+
+The Ultimatum of Exploration rewrites the outcome here rather than at the four
+call sites: a scan that drew a card with no scanning back does not count as
+successful, and a scan that *is* successful feeds the scanning deck from the top
+of the encounter deck.
 -}
 checkScanWindows :: ReverseQueue m => ScanResult -> m ()
-checkScanWindows r = do
+checkScanWindows scanned = do
+  exploration <- hasDarkMatterUltimatum UltimatumOfExploration
+  let
+    successful =
+      scanSuccessful scanned
+        && (not exploration || maybe True hasScanningBack (scannedCard scanned))
+    r = scanned {scanSuccessful = successful}
+  when (exploration && successful) $ shuffleIntoScanningDeck =<< takeTopOfEncounterDeck 1
   let
     event key = Window.mkAfter $ Window.CampaignEvent key (Just $ scannedBy r) (toJSON r)
     ks =
@@ -596,9 +616,15 @@ runPendingScan :: ReverseQueue m => PendingScan -> m ()
 runPendingScan (PendingScan iid source anchor icons) = do
   deck <- getScanningDeck
   banned <- bannedScanSymbols
+  -- Ultimatum of Exploration: an encounter card shuffled in from the encounter
+  -- deck has no scanning back, and counts as showing every icon.
+  exploration <- hasDarkMatterUltimatum UltimatumOfExploration
   let
     allowedIcons = filter (`notElem` banned) icons
-    matches c = notNull allowedIcons && all (`elem` scanIcons c) allowedIcons
+    matchesIcons c
+      | exploration && not (hasScanningBack c) = True
+      | otherwise = all (`elem` scanIcons c) allowedIcons
+    matches c = notNull allowedIcons && matchesIcons c
   case break matches deck of
     (skipped, []) -> do
       unless (null skipped) $ setScenarioDeck ScanningDeck =<< shuffle skipped
@@ -609,11 +635,34 @@ runPendingScan (PendingScan iid source anchor icons) = do
       drawScannedCard iid source x
       checkScanWindows $ ScanResult iid icons (Just x) True anchor
 
--- | "Scan ... with an icon matching your current location" — the usual form.
+{- | "Investigators may perform Scan abilities as if they were at that location"
+(Germanium Detector). Marks a location as a legal anchor for everybody's scans,
+on top of their own.
+-}
+pattern ScanAsIfHere :: ModifierType
+pattern ScanAsIfHere <- CampaignModifier "scanAsIfHere"
+  where
+    ScanAsIfHere = CampaignModifier "scanAsIfHere"
+
+-- | Scan anchored at a location, for that location's own printed icon.
+scanAtSymbolOf
+  :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> LocationId -> m ()
+scanAtSymbolOf iid source lid = do
+  symbol <- field LocationPrintedSymbol lid
+  scanAt iid source lid [symbol]
+
+{- | "Scan ... with an icon matching your current location" — the usual form.
+A location marked 'ScanAsIfHere' is offered as an alternative anchor; with none
+the scan happens where the investigator stands, without an ask.
+-}
 scanAtYourLocation :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> m ()
 scanAtYourLocation iid source = withLocationOf iid \lid -> do
-  symbol <- field LocationPrintedSymbol lid
-  scan iid source [symbol]
+  asIfHere <- select $ LocationWithModifier ScanAsIfHere <> not_ (LocationWithId lid)
+  if null asIfHere
+    then scanAtSymbolOf iid source lid
+    else chooseOneM iid $ campaignI18n do
+      labeled "scan.atYourLocation" $ scanAtSymbolOf iid source lid
+      targets asIfHere $ scanAtSymbolOf iid source
 
 {- | "If it is a location, put it into play and move to it." Drawing the scanned
 card normally places the location itself, so this only places it as a fallback.
@@ -1432,3 +1481,63 @@ freeMoveBetween source x y = freeMoveStep source x y >> freeMoveStep source y x
         s
         (AbilityTarget iid $ AbilityRef (LocationSource destination) AbilityMove)
         [ActionCostSetToModifier 0]
+
+-- ** The Science Expansion ** --
+
+{- | The campaign option that switches the Science Expansion on, chosen when the
+campaign is created. Without it none of its cards exist as far as the campaign is
+concerned: nothing is purchasable and Starfall's scanning deck is unchanged.
+-}
+scienceExpansion :: CampaignOption
+scienceExpansion = CampaignVariant "darkMatter.scienceExpansion"
+
+hasScienceExpansion :: HasGame m => m Bool
+hasScienceExpansion = hasCampaignOption scienceExpansion
+
+-- | The continuation-screen option that opens the Science Expansion's shop.
+purchaseScienceCards :: Text
+purchaseScienceCards = "darkMatter.purchaseScienceCards"
+
+{- | "These cards may be purchased directly and have their costs written in
+parenthesis next to their \"Researched\" keyword" — the experience and the
+\"Memories\" each one costs, in printed order.
+-}
+purchasableScienceCards :: [(CardDef, Int, Int)]
+purchasableScienceCards =
+  [ (Assets.grandUnifiedTheory, 3, 1)
+  , (Assets.scienceOverMysticism, 3, 1)
+  , (Assets.germaniumDetector, 3, 1)
+  , (Assets.subElectronNoiseSensor, 3, 1)
+  , (Assets.machineLearningAlgorithm, 2, 1)
+  , (Assets.nuclearPowerBank, 3, 1)
+  , (Assets.internationalCollaboration, 2, 1)
+  , (Assets.rationalMind, 3, 1)
+  , (Assets.particleAccelerator, 5, 1)
+  , (Assets.specialRelativity, 5, 1)
+  ]
+
+{- | "This expansion also includes 5 new cards with scanning backs to expand the
+space exploration of Scenario 6: Starfall. To include these cards in the
+campaign, after the setup of Starfall, shuffle these 5 cards into the scanning
+deck."
+-}
+extraStarfallScanningCards :: [CardDef]
+extraStarfallScanningCards =
+  [ Stories.hiddenSignals
+  , Stories.aWebbOfDiscovery
+  , Stories.aVoyageBeyondSpace
+  , Stories.curiousDiscovery
+  , Assets.laika
+  ]
+
+{- | "for each Science card they control or own" (the extra scanning cards).
+Ownership spans every zone a card of yours can be in — deck, hand, discard and
+play — so one count covers both halves for anything that came out of your own
+deck; a Science asset you control without owning is added on top.
+-}
+scienceCardsControlledOrOwnedBy :: HasGame m => InvestigatorId -> m Int
+scienceCardsControlledOrOwnedBy iid = do
+  let science = basic (CardWithTrait Science)
+  ownedCards <- select $ OwnedBy (InvestigatorWithId iid) <> science
+  controlledCards <- select $ ControlledBy (InvestigatorWithId iid) <> science
+  pure . length . ordNub $ map toCardId (ownedCards <> controlledCards)

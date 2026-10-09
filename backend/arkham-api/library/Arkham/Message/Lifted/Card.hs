@@ -126,10 +126,12 @@ setEncounterDeck = push . SetEncounterDeck
 setAsideCards :: ReverseQueue m => [CardDef] -> m ()
 setAsideCards = genCards >=> push . Msg.SetAsideCards
 
-setCardAside :: (ReverseQueue m, IsCard a) => a -> m ()
-setCardAside (toCard -> c) = do
-  obtainCard c
-  push $ Msg.SetAsideCards [c]
+setCardAside :: (ReverseQueue m, FetchCard a) => a -> m ()
+setCardAside a = do
+  card <- fetchCard a
+  selectEach (EnemyWithCardId card.id) (push . RemoveFromPlay . toSource)
+  obtainCard card
+  push $ Msg.SetAsideCards [card]
 
 shuffleSetAsideEncounterSet :: ReverseQueue m => EncounterSet -> m ()
 shuffleSetAsideEncounterSet eset = do
@@ -273,7 +275,7 @@ drawCardFrom iid deck (toCard -> card) = do
   obtainCard $ toCard card
   case card of
     EncounterCard ec -> push $ InvestigatorDrewEncounterCardFrom iid ec (Just $ toDeck deck)
-    PlayerCard pc -> push $ InvestigatorDrewPlayerCardFrom iid pc (Just $ toDeck deck)
+    PlayerCard pc -> push $ InvestigatorDrewPlayerCardFrom iid pc (Just $ toDeck deck) Nothing
     VengeanceCard vc -> Arkham.Message.Lifted.Card.drawCardFrom iid deck vc
 
 drawCard :: (ReverseQueue m, FetchCard card) => InvestigatorId -> card -> m ()
@@ -282,7 +284,7 @@ drawCard iid card = do
   obtainCard c
   case c of
     EncounterCard ec -> push $ InvestigatorDrewEncounterCard iid ec
-    PlayerCard pc -> push $ InvestigatorDrewPlayerCardFrom iid pc Nothing
+    PlayerCard pc -> push $ InvestigatorDrewPlayerCardFrom iid pc Nothing Nothing
     VengeanceCard vc -> Arkham.Message.Lifted.Card.drawCard iid vc
 
 discard :: (IsCard card, ReverseQueue m) => card -> m ()

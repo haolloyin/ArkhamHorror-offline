@@ -1,5 +1,6 @@
 import * as JsonDecoder from 'ts.data.json';
 import { v2Optional, withDefault } from '@/arkham/parser';
+import { LogRow, logRowDecoder } from '@/arkham/types/GameLog';
 import { Investigator, InvestigatorDetails, investigatorDecoder, investigatorDetailsDecoder } from '@/arkham/types/Investigator';
 import { Modifier, modifierDecoder } from '@/arkham/types/Modifier';
 import { ConcealedCard, concealedCardDecoder } from '@/arkham/types/ConcealedCard';
@@ -92,12 +93,13 @@ const multiplayerVariantDecoder = JsonDecoder.oneOf<MultiplayerVariant>(
   'MultiplayerVariant'
 );
 
-export type GameDetailsEntry = GameDetails & { tag: "game" }| { error: string, tag: "error" }
+export type BrokenGameDetails = { id: string, name: string, error: string }
+export type GameDetailsEntry = GameDetails & { tag: "game" }| BrokenGameDetails & { tag: "error" }
 
 export type Game = {
   id: string;
   name: string;
-  log: string[];
+  log: LogRow[];
   settings: GameSettings;
 
   activeInvestigatorId: string;
@@ -343,7 +345,7 @@ export const gameDetailsDecoder = JsonDecoder.object<GameDetails>(
 export const gameDetailsEntryDecoder = JsonDecoder.oneOf<GameDetailsEntry>(
   [
     gameDetailsDecoder.map(details => ({ ...details, tag: 'game' })),
-    JsonDecoder.object({ error: JsonDecoder.string() }, 'Error').map(error => ({ ...error, tag: 'error' }))
+    JsonDecoder.object({ id: JsonDecoder.string(), name: JsonDecoder.string(), error: JsonDecoder.string() }, 'Error').map(error => ({ ...error, tag: 'error' as const }))
   ],
   'GameDetailsEntry'
 );
@@ -352,7 +354,7 @@ export const gameDecoder: JsonDecoder.Decoder<Game> = JsonDecoder.object(
   {
     id: JsonDecoder.string(),
     name: JsonDecoder.string(),
-    log: JsonDecoder.array(JsonDecoder.string(), 'LogEntry[]'),
+    log: JsonDecoder.array(logRowDecoder, 'LogRow[]'),
     settings: v2Optional(gameSettingsDecoder),
     gameSettings: v2Optional(gameSettingsDecoder),
 

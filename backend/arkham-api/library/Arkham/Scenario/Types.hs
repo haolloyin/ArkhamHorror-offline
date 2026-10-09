@@ -20,6 +20,7 @@ import Arkham.Json
 import Arkham.Key
 import Arkham.Layout
 import Arkham.Location.Grid
+import Arkham.Location.Group
 import Arkham.Name
 import Arkham.Prelude
 import Arkham.Projection
@@ -108,6 +109,8 @@ data instance Field Scenario :: Type -> Type where
   ScenarioDefeatedEnemies :: Field Scenario (Map EnemyId DefeatedEnemyAttrs)
   ScenarioGrid :: Field Scenario Grid
   ScenarioLocationLayout :: Field Scenario [GridTemplateRow]
+  ScenarioLocationGroups :: Field Scenario [LocationGroup]
+  ScenarioSubstitutions :: Field Scenario (Map CardCode CardCode)
 
 deriving stock instance Show (Field Scenario typ)
 
@@ -127,6 +130,12 @@ data ScenarioAttrs = ScenarioAttrs
   , scenarioCompletedAgendaStack :: IntMap [Card]
   , scenarioCompletedActStack :: IntMap [Card]
   , scenarioLocationLayout :: [GridTemplateRow]
+  , scenarioLocationGroups :: [LocationGroup]
+  {- ^ Groups of locations the frontend draws as one box, routing connections to and
+    from the box rather than to each location inside it. Membership is recorded per
+    location ('Arkham.Location.Types.LocationGroupMembership'); this only declares each
+    group's key and how its box arranges its members.
+  -}
   , scenarioGrid :: Grid
   , scenarioDecks :: Map ScenarioDeckKey [Card]
   , scenarioDeckDiscards :: Map ScenarioDeckKey [Card]
@@ -173,6 +182,11 @@ data ScenarioAttrs = ScenarioAttrs
   , scenarioXpBreakdown :: Maybe XpBreakdown
   , scenarioCampaignStep :: Maybe CampaignStep
   , scenarioOptions :: Maybe ScenarioOptions
+  , scenarioSubstitutions :: Map CardCode CardCode
+  {- ^ What 'substitute' swapped during setup, keyed by the card code it replaced. Kept
+    past setup so code that names the original card still finds the one standing in for
+    it -- an agenda shuffling it back in, a search for it.
+  -}
   }
   deriving stock (Show, Eq)
 
@@ -332,11 +346,13 @@ scenario f cardCode name difficulty layout =
       , scenarioCardsNextToActDeck = mempty
       , scenarioCardsNextToAgendaDeck = mempty
       , scenarioLocationLayout = layout
+      , scenarioLocationGroups = []
       , scenarioGrid = initGrid
       , scenarioDecks = mempty
       , scenarioDeckDiscards = mempty
       , scenarioLog = mempty
       , scenarioCounts = mempty
+      , scenarioSubstitutions = mempty
       , scenarioSetAsideCards = mempty
       , scenarioStandaloneCampaignLog = mkCampaignLog
       , scenarioCardsUnderScenarioReference = mempty
@@ -460,12 +476,14 @@ instance FromJSON ScenarioAttrs where
     scenarioCompletedAgendaStack <- o .: "completedAgendaStack"
     scenarioCompletedActStack <- o .: "completedActStack"
     scenarioLocationLayout <- o .: "locationLayout"
+    scenarioLocationGroups <- o .:? "locationGroups" .!= []
     scenarioGrid <- o .:? "grid" .!= initGrid
     scenarioDecks <- o .: "decks"
     scenarioDeckDiscards <- o .:? "deckDiscards" .!= mempty
     scenarioLog <- o .: "log"
     scenarioCounts <- o .: "counts"
     scenarioStandaloneCampaignLog <- o .: "standaloneCampaignLog"
+    scenarioSubstitutions <- o .:? "substitutions" .!= mempty
     scenarioSetAsideCards <- o .: "setAsideCards"
     scenarioInResolution <- o .: "inResolution"
     scenarioUseHardExpertReference <- o .:? "useHardExpertReference" .!= False

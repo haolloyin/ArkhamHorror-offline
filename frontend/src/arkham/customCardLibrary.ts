@@ -7,8 +7,11 @@
 // separate on purpose.
 import { computed, reactive, ref } from 'vue'
 import * as Api from '@/arkham/api'
+import { useCardStore } from '@/stores/cards'
 import {
+  bareCardCode,
   cardArtReference,
+  customCardCodes,
   normalizeCardDef,
   registerCustomCards,
   unregisterCustomCard,
@@ -148,8 +151,20 @@ export function libraryCards(): LibraryCard[] {
   return [...entries].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 }
 
+/* Its own code, or one it answers to: a card can name the arkham.build card it
+ * stands in for, and a deck built there names that one. Own codes are checked
+ * across the whole library before any alias, so a card cannot be shadowed by
+ * another one's claim to be it.
+ *
+ * Compared bare on both sides: a stored def's code carries the wire `c`, an
+ * alias is derived bare, and callers pass either. */
 export function libraryCard(cardCode: string): LibraryCard | undefined {
-  return entries.find((e) => e.def.cardCode === cardCode)
+  const want = bareCardCode(cardCode)
+  const bare = (code: string) => bareCardCode(code) === want
+  return (
+    entries.find((e) => bare(e.def.cardCode))
+    ?? entries.find((e) => customCardCodes(e.def).some(bare))
+  )
 }
 
 // ------------------------------------------------------------------ sets ---
@@ -176,19 +191,27 @@ export async function createSet(name: string): Promise<LibrarySet> {
   return set
 }
 
-export async function renameSet(id: string, name: string): Promise<LibrarySet> {
-  const set = await Api.renameCustomCardSet(id, name)
+/* Rename, redescribe, relink, or any of them. `description` and `url` left out
+ * keep whatever is stored, so renaming cannot wipe a blurb or a link. */
+export async function updateSet(
+  id: string,
+  changes: { name: string; description?: string | null; url?: string | null },
+): Promise<LibrarySet> {
+  const set = await Api.updateCustomCardSet(id, changes)
   upsertSet(set)
   /* The name is stamped onto every card in the set so a card exported on its
    * own still says where it came from; the server rewrites them, and the copies
    * held here have to follow or an export taken before the next reload would
-   * carry the old name. */
+   * carry the old name. The description and the link are not stamped on: they
+   * describe the set, and a card on its own is not the set. */
   for (const card of entries) {
     if (card.setId === id) card.def.meta = { ...card.def.meta, set: set.name }
   }
   registerCustomCards(entries.filter((c) => c.setId === id))
   return set
 }
+
+export const renameSet = (id: string, name: string) => updateSet(id, { name })
 
 /* Deleting a set deletes what is in it -- the point of the set being the unit
  * you can change your mind about, rather than 150 cards you delete one by one. */
@@ -209,11 +232,15 @@ export async function removeSet(id: string) {
  * to be gone here too. */
 export async function importSet(payload: {
   name: string
+  description?: string | null
+  url?: string | null
   sourceCode: string | null
   cards: CustomCard[]
 }): Promise<LibrarySet> {
   const { set, cards } = await Api.importCustomCardSet({
     name: payload.name,
+    description: payload.description,
+    url: payload.url,
     sourceCode: payload.sourceCode,
     cards: payload.cards.map((c) => ({ def: c.def, art: c.art })),
   })
@@ -240,8 +267,8 @@ export async function importSet(payload: {
  * cards, on an update, and its subscription either way -- so the library is
  * reloaded rather than patched from the response. */
 
-export async function publishSet(id: string, note: string | null) {
-  const published = await Api.publishCustomCardSet(id, note)
+export async function publishSet(id: string, note: string | null, notify: boolean) {
+  const published = await Api.publishCustomCardSet(id, note, notify)
   await loadLibrary(true)
   return published
 }
@@ -268,12 +295,29 @@ export const updateAvailable = (set: LibrarySet) =>
   set.subscribedVersion !== null &&
   set.latestVersion > set.subscribedVersion
 
+/* Where a set of your own stands with the marketplace. `null` for a set you have
+ * never submitted, which is most of them. */
+export const reviewStatus = (set: LibrarySet) => set.submissionStatus
+
+export const isAwaitingReview = (set: LibrarySet) => set.submissionStatus === 'pending'
+
+export const wasDenied = (set: LibrarySet) => set.submissionStatus === 'denied'
+
+/* Whether a version of this set is in the marketplace. A later version may be
+ * waiting or have been turned down without changing that. */
+export const isListed = (set: LibrarySet) => set.approvedVersion !== null
+
 export async function saveToLibrary(card: CustomCard, setId: string): Promise<LibraryCard> {
   const saved = toLibraryCard(await Api.saveCustomCard({ setId, def: card.def, art: card.art }))
   const index = entries.findIndex((e) => e.def.cardCode === saved.def.cardCode)
   if (index === -1) entries.push(saved)
   else entries.splice(index, 1, saved)
   registerCustomCards([saved])
+  /* The registry is not the card pool the rest of the app reads: a game resolves
+   * defs through the card store, which is loaded once per page. Without this a
+   * save was invisible -- the old def kept answering for the card -- until a
+   * reload. */
+  useCardStore().syncCustomCards()
   recountSets()
   return saved
 }
@@ -297,11 +341,22 @@ export const EXPORT_VERSION = 2
 
 export type CardExport = {
   version: number
-  set?: { name: string; sourceCode: string | null }
+  set?: {
+    name: string
+    description?: string | null
+    url?: string | null
+    sourceCode: string | null
+  }
   cards: { def: any; art: string | null }[]
 }
 
-export type ParsedCardExport = { name: string; sourceCode: string | null; cards: CustomCard[] }
+export type ParsedCardExport = {
+  name: string
+  description: string | null
+  url: string | null
+  sourceCode: string | null
+  cards: CustomCard[]
+}
 
 /* An export carries the image itself, not a link to it.
  *
@@ -321,7 +376,16 @@ export async function exportCards(cards: CustomCard[], set?: LibrarySet): Promis
   )
   return {
     version: EXPORT_VERSION,
-    ...(set ? { set: { name: set.name, sourceCode: set.sourceCode } } : {}),
+    ...(set
+      ? {
+          set: {
+            name: set.name,
+            description: set.description,
+            url: set.url,
+            sourceCode: set.sourceCode,
+          },
+        }
+      : {}),
     cards: inlined,
   }
 }
@@ -374,8 +438,15 @@ export function parseCardExport(raw: string, fallbackName = 'Imported cards'): P
     .map((c: any) => ({ def: c.def, art: c.art ?? null }))
 
   const declared = typeof parsed?.set?.name === 'string' ? parsed.set.name.trim() : ''
+  const described =
+    typeof parsed?.set?.description === 'string' ? parsed.set.description.trim() : ''
+  const linked = typeof parsed?.set?.url === 'string' ? parsed.set.url.trim() : ''
   return {
     name: declared || (cards.length ? declaredSetName(cards[0]) : null) || fallbackName,
+    // Null, not '', for a file written before descriptions existed: the server
+    // reads "nothing said" as "leave the set's own alone".
+    description: described || null,
+    url: linked || null,
     sourceCode: parsed?.set?.sourceCode ?? null,
     cards,
   }

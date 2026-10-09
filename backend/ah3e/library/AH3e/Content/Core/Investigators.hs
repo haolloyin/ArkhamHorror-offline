@@ -42,7 +42,12 @@ investigators =
       , starting =
           [ StartingCard "duke"
           , StartingMoney 1
-          , StartingChoice [[StartingCard "petes-guitar"], [StartingCard "dark-dreams"]]
+          , -- Wanderer is printed in Under Dark Waves, as Pete's own sheet finally was
+            StartingChoice
+              [ [StartingCard "petes-guitar"]
+              , [StartingCard "dark-dreams"]
+              , [StartingCard "wanderer"]
+              ]
           ]
       , roles = [Survivor]
       , abilityText =

@@ -78,58 +78,38 @@ ursineBrute =
     }
 
 -- harm_s_way
-toweringDarkYoung_065 :: CardDef
-toweringDarkYoung_065 =
-  (enemy ":circus-ex-mortis:065" "Towering Dark Young" Set.HarmsWay 1)
-    { cdHealthDamage = healthDamage 3
+
+{- | The five Towering Dark Young differ only in how they attack; they are 'Massive' with
+no printed health, because the scenario never lets one be fought down.
+-}
+toweringDarkYoung :: CardCode -> Maybe HealthDamage -> Maybe SanityDamage -> CardDef
+toweringDarkYoung code damage horror =
+  (enemy code "Towering Dark Young" Set.HarmsWay 1)
+    { cdHealthDamage = damage
+    , cdSanityDamage = horror
     , cdFight = fight 3
     , cdEvade = evade 3
     , cdCardTraits = setFromList [Monster, DarkYoung, Elite]
     , cdKeywords = singleton Keyword.Massive
     }
 
+toweringDarkYoung_065 :: CardDef
+toweringDarkYoung_065 = toweringDarkYoung ":circus-ex-mortis:065" (healthDamage 3) Nothing
+
 toweringDarkYoung_066 :: CardDef
-toweringDarkYoung_066 =
-  (enemy ":circus-ex-mortis:066" "Towering Dark Young" Set.HarmsWay 1)
-    { cdSanityDamage = sanityDamage 3
-    , cdFight = fight 3
-    , cdEvade = evade 3
-    , cdCardTraits = setFromList [Monster, DarkYoung, Elite]
-    , cdKeywords = singleton Keyword.Massive
-    }
+toweringDarkYoung_066 = toweringDarkYoung ":circus-ex-mortis:066" Nothing (sanityDamage 3)
 
 toweringDarkYoung_067 :: CardDef
 toweringDarkYoung_067 =
-  (enemy ":circus-ex-mortis:067" "Towering Dark Young" Set.HarmsWay 1)
-    { cdHealthDamage = healthDamage 2
-    , cdSanityDamage = sanityDamage 2
-    , cdFight = fight 3
-    , cdEvade = evade 3
-    , cdCardTraits = setFromList [Monster, DarkYoung, Elite]
-    , cdKeywords = singleton Keyword.Massive
-    }
+  toweringDarkYoung ":circus-ex-mortis:067" (healthDamage 2) (sanityDamage 2)
 
 toweringDarkYoung_068 :: CardDef
 toweringDarkYoung_068 =
-  (enemy ":circus-ex-mortis:068" "Towering Dark Young" Set.HarmsWay 1)
-    { cdHealthDamage = healthDamage 1
-    , cdSanityDamage = sanityDamage 1
-    , cdFight = fight 3
-    , cdEvade = evade 3
-    , cdCardTraits = setFromList [Monster, DarkYoung, Elite]
-    , cdKeywords = singleton Keyword.Massive
-    }
+  toweringDarkYoung ":circus-ex-mortis:068" (healthDamage 1) (sanityDamage 1)
 
 toweringDarkYoung_069 :: CardDef
 toweringDarkYoung_069 =
-  (enemy ":circus-ex-mortis:069" "Towering Dark Young" Set.HarmsWay 1)
-    { cdHealthDamage = healthDamage 1
-    , cdSanityDamage = sanityDamage 1
-    , cdFight = fight 3
-    , cdEvade = evade 3
-    , cdCardTraits = setFromList [Monster, DarkYoung, Elite]
-    , cdKeywords = singleton Keyword.Massive
-    }
+  toweringDarkYoung ":circus-ex-mortis:069" (healthDamage 1) (sanityDamage 1)
 
 sacrificialShepherd :: CardDef
 sacrificialShepherd =
@@ -322,6 +302,7 @@ theCultEnMasseLeaderlessFanaticism =
     , cdEvade = evade 4
     , cdHealth = healthPerInvestigator 6
     , cdCardTraits = setFromList [Humanoid, Cultist, Elite]
+    , cdKeywords = setFromList [Keyword.Massive, Keyword.Retaliate, Keyword.Alert]
     , cdVictoryPoints = Just 1
     }
 
@@ -334,6 +315,7 @@ theCultEnMasseBlackGoatsRapture =
     , cdEvade = evade 4
     , cdHealth = healthPerInvestigator 6
     , cdCardTraits = setFromList [Humanoid, Cultist, Elite]
+    , cdKeywords = setFromList [Keyword.Massive, Keyword.Alert]
     , cdVictoryPoints = Just 1
     }
 
@@ -346,6 +328,7 @@ theCultEnMasseRingmastersFervor =
     , cdEvade = evade 3
     , cdHealth = healthPerInvestigator 6
     , cdCardTraits = setFromList [Humanoid, Cultist, Elite]
+    , cdKeywords = setFromList [Keyword.Massive]
     , cdVictoryPoints = Just 1
     }
 
@@ -358,6 +341,7 @@ devoteeOfTheThousand =
     , cdEvade = evade 3
     , cdHealth = healthPerInvestigator 1
     , cdCardTraits = setFromList [Humanoid, Cultist]
+    , cdKeywords = setFromList [Keyword.Hunter, Keyword.Retaliate, Keyword.Alert]
     }
 
 maliciousGoatspawn :: CardDef
@@ -369,6 +353,7 @@ maliciousGoatspawn =
     , cdEvade = evade 4
     , cdHealth = health 3
     , cdCardTraits = setFromList [Humanoid, Monster]
+    , cdKeywords = setFromList [Keyword.Hunter, Keyword.Alert]
     }
 
 roamingDarkYoung :: CardDef
@@ -380,18 +365,66 @@ roamingDarkYoung =
     , cdEvade = evade 3
     , cdHealth = health 4
     , cdCardTraits = setFromList [Monster, DarkYoung]
+    , cdKeywords = setFromList [Keyword.Hunter, Keyword.Alert]
     }
 
 -- thousand_to_one
-ravenousBrood :: CardDef
-ravenousBrood =
+
+{- | The enemy printed on the back of the Strike the Heart Destiny story (:201). The
+story side is the face that ends up in the victory display, which is why this is
+'otherSideIs' rather than 'doubleSided': only one of the two faces is an enemy.
+-}
+malformedDarkYoung :: CardDef
+malformedDarkYoung =
+  otherSideIs ":circus-ex-mortis:201"
+    $ (enemy ":circus-ex-mortis:201b" "Malformed Dark Young" Set.ThousandToOne 1)
+      { cdFight = fight 4
+      , cdEvade = evade 2
+      , cdHealth = health 10
+      , cdCardTraits = setFromList [Monster, Abomination, Elite]
+      , cdKeywords = setFromList [Keyword.Hunter, Keyword.Retaliate]
+      }
+
+-- | The enemy printed on the back of the Silence the Pipes Destiny story (:202).
+piperOfShubNiggurath :: CardDef
+piperOfShubNiggurath =
+  otherSideIs ":circus-ex-mortis:202"
+    $ (enemy ":circus-ex-mortis:202b" "Piper of Shub-Niggurath" Set.ThousandToOne 1)
+      { cdFight = fight 3
+      , cdEvade = evade 3
+      , cdHealth = health 12
+      , cdCardTraits = setFromList [Humanoid, Monster, Elite]
+      }
+
+{- | Both faces of Ravenous Brood are enemies, so each side is its own def pointing at
+the other (the Cthulhu/The Organist shape). The printed health on the front face is "X",
+and the card's only X is "X is equal to the number of players" -- see
+"Arkham.Homebrew.CircusExMortis.Enemies.RavenousBrood_209".
+-}
+ravenousBrood_209 :: CardDef
+ravenousBrood_209 =
   doubleSided ":circus-ex-mortis:209b"
     $ (enemy ":circus-ex-mortis:209" "Ravenous Brood" Set.ThousandToOne 8)
       { cdHealthDamage = healthDamage 1
       , cdSanityDamage = sanityDamage 1
       , cdFight = fight 3
       , cdEvade = evade 2
+      , cdHealth = healthX
       , cdCardTraits = setFromList [Monster, DarkYoung]
+      , cdKeywords = setFromList [Keyword.Hunter, Keyword.Retaliate]
+      }
+
+ravenousBrood_209b :: CardDef
+ravenousBrood_209b =
+  doubleSided ":circus-ex-mortis:209"
+    $ (enemy ":circus-ex-mortis:209b" "Ravenous Brood" Set.ThousandToOne 8)
+      { cdHealthDamage = healthDamage 1
+      , cdSanityDamage = sanityDamage 1
+      , cdFight = fight 1
+      , cdEvade = evade 2
+      , cdHealth = health 2
+      , cdCardTraits = setFromList [Monster, DarkYoung]
+      , cdKeywords = setFromList [Keyword.Hunter, Keyword.Alert]
       }
 
 darkYoungJuggernaut :: CardDef
@@ -403,22 +436,26 @@ darkYoungJuggernaut =
     , cdEvade = evade 3
     , cdHealth = health 4
     , cdCardTraits = setFromList [Monster, DarkYoung]
+    , cdKeywords = singleton Keyword.Hunter
     }
 
+-- | No printed health: Shub-Niggurath can be fought and evaded, but never defeated.
 shubNiggurath :: CardDef
 shubNiggurath =
-  ( enemy
-      ":circus-ex-mortis:215"
-      ("Shub-Niggurath" <:> "All-Mother of a Thousand Young")
-      Set.ThousandToOne
-      1
-  )
-    { cdHealthDamage = healthDamage 2
-    , cdSanityDamage = sanityDamage 2
-    , cdFight = fight 4
-    , cdEvade = evade 4
-    , cdCardTraits = setFromList [AncientOne, Elite]
-    }
+  unique
+    $ ( enemy
+          ":circus-ex-mortis:215"
+          ("Shub-Niggurath" <:> "All-Mother of a Thousand Young")
+          Set.ThousandToOne
+          1
+      )
+      { cdHealthDamage = healthDamage 2
+      , cdSanityDamage = sanityDamage 2
+      , cdFight = fight 4
+      , cdEvade = evade 4
+      , cdCardTraits = setFromList [AncientOne, Elite]
+      , cdKeywords = setFromList [Keyword.Massive, Keyword.Retaliate]
+      }
 
 -- children_of_the_goat
 nascentDarkYoung :: CardDef

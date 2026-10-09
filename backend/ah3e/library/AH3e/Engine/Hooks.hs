@@ -42,6 +42,9 @@ customEffect key = Map.lookup key behaviors.customEffects
 customActivation :: Text -> Maybe (CardId -> GameM ())
 customActivation key = Map.lookup key behaviors.customActivations
 
+customPredicate :: Text -> Maybe (EffectCtx -> GameM Bool)
+customPredicate key = Map.lookup key behaviors.customPredicates
+
 codexEntry :: ArchiveNumber -> GameM (Maybe CodexEntry)
 codexEntry n = uses #codex (listToMaybe . filter ((== n) . (.number)))
 
@@ -92,11 +95,35 @@ reference that names them.
 freeActionsFor :: InvestigatorId -> GameM [(ComponentRef, Int, ComponentActionDef)]
 freeActionsFor iid = do
   i <- getInvestigator iid
-  fmap concat $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \cid -> do
+  cards <- fmap concat $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \cid -> do
     b <- assetBehavior cid
     fmap catMaybes $ for (zip [0 ..] b.freeActions) \(n, a) -> do
       ok <- a.canPerform iid
       pure (if ok then Just (CardRef cid, n, a) else Nothing)
+  entries <- use #codex
+  codex <- fmap concat $ for entries \e ->
+    fmap catMaybes $ for (zip [0 ..] (codexBehavior e.number).freeActions) \(n, a) -> do
+      ok <- a.canPerform iid
+      pure (if ok then Just (CodexRef e.number, n, a) else Nothing)
+  pure (cards <> codex)
+
+{- | The "Encounter:" abilities its owner may take in place of an encounter
+(Under Dark Waves). Only a card in their own possession offers one, and an
+ability whose cost they cannot pay is not among them.
+-}
+encounterAbilitiesFor :: InvestigatorId -> GameM [(ComponentRef, Int, ComponentActionDef)]
+encounterAbilitiesFor iid = do
+  i <- getInvestigator iid
+  fmap concat $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \cid -> do
+    b <- assetBehavior cid
+    fmap catMaybes $ for (zip [0 ..] b.encounterAbilities) \(n, a) -> do
+      ok <- a.canPerform iid
+      pure (if ok then Just (CardRef cid, n, a) else Nothing)
+
+lookupEncounterAbility :: InvestigatorId -> ComponentRef -> Int -> GameM (Maybe ComponentActionDef)
+lookupEncounterAbility iid ref n = do
+  as <- encounterAbilitiesFor iid
+  pure $ listToMaybe [a | (r, k, a) <- as, r == ref, k == n]
 
 {- | What anyone in reach offers to stop something being put down in their own
 neighborhood; the first card to answer is asked.
@@ -123,15 +150,21 @@ legalActions iid = do
   space <- getSpace sid
   engaged <- engagedMonsters iid
   partners <- tradePartners iid
+  -- a monster that holds its quarry cannot be evaded, so it offers no evade action
+  evadable <- filterM (fmap not . monsterHoldsItsQuarry . (.card)) engaged
+  -- a card may let its holder ward with a monster on them, or spend the successes
+  -- on the monsters instead of the doom, so warding is legal without doom to take
+  wardAnyway <- hasAssetWith iid (.wardWhileEngaged)
+  meddle <- (&& not (null here)) <$> hasAssetWith iid (.wardAlternative)
   let unfocused = [s | s <- allSkills, Map.findWithDefault 0 s i.focus == 0]
       basic =
         [MoveAction | not restricted]
           <> [GatherResourcesAction | not restricted]
           <> [FocusAction | not (null unfocused)]
           -- warding takes doom off your own space, so it needs at least one there
-          <> [WardAction | not restricted, space.doom > 0]
+          <> [WardAction | not restricted || wardAnyway, space.doom > 0 || meddle]
           <> [AttackAction | not (null here)]
-          <> [EvadeAction | not (null engaged)]
+          <> [EvadeAction | not (null evadable)]
           -- 470.2: research moves your own clues to the scenario sheet, so it needs at least one
           <> [ResearchAction | not restricted, i.clues > 0]
           <> [TradeAction | not restricted, not (null partners)]
@@ -142,7 +175,25 @@ legalActions iid = do
       $ if ok && (not restricted || a.allowedWhileEngaged)
         then Just (ComponentAction ref n)
         else Nothing
-  pure $ filter (`notElem` i.performed) (basic <> comps)
+  -- a sheet may lift the once-each rule off an action of its own (Steadfast)
+  let again = (investigatorBehavior iid).repeatableActions
+  pure $ filter (\k -> k `elem` again || k `notElem` i.performed) (basic <> comps)
+
+-- | What the cards its investigator holds offer while a pool is still being built.
+poolOptionsFor :: TestState -> GameM [Reaction]
+poolOptionsFor ts = do
+  i <- getInvestigator ts.investigator
+  fmap concat $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \cid -> do
+    b <- assetBehavior cid
+    b.poolOptions cid ts.investigator ts
+
+-- | What their cards do about a die they have just rerolled, by its position.
+afterRerollFor :: InvestigatorId -> Int -> GameM [Message]
+afterRerollFor iid idx = do
+  i <- getInvestigator iid
+  fmap concat $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \cid -> do
+    b <- assetBehavior cid
+    b.afterReroll cid iid idx
 
 reactionsFor :: Trigger -> GameM [Reaction]
 reactionsFor trigger = do
@@ -227,17 +278,87 @@ afterHarmFor plan = do
   i <- getInvestigator plan.investigator
   let assigned = [cid | Just (cid, _) <- [plan.damageTo, plan.horrorTo]]
       cards = nub ([c | c <- i.assets, c `notElem` i.lockedAssets] <> assigned)
-  fmap concat $ for cards \cid -> do
+  fromCards <- fmap concat $ for cards \cid -> do
     b <- assetBehavior cid
     b.afterHarm cid plan.investigator plan
+  sheet <- (investigatorBehavior plan.investigator).afterHarm plan.investigator plan
+  pure (fromCards <> sheet)
 
--- | What this investigator's cards do about clues they just gained.
-afterGainClueFor :: InvestigatorId -> GameM [Message]
-afterGainClueFor iid = do
+{- | What this investigator's cards do about a mythos token they just drew
+(TAINTED's doom). Not offered, since the cards that answer state it flatly.
+-}
+afterMythosTokenFor :: InvestigatorId -> MythosToken -> GameM [Message]
+afterMythosTokenFor iid tok = do
   i <- getInvestigator iid
   fmap concat $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \cid -> do
     b <- assetBehavior cid
-    b.afterGainClue cid iid
+    b.afterMythosToken cid iid tok
+
+{- | Whether this monster refuses to let go: it cannot be evaded or disengaged
+from, and it engages nobody but the investigator it was revealed against.
+-}
+monsterHoldsItsQuarry :: CardId -> GameM Bool
+monsterHoldsItsQuarry mid = (.holdsItsQuarry) <$> monsterBehavior mid
+
+-- | What this investigator's cards do about clues they just gained.
+afterGainClueFor :: InvestigatorId -> GameM [Message]
+afterGainClueFor = ownCards (.afterGainClue)
+
+-- | Likewise about remnants they just gained (Lost Journal).
+afterGainRemnantFor :: InvestigatorId -> GameM [Message]
+afterGainRemnantFor = ownCards (.afterGainRemnant)
+
+-- | Likewise about a focus they just spent on a reroll (Nine of Rods).
+afterSpentFocusFor :: InvestigatorId -> GameM [Message]
+afterSpentFocusFor = ownCards (.afterSpentFocusToReroll)
+
+ownCards
+  :: (AssetBehavior -> CardId -> InvestigatorId -> GameM [Message]) -> InvestigatorId -> GameM [Message]
+ownCards which iid = do
+  i <- getInvestigator iid
+  fmap concat $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \cid -> do
+    b <- assetBehavior cid
+    which b cid iid
+
+{- | What a card of theirs pays for the step they just bought, with the cards that
+owe it, so they can be marked used as the step is taken (Cabbie's Favor).
+-}
+extraPaidSteps :: InvestigatorId -> GameM [(CardId, Int)]
+extraPaidSteps iid = do
+  i <- getInvestigator iid
+  fmap catMaybes $ for [c | c <- i.assets, c `notElem` i.lockedAssets, c `notElem` i.usedAssets] \cid -> do
+    b <- assetBehavior cid
+    pure (if b.extraStepWhenPaying > 0 then Just (cid, b.extraStepWhenPaying) else Nothing)
+
+{- | Whether that condition would actually reach this investigator: a card or sheet
+may ban it, FATIGUED turns DRIVEN away, they may hold it already, and the box may
+have no copy left. This is what a card means by "if you cannot" (Menacing Bulk).
+-}
+canGainCondition :: InvestigatorId -> ConditionName -> GameM Bool
+canGainCondition iid name = do
+  already <- hasCondition iid name
+  banned <- hasAssetWith iid (elem name . (.bansConditions))
+  tooTired <- if name == "DRIVEN" then hasCondition iid "FATIGUED" else pure False
+  pile <- use (#decks . #conditions)
+  copies <- filterM (fmap offers . getCardDef) pile
+  let bannedBySheet = name `elem` (investigatorBehavior iid).bansConditions
+  pure (not (already || banned || bannedBySheet || tooTired) && not (null copies))
+ where
+  offers d = case d.kind of
+    ConditionCard c -> c.front.name == name || (c.backIsCondition && c.back.name == name)
+    _ -> False
+
+-- | What the cards its owner holds exact as their turn closes.
+atEndOfOwnerTurnFor :: InvestigatorId -> GameM [Message]
+atEndOfOwnerTurnFor = ownCards (.atEndOfOwnerTurn)
+
+-- | What the cards its owner holds do about an action of theirs that has just ended.
+afterOwnerActionFor :: InvestigatorId -> ActionKind -> GameM [Message]
+afterOwnerActionFor iid kind = do
+  i <- getInvestigator iid
+  fmap concat $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \cid -> do
+    b <- assetBehavior cid
+    b.afterOwnerAction cid iid kind
 
 {- | Whether this monster passes this investigator by: a non-epic monster, an
 investigator wearing something that hides them, and no provocation from them yet.
@@ -268,10 +389,12 @@ finished it; the monster is still on the board here, so its traits can be read.
 cardsAboutDefeat :: CardId -> Source -> GameM [Message]
 cardsAboutDefeat mid src = do
   invs <- playingInvestigators
-  fmap concat $ for invs \i ->
-    fmap concat $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \cid -> do
+  fmap concat $ for invs \i -> do
+    fromCards <- fmap concat $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \cid -> do
       b <- assetBehavior cid
       b.afterMonsterDefeated cid i.id mid src
+    fromSheet <- (investigatorBehavior i.id).afterMonsterDefeated i.id mid src
+    pure (fromCards <> fromSheet)
 
 -- | What this investigator's cards add to the result of each die they roll.
 dieBonusFor :: TestState -> GameM Int
@@ -336,10 +459,69 @@ the table together, since the monster activates once however many could answer.
 activationReplacements :: CardId -> GameM [Reaction]
 activationReplacements mid = do
   invs <- playingInvestigators
-  fmap concat $ for invs \i ->
-    fmap concat $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \c -> do
+  fmap concat $ for invs \i -> do
+    fromCards <- fmap concat $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \c -> do
       b <- assetBehavior c
       b.replacesActivation c i.id mid
+    fromSheet <- (investigatorBehavior i.id).replacesActivation i.id mid
+    pure (fromCards <> fromSheet)
+
+{- | What a monster does in place of engaging them, if anything; the monster is
+still on the board, and answering means it does not engage.
+-}
+engagementReplacement :: CardId -> InvestigatorId -> GameM (Maybe [Message])
+engagementReplacement mid iid = do
+  b <- monsterBehavior mid
+  b.insteadOfEngaging mid iid
+
+-- | What a card of theirs may take in place of drawing a mythos token.
+mythosDrawOffers :: InvestigatorId -> GameM [Reaction]
+mythosDrawOffers iid = do
+  i <- getInvestigator iid
+  fmap concat $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \cid -> do
+    b <- assetBehavior cid
+    b.replacesMythosDraw cid iid
+
+-- | What anyone's cards offer before that reckoning resolves.
+reckoningOffers :: Source -> GameM [Reaction]
+reckoningOffers src = do
+  invs <- playingInvestigators
+  fmap concat $ for invs \i ->
+    fmap concat $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \cid -> do
+      b <- assetBehavior cid
+      b.beforeReckoning cid i.id src
+
+{- | Whether this monster may ready, which a card pinning it down may refuse
+(Fishing Net).
+-}
+monsterCanReady :: CardId -> GameM Bool
+monsterCanReady mid = do
+  attached <- uses #assets (filter ((== Just mid) . (.attachedTo)) . Map.elems)
+  not <$> anyM (fmap (.stopsMonsterReady) . assetBehavior . (.card)) attached
+
+{- | A monster's attack or evade modifier as this investigator may read it, which
+a card of theirs may lift (Holy Water).
+-}
+readMonsterModifier :: InvestigatorId -> CardId -> MonsterModifier -> Int -> GameM Int
+readMonsterModifier iid mid which printed = do
+  i <- getInvestigator iid
+  floors <- fmap catMaybes $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \cid -> do
+    b <- assetBehavior cid
+    b.monsterModifierFloor cid iid mid which
+  pure (maximum (printed : floors))
+
+{- | The skills its holder may test in place of the one that monster prints as part
+of an attack action, with the cards that offer them (Storm of Spirits).
+-}
+attackSkillAlternatives :: InvestigatorId -> Skill -> GameM [(CardId, Skill)]
+attackSkillAlternatives iid printed = do
+  i <- getInvestigator iid
+  fmap catMaybes $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \cid -> do
+    b <- assetBehavior cid
+    pure do
+      skill <- b.attackSkillInstead printed
+      guard (skill /= printed)
+      pure (cid, skill)
 
 -- | Cards that could halve a purchase for this investigator, with their names.
 halfPriceCards :: InvestigatorId -> GameM [(CardId, Text)]
@@ -413,6 +595,30 @@ codexMonsterHealth mid = do
 {- | What a codex card does instead of putting doom on the scenario sheet; the
 first card to answer wins.
 -}
+sheetCluesInstead :: Int -> GameM (Maybe [Message])
+sheetCluesInstead n = do
+  codex <- use #codex
+  answers <- for codex \e -> (codexBehavior e.number).sheetClueReplacement e n
+  pure (listToMaybe (catMaybes answers))
+
+{- | What a codex card does instead of handing an investigator the clues they
+would gain; the first card to answer wins.
+-}
+investigatorCluesInstead :: InvestigatorId -> Int -> GameM (Maybe [Message])
+investigatorCluesInstead iid n = do
+  codex <- use #codex
+  answers <- for codex \e -> (codexBehavior e.number).investigatorClueReplacement e iid n
+  pure (listToMaybe (catMaybes answers))
+
+-- | What the codex does about a mythos token of its own, in codex order.
+codexTokenDrawn :: InvestigatorId -> MythosToken -> GameM [Message]
+codexTokenDrawn iid tok = do
+  codex <- use #codex
+  fmap concat $ for codex \e -> (codexBehavior e.number).tokenDrawn e iid tok
+
+{- | What a codex card does instead of putting doom on the scenario sheet; the
+first card to answer wins.
+-}
 sheetDoomInstead :: Int -> GameM (Maybe [Message])
 sheetDoomInstead n = do
   codex <- use #codex
@@ -429,6 +635,65 @@ damagePreventionsFor plan = do
       b <- assetBehavior cid
       b.damagePrevention cid i.id plan
     pure (map (i.id,) (sheet <> cards))
+
+-- | Spaces every monster treats as prey, whoever is or is not standing in them.
+
+{- | What a ward action may be rolled on besides lore; a card in the codex can
+open another way of doing it.
+-}
+codexWardSkills :: GameM [Skill]
+codexWardSkills = do
+  codex <- use #codex
+  nub . concat <$> for codex \e -> (codexBehavior e.number).wardSkills e
+
+codexQuarrySpaces :: GameM [SpaceId]
+codexQuarrySpaces = do
+  codex <- use #codex
+  concat <$> for codex \e -> (codexBehavior e.number).quarrySpaces e
+
+{- | Whether that reckoning waits for the others. A card may ask to resolve after every
+other reckoning has, which the leader's free choice of order would otherwise break.
+-}
+isLateReckoning :: Source -> GameM Bool
+isLateReckoning = \case
+  SourceCodex n -> pure (codexBehavior n).reckoningLast
+  _ -> pure False
+
+-- | What the codex does about an investigator being defeated, in codex order.
+codexInvestigatorDefeated :: InvestigatorId -> GameM [Message]
+codexInvestigatorDefeated iid = do
+  codex <- use #codex
+  concat <$> for codex \e -> (codexBehavior e.number).afterInvestigatorDefeated e iid
+
+-- | What the codex exacts as the monster phase closes, in codex order.
+codexEndOfMonsterPhase :: GameM [Message]
+codexEndOfMonsterPhase = do
+  codex <- use #codex
+  concat <$> for codex \e -> (codexBehavior e.number).atEndOfMonsterPhase e
+
+{- | Where the codex sends this monster instead of after its own prey; the first card
+to answer wins.
+-}
+codexPreyInstead :: CardId -> GameM (Maybe [SpaceId])
+codexPreyInstead mid = do
+  codex <- use #codex
+  answers <- for codex \e -> (codexBehavior e.number).preyReplacement e mid
+  pure (listToMaybe (catMaybes answers))
+
+{- | What the codex reads in place of that card off the headline deck; the first card
+to answer wins.
+-}
+codexHeadlineInstead :: InvestigatorId -> CardId -> GameM (Maybe [Message])
+codexHeadlineInstead iid cid = do
+  codex <- use #codex
+  answers <- for codex \e -> (codexBehavior e.number).headlineReplacement e iid cid
+  pure (listToMaybe (catMaybes answers))
+
+-- | What the codex makes of a monster arriving somewhere.
+codexMonsterArrived :: CardId -> SpaceId -> GameM [Message]
+codexMonsterArrived mid sid = do
+  codex <- use #codex
+  concat <$> for codex \e -> (codexBehavior e.number).afterMonsterArrives e mid sid
 
 blockedSpaces :: GameM [SpaceId]
 blockedSpaces = do

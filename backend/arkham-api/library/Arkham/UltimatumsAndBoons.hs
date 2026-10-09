@@ -21,27 +21,40 @@ module Arkham.UltimatumsAndBoons (
 
 import Arkham.Ability
 import Arkham.Action.Additional
+import Arkham.Agenda.CardDefs.TheDreamEaters.WhereTheGodsDwell qualified as Agendas
 import Arkham.Asset.Types (Field (..))
+import Arkham.Campaigns.TheDrownedCity.Helpers (expeditionItems)
+import Arkham.Campaigns.TheDrownedCity.Key (TheDrownedCityKey (SpoiledExpeditionItems))
+import Arkham.Campaigns.ThePathToCarcosa.Key (ThePathToCarcosaKey (YouHeadedDanielsWarning))
 import Arkham.Card
 import Arkham.ChaosToken.Types (ChaosTokenFace (..))
 import Arkham.Classes.HasGame
 import Arkham.Classes.HasModifiersFor
 import Arkham.Classes.HasQueue
-import Arkham.Classes.Query (select, (<=~>))
+import Arkham.Classes.Query (select, selectAny, selectCount, selectOne, (<=~>))
+import Arkham.Criteria qualified as Criteria
 import Arkham.Deck qualified as Deck
 import Arkham.Decklist.RandomBasicWeakness (
   RandomBasicWeaknessContext (..),
   sampleRandomBasicWeakness,
  )
 import Arkham.DefeatedBy
+import Arkham.EncounterSet (EncounterSet (Tekelili))
+import Arkham.Enemy.CardDefs.TheDunwichLegacy.UndimensionedAndUnseen qualified as Enemies
+import Arkham.Enemy.Helpers (cancelEnemyDefeat)
+import Arkham.Enemy.Types (Field (EnemyCard))
 import Arkham.Game.Base
 import Arkham.Game.Settings
+import Arkham.Helpers (unDeck)
+import Arkham.Helpers.Campaign (stored)
 import Arkham.Helpers.ChaosToken (cancelChaosToken)
+import Arkham.Helpers.Log (getHasRecord, recordSetInsert, scenarioCount)
 import Arkham.Helpers.Message qualified as Msg
 import Arkham.Helpers.Modifiers
 import Arkham.Helpers.Query (getPlayerCount)
-import Arkham.Helpers.Scenario (getIsStandalone)
+import Arkham.Helpers.Scenario (getEncounterDeck, getIsStandalone)
 import Arkham.Helpers.Window (checkWindows)
+import Arkham.Helpers.Window.Enemy (defeatedEnemy)
 import Arkham.I18n
 import Arkham.Id
 import Arkham.Investigator.Types (
@@ -52,16 +65,29 @@ import Arkham.Investigator.Types (
  )
 import Arkham.Matcher qualified as Matcher
 import Arkham.Message
-import Arkham.Message.Lifted.Card (playCardPayingCostWithWindows)
+import Arkham.Message.Lifted (
+  advanceToAgendaA,
+  createEnemyAt_,
+  discardTopOfEncounterDeck,
+  exhaustWith,
+  focusCards,
+ )
+import Arkham.Message.Lifted.Card (drawEncounterCard, playCardPayingCostWithWindows)
+import Arkham.Message.Lifted.Damage (healAllDamage)
+import Arkham.PlayerCard (allPlayerCards)
 import Arkham.Prelude
 import Arkham.Projection
+import Arkham.ScenarioLogKey (ScenarioCountKey (CthulhuRage))
 import Arkham.Source
 import Arkham.Target
-import Arkham.Trait (Trait (Ally))
+import Arkham.Trait (Trait (Ally, Artifact, Elite, Enraged, Humanoid))
+import Arkham.Treachery.CardDefs.TheForgottenAge.Poison qualified as Treacheries
 import Arkham.UltimatumsAndBoons.Types
 import Arkham.Window (mkAfter, revealedChaosTokens)
 import Arkham.Window qualified as Window
 import Arkham.Xp
+import Data.Aeson.Key qualified as Key
+import Data.Text qualified as T
 
 {- | Selected entries, or the empty set while the runtime toggle is disabled.
 The single gate every hook must read through.
@@ -121,6 +147,63 @@ instance HasModifiersFor Ultimatum where
       UltimatumOfInduction -> modifySelectMaybe source Matcher.Anyone \_ -> do
         liftGuardM $ not <$> getIsStandalone
         pure [CannotGainXP]
+      {- Ultimatum of Invisibility: the Brood already refuses everything but
+      Esoteric Formula's own attacks and damage; this widens that to every kind
+      of player-card effect, and makes it Elite. -}
+      UltimatumOfInvisibility ->
+        -- ScenarioMatcher has no OneOf instance, and ScenarioWithId does not
+        -- fall back to the scenario's reference, so the Return-to id is listed.
+        whenM (anyM (selectAny . Matcher.ScenarioWithId) ["02236", "51041"]) do
+          modifySelect source (Matcher.EnemyWithTitle "Brood of Yog-Sothoth")
+            $ AddTrait Elite
+            : [ CannotBeAttackedByPlayerSourcesExcept exceptFormula
+              , CannotBeEvadedByPlayerSourcesExcept exceptFormula
+              , CannotBeDamagedByPlayerSourcesExcept exceptFormula
+              , CannotBeEngagedByPlayerSourcesExcept exceptFormula
+              , CannotReceiveModifiersFromPlayerSources
+              , CannotBeExhaustedBy Matcher.SourceIsPlayerCard
+              , CannotBeDefeatedBy Matcher.SourceIsPlayerCard
+              , CannotBeRemovedBy Matcher.SourceIsPlayerCard
+              , CannotBeMovedBy Matcher.SourceIsPlayerCard
+              , CannotBeDisengagedBy Matcher.SourceIsPlayerCard
+              ]
+      {- Ultimatum of The Man. Corpse Dweller finds its host with
+      @EnemyWithTrait Humanoid@, which reads the modified traits field, so
+      dropping the trait is enough -- no edit to its module. The trait is gone
+      for every other lookup too, but nothing else in the campaign asks. -}
+      UltimatumOfTheMan -> whenM (selectAny $ Matcher.ScenarioWithId "03240") do
+        modifySelect source theMan [RemoveTrait Humanoid]
+        whenM (selectAny $ Matcher.ActWithStep 2) do
+          modifySelect source theMan [CannotMove, CannotBeMoved]
+      -- Ultimatum of the Drowned: "each agenda gets -1 doom threshold." The two
+      -- Awakened-and-Enraged cards carry the rest, keyed on the ultimatum itself.
+      UltimatumOfTheDrowned -> whenM (selectAny $ Matcher.ScenarioWithId "07311") do
+        modifySelect source Matcher.AnyAgenda [DoomThresholdModifier (-1)]
+      -- Ultimatum of Death: "Agenda 2a gains +6 doom threshold."
+      UltimatumOfDeath -> whenM (anyM (selectAny . Matcher.ScenarioWithId) ["03240", "52048"]) do
+        modifySelect source (Matcher.AgendaWithId "03242") [DoomThresholdModifier 6]
+      {- Ultimatum of Spoilage: no abilities on Artifacts and no damage assigned
+      to them. The damage half is a per-investigator modifier on the asset, so
+      it is built one investigator at a time. -}
+      UltimatumOfSpoilage -> whenM ((== Just "11") <$> selectOne Matcher.TheCampaign) do
+        modifySelect
+          source
+          Matcher.Anyone
+          [CannotTriggerAbilityMatching $ Matcher.AbilityOnAsset (Matcher.AssetWithTrait Artifact)]
+        iids <- select Matcher.Anyone
+        for_ iids \iid ->
+          modifySelect source (Matcher.AssetWithTrait Artifact) [CannotAssignDamage iid]
+      {- Ultimatum of the Sleeper: each Enraged Cthulhu's health, printed X and
+      resolved to Cthulhu's Rage by the facet itself, becomes that per player.
+      Health modifiers add, so this contributes the extra players' worth. -}
+      UltimatumOfTheSleeper -> whenM (selectAny $ Matcher.ScenarioWithId "11688a") do
+        rage <- scenarioCount CthulhuRage
+        playerCount <- getPlayerCount
+        when (rage > 0 && playerCount > 1) do
+          modifySelect
+            source
+            (Matcher.EnemyWithTrait Enraged)
+            [HealthModifier (rage * (playerCount - 1))]
       UltimatumOfTheScream -> do
         screamed <- settingsScreamedAllies . gameSettings <$> getGame
         unless (null screamed) do
@@ -129,6 +212,11 @@ instance HasModifiersFor Ultimatum where
             Matcher.Anyone
             [CannotPlay $ Matcher.mapOneOf Matcher.CardWithCardCode (toList screamed)]
       _ -> pure ()
+   where
+    exceptFormula =
+      Matcher.oneOf
+        [Matcher.SourceIsAbility Matcher.BasicAbility, Matcher.SourceIsAsset (Matcher.AssetIs "02254")]
+    theMan = Matcher.EnemyWithTitle "The Man in the Pallid Mask"
 
 instance HasModifiersFor Boon where
   getModifiersFor b = do
@@ -155,15 +243,71 @@ instance HasModifiersFor Boon where
       BoonOfPersephone -> modifySelectMaybe source Matcher.DefeatedInvestigator \_ -> do
         liftGuardM $ not <$> getIsStandalone
         pure [XPModifier "Boon of Persephone" 3]
+      -- Refractions: both only bend their own scenario's agendas.
+      BoonOfAtonement -> whenM (selectAny $ Matcher.ScenarioWithId "09660") do
+        modifySelect source Matcher.AnyAgenda [DoomThresholdModifier 1]
+      BoonOfBliss -> whenM (selectAny $ Matcher.ScenarioWithId "10651") do
+        modifySelect source Matcher.AnyAgenda [DoomThresholdModifier 2]
+      -- Boon of The Dreamer: "this agenda gets +2 doom threshold" -- agenda 3a
+      -- only, which is the one the boon advances to.
+      BoonOfTheDreamer -> whenM (selectAny $ Matcher.ScenarioWithId "06286") do
+        modifySelect source (Matcher.AgendaWithId "06289") [DoomThresholdModifier 2]
       _ -> pure ()
 
 ultimatumOrBoonAbilities :: UltimatumOrBoon -> [Ability]
 ultimatumOrBoonAbilities = \case
-  Ultimatum {} -> []
+  Ultimatum u -> ultimatumAbilities u
   Boon b -> boonAbilities b
+
+{- | 'HasAbilities' is pure, so an ability cannot ask which campaign is being
+played: the criteria have to make it unreachable elsewhere instead. Both of
+these are self-limiting -- Poisoned and exploration only exist in The Forgotten
+Age.
+-}
+ultimatumAbilities :: Ultimatum -> [Ability]
+ultimatumAbilities u = case u of
+  -- "Each copy of Poisoned gains 'Forced - When the game ends, if you have not
+  -- been eliminated: Suffer 1 physical trauma.'"
+  UltimatumOfVenom ->
+    [ restricted
+        (fromUltimatumOrBoon (Ultimatum u))
+        1
+        (exists $ Matcher.HasMatchingTreachery (Matcher.treacheryIs Treacheries.poisoned))
+        $ forced (Matcher.GameEnds #when)
+    ]
+  -- "After each successful exploration, the performing investigator reveals the
+  -- top card of the encounter deck..."
+  UltimatumOfAmbuscade ->
+    [ restricted (fromUltimatumOrBoon (Ultimatum u)) 1 Criteria.NoRestriction
+        $ forced
+        $ Matcher.Explored #after Matcher.You Matcher.Anywhere (Matcher.SuccessfulExplore Matcher.Anywhere)
+    ]
+  {- Ultimatum of Death: "Specter of Death gains 'Forced - When Specter of Death
+  is defeated: Instead of adding it to the victory display, heal all damage from
+  it and exhaust it. It does not ready during the next upkeep phase.'" -}
+  UltimatumOfDeath ->
+    [ restricted
+        (fromUltimatumOrBoon (Ultimatum u))
+        1
+        (Criteria.ScenarioExists $ Matcher.ScenarioWithId "03240")
+        $ forced
+        $ Matcher.EnemyWouldBeDefeated #when (Matcher.EnemyWithTitle "Specter of Death")
+    ]
+  _ -> []
 
 boonAbilities :: Boon -> [Ability]
 boonAbilities b = case b of
+  {- Boon of The Dreamer: "after advancing to Act 5, advance to agenda 3a and
+  remove all doom from it." Act 5 is already in play when act 4's advance window
+  closes, so this fires off the act that brings it out. -}
+  BoonOfTheDreamer ->
+    [ restricted
+        (fromUltimatumOrBoon (Boon b))
+        1
+        (Criteria.ScenarioExists $ Matcher.ScenarioWithId "06286")
+        $ forced
+        $ Matcher.ActAdvances #after (Matcher.ActWithId "06293")
+    ]
   BoonOfAthena ->
     [ withTooltip
         "Boon of Athena: cancel the autofail token, return it to the chaos bag, and draw another in its place"
@@ -265,6 +409,9 @@ runUltimatumsAndBoonsMessage msg = case msg of
   -- Ultimatum of The Scream: a defeated unique non-story, non-weakness ally
   -- is removed from the game and banned for the rest of the campaign.
   When (AssetDefeated _ aid) -> do
+    -- Ultimatum of Spoilage (see the Discarded arm below for the other half).
+    whenM (hasUltimatum UltimatumOfSpoilage) do
+      spoilExpeditionItem =<< fieldMap AssetCard toCardDef aid
     standalone <- getIsStandalone
     unless standalone do
       whenM (hasUltimatum UltimatumOfTheScream) do
@@ -360,6 +507,111 @@ runUltimatumsAndBoonsMessage msg = case msg of
           card
           [PlaceOnBottomOfDeckInsteadOfDiscard, AdditionalCost (UnlessFastActionCost 1)]
       playCardPayingCostWithWindows iid card ws
+  {- Ultimatum of Venom. An eliminated investigator is already excluded: a plain
+  investigator matcher never matches one. -}
+  UseCardAbility _ (UltimatumOrBoonSource (Ultimatum UltimatumOfVenom)) 1 _ _ -> do
+    poisoned <- select $ Matcher.HasMatchingTreachery (Matcher.treacheryIs Treacheries.poisoned)
+    for_ poisoned \iid -> do
+      copies <-
+        selectCount
+          $ Matcher.treacheryIs Treacheries.poisoned
+          <> Matcher.treacheryInThreatAreaOf iid
+      pushAll $ replicate copies (SufferTrauma iid 1 0)
+  {- The Carcosa pair, both keyed on the one-click HASTUR recorder in the
+  scenario UI: it is the only way the engine ever hears a name said at the
+  table, and it assigns its 1 horror from 'CampaignSource'. Both are gated on
+  Daniel's warning, which is also what keeps them out of other campaigns. -}
+  InvestigatorAssignDamage iid CampaignSource _ 0 n | n > 0 -> do
+    whenM (getHasRecord YouHeadedDanielsWarning) do
+      -- "...in addition to taking 1 horror, suffer 1 mental trauma."
+      whenM (hasUltimatum UltimatumOfTheUnspeakableName) $ push (SufferTrauma iid 0 1)
+      -- Brass Crown tallies the same presses, per investigator, until its toll.
+      whenM (hasUltimatum UltimatumOfTheBrassCrown) $ bumpSpokenHastur iid n
+  {- "...spoke, WROTE, or TYPED the name" -- so the log's chat box is a second
+  way the engine hears it, and the honour rule should not depend on also
+  remembering to press the button. Resolves to exactly the recorder's message,
+  so everything above applies unchanged.
+
+  Gated the same way the recorder's button is: Daniel's warning for Carcosa, the
+  ultimatum itself for Dark Matter, whose Unspeakable Oath also covers TASSILDA.
+  -}
+  ChatMessage iid _ text -> do
+    carcosa <- getHasRecord YouHeadedDanielsWarning
+    oath <- hasUltimatum (HomebrewUltimatum ":dark-matter:UltimatumOfTheUnspeakableOath")
+    let said name = name `T.isInfixOf` T.toLower text
+    when ((carcosa && said "hastur") || (oath && (said "hastur" || said "tassilda")))
+      $ push
+      $ InvestigatorAssignDamage iid CampaignSource DamageAny 0 1
+  {- Ultimatum of the Brass Crown: "at the beginning of each scenario, take 1
+  horror for each time you spoke, wrote, or typed the name of HASTUR since the
+  end of the previous scenario." Sourced from the ultimatum rather than the
+  campaign so collecting the toll is not itself counted as speaking. -}
+  EndSetup -> do
+    whenM (hasUltimatum UltimatumOfTheBrassCrown) do
+      whenM (getHasRecord YouHeadedDanielsWarning) do
+        iids <- select Matcher.Anyone
+        for_ iids \iid -> do
+          spoken <- spokenHasturCount iid
+          when (spoken > 0) do
+            push $ Msg.assignHorror iid (fromUltimatumOrBoon (Ultimatum UltimatumOfTheBrassCrown)) spoken
+            setSpokenHastur iid 0
+    {- Ultimatum of Multiplication: "instead of the standard setup instructions,
+    begin the game with all five Brood of Yog-Sothoth cards in play: one in each
+    of the five locations besides Dunwich Village." The scenario has already put
+    one or two out by now, so this tops the board up rather than replacing the
+    setup wholesale. -}
+    whenM (hasUltimatum UltimatumOfMultiplication) do
+      whenM (anyM (selectAny . Matcher.ScenarioWithId) ["02236", "51041"]) $ runQueueT do
+        for_ broodLocationTitles \title -> do
+          mlid <- selectOne (Matcher.LocationWithTitle title)
+          for_ mlid \lid -> do
+            occupied <-
+              selectAny $ Matcher.EnemyWithTitle "Brood of Yog-Sothoth" <> Matcher.enemyAt lid
+            unless occupied $ createEnemyAt_ Enemies.broodOfYogSothoth lid
+    {- Ultimatum of Death: "after setup, immediately advance Agenda 1a to Specter
+    of Death and spawn it at your starting location, exhausted." The agenda's own
+    side-B handler draws the Specter, which already spawns at position (0,0) by
+    its printed text, so only the advance and the exhaust are needed. -}
+    whenM (hasUltimatum UltimatumOfDeath) do
+      whenM (anyM (selectAny . Matcher.ScenarioWithId) ["03240", "52048"]) do
+        push $ AdvanceAgendaBy "03241" AgendaAdvancedWithOther
+  {- Ultimatum of Spoilage: "if an Item asset from the Expedition encounter set
+  is ever defeated or discarded, it cannot be chosen during setup for the
+  remainder of the campaign." Recorded in the campaign log, which is what
+  'getAvailableExpeditionItems' filters on. -}
+  Discarded (AssetTarget _) _ card ->
+    whenM (hasUltimatum UltimatumOfSpoilage) $ spoilExpeditionItem (toCardDef card)
+  {- Ultimatum of Death, the Specter's new Forced. 'cancelEnemyDefeat' drops the
+  whole queued defeat chain, victory display included, so what is left is the
+  heal, the exhaust and the upkeep lock. -}
+  UseCardAbility _ (UltimatumOrBoonSource (Ultimatum UltimatumOfDeath)) 1 (defeatedEnemy -> eid) _ ->
+    runQueueT do
+      let source = UltimatumOrBoonSource (Ultimatum UltimatumOfDeath)
+      cancelEnemyDefeat eid
+      healAllDamage source eid
+      exhaustWith source eid
+      push =<< nextPhaseModifier #upkeep source eid DoesNotReadyDuringUpkeep
+  {- Boon of The Dreamer. The plain 'AdvanceToAgenda' is what removes the doom:
+  the agenda runner prefixes a 'RemoveAllDoomFromPlay' to it. -}
+  UseCardAbility _ (UltimatumOrBoonSource (Boon BoonOfTheDreamer)) 1 _ _ -> runQueueT do
+    advanceToAgendaA (fromUltimatumOrBoon (Boon BoonOfTheDreamer)) Agendas.chaosIncarnate
+  {- Ultimatum of Death: "after setup, immediately advance Agenda 1a to Specter
+  of Death and spawn it at your starting location, exhausted." The agenda's own
+  side-B handler draws the Specter, which spawns at position (0,0) by its own
+  printed text, so only the advance and the exhaust are needed here. -}
+  EnemySpawn details -> whenM (hasUltimatum UltimatumOfDeath) do
+    code <- fieldMap EnemyCard toCardCode details.enemy
+    when (code == "03241b") $ runQueueT do
+      exhaustWith (UltimatumOrBoonSource (Ultimatum UltimatumOfDeath)) details.enemy
+  {- Ultimatum of Ambuscade. The card is only looked at -- it is drawn or
+  discarded by its own message, so nothing has to be put back. -}
+  UseCardAbility iid (UltimatumOrBoonSource (Ultimatum UltimatumOfAmbuscade)) 1 _ _ -> runQueueT do
+    let source = UltimatumOrBoonSource (Ultimatum UltimatumOfAmbuscade)
+    peeked <- headMay . unDeck <$> getEncounterDeck
+    for_ peeked \card -> focusCards [toCard card] do
+      if toCard card `cardMatch` Matcher.CardWithType EnemyType
+        then drawEncounterCard iid source
+        else discardTopOfEncounterDeck iid source 1
   _ -> pure ()
 
 {- | Boon of the Morrígan: instead of adding a random basic weakness, draw
@@ -420,4 +672,59 @@ ancientsStartingXpMessages iid =
           [InvestigatorGainXp iid $ XpDetail XpFromCardEffect "$xp.boonOfTheAncients" 5]
       )
   , GainXP iid (UltimatumOrBoonSource (Boon BoonOfTheAncients)) 5
+  ]
+
+{- | Ultimatum of Annoyance: "when the campaign begins, shuffle 3 random cards
+from the Tekeli-li encounter set into each investigator's deck."
+
+The set is read out of the player pool rather than with 'gatherEncounterSet',
+which drops weaknesses -- and every Tekeli-li card is one. Edge of the Earth's
+own 'gatherTekelili' does the same thing minus the cards already dealt out, but
+importing it here would close a module cycle (its helpers reach Scenario.Setup,
+which reaches this module through Scenario.Runner), and at campaign start
+nothing has been dealt yet.
+-}
+annoyanceTekeliliMessages :: CardGen m => InvestigatorId -> m [Message]
+annoyanceTekeliliMessages iid = do
+  defs <- take 3 <$> shuffleM tekeliliDefs
+  cards <- traverse genCard defs
+  pure [AddCampaignCardToDeck iid ShuffleIn card | card <- cards]
+ where
+  tekeliliDefs =
+    concatMap (\def -> replicate (fromMaybe 0 (cdEncounterSetQuantity def)) def)
+      $ filter ((== Just Tekelili) . cdEncounterSet)
+      $ toList allPlayerCards
+
+-- Ultimatum of the Brass Crown's tally, per investigator, reset each scenario.
+-- Deliberately not the Carcosa achievements module's counter: that one is a
+-- campaign-lifetime total and only runs in Return to Carcosa.
+spokenHasturKey :: InvestigatorId -> Text
+spokenHasturKey iid = "carcosaSpokenHasturSinceScenario:" <> tshow iid
+
+spokenHasturCount :: HasGame m => InvestigatorId -> m Int
+spokenHasturCount iid = fromMaybe 0 <$> stored (spokenHasturKey iid)
+
+bumpSpokenHastur :: HasQueue Message m => InvestigatorId -> Int -> m ()
+bumpSpokenHastur iid n =
+  push $ Priority $ IncrementGlobal CampaignTarget (Key.fromText $ spokenHasturKey iid) n
+
+setSpokenHastur :: HasQueue Message m => InvestigatorId -> Int -> m ()
+setSpokenHastur iid n =
+  push $ Priority $ SetGlobal CampaignTarget (Key.fromText $ spokenHasturKey iid) (toJSON n)
+
+{- | Record an Expedition Item as lost for the rest of the campaign (Ultimatum
+of Spoilage). Anything else defeated or discarded is ignored.
+-}
+spoilExpeditionItem :: HasQueue Message m => CardDef -> m ()
+spoilExpeditionItem def =
+  when (def `elem` expeditionItems) $ push $ recordSetInsert SpoiledExpeditionItems [toCardCode def]
+
+-- | The five Undimensioned and Unseen locations that are not Dunwich Village.
+broodLocationTitles :: [Text]
+broodLocationTitles =
+  [ "Cold Spring Glen"
+  , "Ten-Acre Meadow"
+  , "Blasted Heath"
+  , "Whateley Ruins"
+  , "Devil's Hop Yard"
   ]

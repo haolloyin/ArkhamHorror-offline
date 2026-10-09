@@ -69,10 +69,19 @@ data Trigger
   | -- | they took this much doom off their own space, which some sheets answer
     AfterDoomRemoved InvestigatorId Int
   | AfterFailedTest InvestigatorId
+  | AfterPassedTest InvestigatorId
   | -- | they and this monster have just come apart
     AfterDisengage InvestigatorId CardId
+  | -- | they and this monster have just come together
+    AfterEngaged InvestigatorId CardId
+  | -- | this much doom has just gone onto the scenario sheet
+    AfterDoomOnSheet InvestigatorId Int
   | -- | an action of theirs has finished, whichever it was
     AfterAnyAction InvestigatorId ActionKind
+  | {- | somebody else's action has finished; the first is the card's owner, whose
+    decision it is, and the second whoever took it
+    -}
+    AnotherPerformsAction InvestigatorId InvestigatorId ActionKind
   | AfterSpendRemnant InvestigatorId
   | -- | the encounter has finished resolving; its investigator is still standing where it happened
     AfterEncounter InvestigatorId
@@ -83,6 +92,29 @@ data Trigger
   | -- | a move action has ended, having carried them this many spaces
     AfterMoveDistance InvestigatorId Int
   | AtStartOfTurn InvestigatorId
+  | {- | their turn is over bar anything that answers its ending, which may still
+    hand them another action (War of Attrition, DRIVEN)
+    -}
+    AtEndOfTurn InvestigatorId
+  | -- | a clue has just come to them off their neighborhood (Occult Principle)
+    AfterGainNeighborhoodClue InvestigatorId
+  | -- | a ward action of theirs has finished, and this was its test result
+    AfterWardResult InvestigatorId Int
+  | -- | they have just focused this skill as part of a focus action
+    AfterFocusedSkill InvestigatorId Skill
+  | {- | that monster has just arrived in their space, whether it moved there or
+    spawned there (One Man Army)
+    -}
+    AfterMonsterArrives InvestigatorId CardId
+  | {- | a monster has just been put on the board from off it, wherever it landed;
+    everyone in play is asked, since a card may answer a spawn across town
+    (Cryptic Sketches)
+    -}
+    AfterMonsterSpawned InvestigatorId CardId
+  | -- | they have just become delayed, having not been a moment ago (The Red Clock)
+    AfterBecomeDelayed InvestigatorId
+  | -- | they have just slipped past that monster as part of an evade action
+    AfterEvadeMonster InvestigatorId CardId
   | AtEndOfMonsterPhase InvestigatorId
   | -- | this many tokens have just gone into the mythos cup
     TokensReturnedToCup InvestigatorId Int
@@ -91,6 +123,18 @@ data Trigger
   | AfterCastSpell InvestigatorId CardId
   | -- | someone in this investigator's space has just recovered sanity
     AfterRecoverSanity InvestigatorId RecoverTarget
+  | -- | a card has just joined the codex, or one already there has turned over
+    AfterCodexChanged InvestigatorId
+  | -- | the encounter just resolved came off the street deck (426.5)
+    AfterStreetEncounter InvestigatorId
+  | {- | the action is about to be performed and can still be prepared for; the
+    action itself has not begun, so nothing about it has been chosen yet
+    -}
+    BeforePerformAction InvestigatorId ActionKind
+  | {- | cards of this kind are about to be bought or gained, while the display can
+    still be changed (Eye for Appraisal)
+    -}
+    BeforeAcquiring InvestigatorId (Maybe Trait)
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON, FromJSON)
 
@@ -109,20 +153,36 @@ triggerInvestigator = \case
   AfterMoveAction iid -> iid
   AfterDoomRemoved iid _ -> iid
   AfterFailedTest iid -> iid
+  AfterPassedTest iid -> iid
   AfterDisengage iid _ -> iid
+  AfterEngaged iid _ -> iid
+  AfterDoomOnSheet iid _ -> iid
   AfterAnyAction iid _ -> iid
+  AnotherPerformsAction owner _ _ -> owner
   AfterSpendRemnant iid -> iid
   AfterEncounter iid -> iid
   AfterDefeatMonsterInAttack iid -> iid
   AfterDamageMonsterInAttack iid _ -> iid
   AfterMoveDistance iid _ -> iid
   AtStartOfTurn iid -> iid
+  AtEndOfTurn iid -> iid
+  AfterGainNeighborhoodClue iid -> iid
+  AfterWardResult iid _ -> iid
+  AfterFocusedSkill iid _ -> iid
+  AfterMonsterArrives iid _ -> iid
+  AfterMonsterSpawned iid _ -> iid
+  AfterBecomeDelayed iid -> iid
+  AfterEvadeMonster iid _ -> iid
   AtEndOfMonsterPhase iid -> iid
   TokensReturnedToCup iid _ -> iid
   DrewBlankToken iid -> iid
   SpentFocusToReroll iid -> iid
   AfterCastSpell iid _ -> iid
   AfterRecoverSanity iid _ -> iid
+  AfterCodexChanged iid -> iid
+  AfterStreetEncounter iid -> iid
+  BeforePerformAction iid _ -> iid
+  BeforeAcquiring iid _ -> iid
 
 data HarmKind = NormalHarm | DirectHarm
   deriving stock (Show, Eq, Generic)
@@ -236,6 +296,10 @@ data EncounterState = EncounterState
   , gainedNeighborhoodClue :: Bool
   , returnToArchive :: Bool
   -- ^ set by a card printed "return this card to the archive" rather than to its deck
+  , returnToTop :: Maybe Bool
+  {- ^ set by a card printed "place this card on top of" its own deck, which is not
+  where an encounter otherwise leaves it. Optional, so a table saved before it loads.
+  -}
   , section :: Maybe (Int, Int)
   {- ^ for cards whose section the engine picks (street type, or the doom range on
   anomaly and terror cards): the printed section in use, counted from the top, and

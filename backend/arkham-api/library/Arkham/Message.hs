@@ -93,6 +93,7 @@ import Arkham.Key
 import Arkham.Layout
 import Arkham.Location.FloodLevel
 import Arkham.Location.Grid
+import Arkham.Location.Group (GroupMembership)
 import {-# SOURCE #-} Arkham.Location.Types
 import Arkham.Matcher hiding (
   AssetDefeated,
@@ -614,6 +615,8 @@ data Message
   | IncreaseFloodLevel LocationId
   | DecreaseFloodLevel LocationId
   | SetFloodLevel LocationId FloodLevel
+  | -- | The write at the end of the flood pipeline; see 'Arkham.Location.Runner'.
+    ApplyFloodLevel LocationId FloodLevel
   | -- Skill Test Specific
     AddSubscriber Target
   | StoryMessage StoryMessage
@@ -753,6 +756,21 @@ data Message
   | BeginRound
   | BeginTrade InvestigatorId Source Target [InvestigatorId]
   | BeginTurn InvestigatorId
+  | {- | Something a player typed into the log's chat box.
+
+    Carried as a message rather than written straight to the log so it travels
+    the normal action path: it is persisted with a step, broadcast to the room,
+    and undoable like anything else. It also gives the rules a seam -- Carcosa's
+    HASTUR recorder reads it (@Arkham.UltimatumsAndBoons@) -- which a log write
+    outside the engine could never have.
+
+    The middle field is who said it, by account name. Filled in by the API from
+    the authenticated user (@putApiV1ArkhamGameRawR@), never by the client, so
+    nobody can sign a line with somebody else's name; the engine has no concept
+    of a user account, which is why it arrives this way rather than being looked
+    up. 'Nothing' falls back to the investigator.
+    -}
+    ChatMessage InvestigatorId (Maybe Text) Text
   | Blanked Message
   | HandleOption CampaignOption
   | RemoveOption CampaignOption
@@ -763,9 +781,11 @@ data Message
   | CancelDamage InvestigatorId Int
   | CancelAssetDamage AssetId Source Int
   | CheckAttackOfOpportunity InvestigatorId Bool (Maybe EnemyMatcher)
-  | AssignDamage Target
+  | -- The source rides along only so the log can say what hurt you; nothing in
+    -- the engine branches on it.
+    AssignDamage Target Source
   | CancelAssignedDamage Target Int Int
-  | AssignedDamage Target Int Int
+  | AssignedDamage Target Source Int Int
   | AssignedHealing Target
   | CheckHandSize InvestigatorId
   | CheckWindows [Window]
@@ -933,6 +953,8 @@ data Message
   | InDiscard InvestigatorId Message -- Nothing uses this yet
   | InSearch Message
   | InHand InvestigatorId Message
+  | -- | Dispatched to the committed-card entities of that investigator; see 'CommittedEffect'.
+    Committed InvestigatorId Message
   | InitDeck InitDeckAttrs -- used to initialize the deck for the campaign
   | LoadSideDeck InvestigatorId [PlayerCard] -- used to initialize the side deck for the campaign
   | LoadDecklist PlayerId ArkhamDBDecklist
@@ -1066,6 +1088,8 @@ data Message
   | RecordSetInsert CampaignLogKey [SomeRecorded]
   | RecordSetReplace CampaignLogKey SomeRecorded SomeRecorded
   | CrossOutRecordSetEntries CampaignLogKey [SomeRecorded]
+  | -- | Debug-only: drop entries from a recorded set. No card un-records one.
+    RemoveRecordSetEntries CampaignLogKey [SomeRecorded]
   | RefillSlots InvestigatorId [AssetId]
   | Remember ScenarioLogKey
   | Forget ScenarioLogKey
@@ -1127,6 +1151,8 @@ data Message
   | SetLayout [GridTemplateRow]
   | SetDecksLayout [GridTemplateRow]
   | SetLocationLabel LocationId Text
+  | -- | Put a location in a group's box, at a fixed index inside it.
+    SetLocationGroup LocationId GroupMembership
   | SetActiveInvestigator InvestigatorId
   | SetActivePlayer PlayerId
   | Setup
@@ -1193,8 +1219,22 @@ data Message
   | Would BatchId [Message]
   | CancelBatch BatchId
   | IgnoreBatch BatchId
+  | {- | Narration only: a card charged an additional cost, and this says which
+    card and how much.
+
+    Pushed where the surcharge is computed, because the condition that produced
+    it does not survive the action being recorded -- Frozen in Fear's
+    @FirstOneOfPerformed@ is false the moment the move it charged for goes into
+    @InvestigatorActionsPerformed@, so nothing downstream can work out who
+    charged what. Nothing in the engine reads this; it exists so the log can
+    say "+1 action from Frozen in Fear" instead of leaving the player to
+    wonder where their action went. -}
+    AdditionalCostPaid InvestigatorId Source Cost
   | WhenWillEnterLocation InvestigatorId LocationId
-  | EnterLocation InvestigatorId LocationId
+  | -- | Carries the 'Movement' that caused it, when there was one, so the log
+    -- can tell a move the investigator chose from one a card forced on them.
+    -- 'Nothing' for the synthesised entries: vehicles and @PlaceInvestigator@.
+    EnterLocation InvestigatorId LocationId (Maybe Movement)
   | Will Message
   | -- must be called on instance directly
     SetOriginalCardCode CardCode
@@ -1304,6 +1344,16 @@ data Message
     -}
     Retain Message
   | Simultaneously [Message]
+  | {- | Run these custom-card steps later, for the card the target names.
+
+    The step language is otherwise read the moment a card's messages are pushed,
+    which is too early for anything that has to look at the board again: an "in
+    any order" prompt has to re-check what is still possible after each choice.
+    This carries the bindings and the steps through the queue, so they are read
+    when they run rather than when they were written. The two values are the
+    step environment and the steps, both as the author wrote them.
+    -}
+    RunCustomSteps Target Value Value
   | -- Debug
     ClearQueue
   | SetCardOwner CardId InvestigatorId
@@ -1649,6 +1699,9 @@ pattern ForceChaosTokenDraw f = ChaosBagMessage (ForceChaosTokenDraw_ f)
 pattern ForceChaosTokenDrawToken :: ChaosToken -> Message
 pattern ForceChaosTokenDrawToken t = ChaosBagMessage (ForceChaosTokenDrawToken_ t)
 
+pattern DebugSetForcedChaosTokenDraws :: [ChaosTokenFace] -> Message
+pattern DebugSetForcedChaosTokenDraws fs = ChaosBagMessage (DebugSetForcedChaosTokenDraws_ fs)
+
 pattern SetChaosTokens :: [ChaosTokenFace] -> Message
 pattern SetChaosTokens fs = ChaosBagMessage (SetChaosTokens_ fs)
 
@@ -1763,9 +1816,9 @@ pattern InvestigatorDrewEncounterCardFrom iid c mds =
   InvestigatorMessage (InvestigatorDrewEncounterCardFrom_ iid c mds)
 
 pattern InvestigatorDrewPlayerCardFrom
-  :: InvestigatorId -> PlayerCard -> Maybe DeckSignifier -> Message
-pattern InvestigatorDrewPlayerCardFrom iid c mds =
-  InvestigatorMessage (InvestigatorDrewPlayerCardFrom_ iid c mds)
+  :: InvestigatorId -> PlayerCard -> Maybe DeckSignifier -> Maybe Source -> Message
+pattern InvestigatorDrewPlayerCardFrom iid c mds msrc =
+  InvestigatorMessage (InvestigatorDrewPlayerCardFrom_ iid c mds msrc)
 
 pattern InvestigatorEliminated :: InvestigatorId -> Message
 pattern InvestigatorEliminated iid = InvestigatorMessage (InvestigatorEliminated_ iid)
@@ -2187,10 +2240,25 @@ mconcat
                 Right (a, b) -> pure $ StartScenario a b
                 Left a -> pure $ StartScenario a Nothing
             "AssignedDamage" -> do
+              -- Three shapes across the archive: the current one, the one before
+              -- the source was added, and a bare target from before the amounts
+              -- were. A save that predates the source gets GameSource, which is
+              -- only ever read by the log.
+              contents <-
+                (Left <$> o .: "contents")
+                  <|> (Right . Left <$> o .: "contents")
+                  <|> (Right . Right <$> o .: "contents")
+              case contents of
+                Right (Right (a, b, c, d)) -> pure $ AssignedDamage a b c d
+                Right (Left (a, b, c)) -> pure $ AssignedDamage a GameSource b c
+                Left a -> pure $ AssignedDamage a GameSource 0 0
+            "AssignDamage" -> do
+              -- Likewise: a save written before the source was threaded through
+              -- carries the bare target.
               contents <- (Left <$> o .: "contents") <|> (Right <$> o .: "contents")
               case contents of
-                Right (a, b, c) -> pure $ AssignedDamage a b c
-                Left a -> pure $ AssignedDamage a 0 0
+                Right (a, b) -> pure $ AssignDamage a b
+                Left a -> pure $ AssignDamage a GameSource
             "RemoveCampaignCard" -> RemoveCampaignCardFromDeck "00000" <$> o .: "contents"
             "ResolvedMovement" -> do
               contents <- (Left <$> o .: "contents") <|> (Right <$> o .: "contents")
@@ -2444,7 +2512,7 @@ mconcat
               pure $ DealAssetDamageWithCheck a b c d e
             "InvestigatorDrewPlayerCard" -> do
               (a, b) <- o .: "contents"
-              pure $ InvestigatorDrewPlayerCardFrom a b Nothing
+              pure $ InvestigatorDrewPlayerCardFrom a b Nothing Nothing
             "ReportXp" -> do
               ReportXp <$> (o .: "contents" <|> (snd @ScenarioId <$> o .: "contents"))
             "ReadStoryWithPlacement" -> do

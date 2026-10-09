@@ -16,6 +16,7 @@ import Arkham.Helpers.Modifiers
 import Arkham.Helpers.Source
 import Arkham.Id
 import Arkham.Investigator.Types (Field (..))
+import Arkham.Location.Group
 import Arkham.Location.Types (Field (..))
 import Arkham.LocationSymbol
 import Arkham.Matcher hiding (LocationCard)
@@ -40,7 +41,20 @@ toConnections lid =
   fieldMap LocationCard (cdLocationRevealedConnections . toCardDef) lid
 
 getConnectedMatcher :: HasGame m => ForMovement -> LocationId -> m LocationMatcher
-getConnectedMatcher forMovement l = cached (ConnectedMatcherKey l forMovement) $ do
+getConnectedMatcher forMovement l =
+  cached (ConnectedMatcherKey l forMovement)
+    $ LocationMatchAny
+    . uncurry (<>)
+    <$> connectedMatcherParts forMovement l
+
+{- | The two halves of a location's connections: the printed ones (its own connection
+symbols and directions) and the ones a modifier granted. The map draws them differently
+-- a printed connection belongs to a location group as a whole, a granted one to the
+single location that was granted it -- so they are kept apart rather than merged here.
+-}
+connectedMatcherParts
+  :: HasGame m => ForMovement -> LocationId -> m ([LocationMatcher], [LocationMatcher])
+connectedMatcherParts forMovement l = do
   isRevealed <- field LocationRevealed l
   directionalMatchers <- fieldMap LocationConnectsTo (map (`LocationInDirection` self) . setToList) l
   base <-
@@ -55,8 +69,7 @@ getConnectedMatcher forMovement l = cached (ConnectedMatcherKey l forMovement) $
       keeps = \case
         Matcher.LocationWithSymbol sym -> sym `notElem` lostSymbols
         _ -> True
-  LocationMatchAny
-    <$> foldM applyModifier (filter keeps base <> directionalMatchers) modifiers
+  (filter keeps base <> directionalMatchers,) <$> foldM applyModifier [] modifiers
  where
   applyModifier current (ConnectedToWhen whenMatcher matcher) = do
     matches <- elem l <$> select whenMatcher
@@ -75,6 +88,7 @@ whenAt iid lid = whenM (isAt iid lid)
 
 placementLocation :: (HasCallStack, HasGame m) => Placement -> m (Maybe LocationId)
 placementLocation = \case
+  AsSelfLocation {} -> pure Nothing
   AtLocation lid -> pure $ Just lid
   -- At several locations at once: callers that can only hold one take the first.
   AtLocations (lid :| _) -> pure $ Just lid
@@ -309,19 +323,47 @@ getCanMoveToMatchingLocations iid source matcher = do
   let includeEmpty = if CanEnterEmptySpace `elem` modifiers then IncludeEmptySpace else id
   filter (`elem` ls) <$> select (includeEmpty matcher)
 
+{- | The mover's own 'MovesAsIfConnectedTo' modifiers, rewritten as connections on the
+location it is standing on. A connection query reads the START location's modifiers, so
+a connection that only some movers have cannot live on the location; it is injected for
+the duration of the query instead. Hunter movement does the same thing for
+'HunterConnectedTo' (see 'Arkham.Enemy.Runner'). Empty for every mover that has none,
+and in that case the query runs untouched so the connection cache still applies.
+-}
+getMoverConnections
+  :: (HasGame m, Targetable mover)
+  => mover -> LocationId -> m [ModifierType]
+getMoverConnections mover lid = do
+  mods <- getModifiers mover
+  pure [ConnectedToWhen (Matcher.LocationWithId lid) m | MovesAsIfConnectedTo m <- mods]
+
 -- TODO: CACHE
 getConnectedMoveLocations
   :: (Sourceable source, HasGame m) => InvestigatorId -> source -> m [LocationId]
-getConnectedMoveLocations iid source =
-  getCanMoveToMatchingLocations iid source
-    $ Matcher.ConnectedFrom ForMovement (Matcher.locationWithInvestigator iid)
+getConnectedMoveLocations iid source = do
+  let matcher = Matcher.ConnectedFrom ForMovement (Matcher.locationWithInvestigator iid)
+  getLocationOf iid >>= \case
+    Nothing -> getCanMoveToMatchingLocations iid source matcher
+    Just lid ->
+      getMoverConnections iid lid >>= \case
+        [] -> getCanMoveToMatchingLocations iid source matcher
+        extra ->
+          withModifiers lid (toModifiers iid extra)
+            $ getCanMoveToMatchingLocations iid source matcher
 
 -- TODO: CACHE
 getAccessibleLocations
   :: (Sourceable source, HasGame m) => InvestigatorId -> source -> m [LocationId]
-getAccessibleLocations iid source =
-  getCanMoveToMatchingLocations iid source
-    $ Matcher.AccessibleFrom ForMovement (Matcher.locationWithInvestigator iid)
+getAccessibleLocations iid source = do
+  let matcher = Matcher.AccessibleFrom ForMovement (Matcher.locationWithInvestigator iid)
+  getLocationOf iid >>= \case
+    Nothing -> getCanMoveToMatchingLocations iid source matcher
+    Just lid ->
+      getMoverConnections iid lid >>= \case
+        [] -> getCanMoveToMatchingLocations iid source matcher
+        extra ->
+          withModifiers lid (toModifiers iid extra)
+            $ getCanMoveToMatchingLocations iid source matcher
 
 getCanLeaveCurrentLocation
   :: (Sourceable source, HasGame m) => InvestigatorId -> source -> m Bool
@@ -375,3 +417,13 @@ getLocationGlobalMeta
 getLocationGlobalMeta key (asId -> lid) = do
   globalMeta <- field LocationGlobalMeta lid
   pure $ lookup key globalMeta >>= maybeResult
+
+{- | Put a location into a group's box after setup, at the end of it. Lost in Time and
+Space puts its locations into play as the scenario runs, so the index cannot be handed
+out up front the way 'Arkham.Scenario.Setup.placeLocationGroup' does; it is counted from
+the members already there and then stored, so it stays fixed from that point on.
+-}
+joinLocationGroup :: ReverseQueue m => LocationId -> LocationGroupKey -> m ()
+joinLocationGroup lid key = do
+  members <- select $ LocationInGroup key
+  push $ Msg.SetLocationGroup lid (GroupMembership key (length members))

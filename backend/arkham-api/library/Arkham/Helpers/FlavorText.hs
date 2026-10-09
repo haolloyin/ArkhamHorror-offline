@@ -3,7 +3,7 @@ module Arkham.Helpers.FlavorText (module Arkham.Helpers.FlavorText, module X) wh
 import Arkham.Card.CardCode
 import Arkham.ChaosToken.Types (ChaosTokenFace)
 import Arkham.Classes.HasQueue (push)
-import Arkham.FlavorText as X (li)
+import Arkham.FlavorText as X (li, liGatherSets, liOrReturnTo, liReturnToInstead, onReturnTo)
 import Arkham.FlavorText qualified as FT
 import Arkham.Helpers.Query (allPlayers)
 import Arkham.I18n
@@ -118,6 +118,18 @@ img = addEntry . FT.img . toCardCode
 
 smallImg :: HasCardCode a => a -> FlavorTextBuilder ()
 smallImg = addEntry . FT.smallImg . toCardCode
+
+{- | 'smallImg' marked right or wrong, so a revealed card can be shown as a guess that
+was correct or one that was not. The same green tick and red cross @.validate@ puts on a
+paragraph or a list item, against a card instead.
+
+A plain function rather than @smallImg.validate@: the record-dot helpers here are
+instances on @Scope -> FlavorTextBuilder ()@, and 'smallImg' takes any 'HasCardCode', so
+an instance for it would overlap with those on the shape of its type alone.
+-}
+smallImgValidate :: HasCardCode a => Bool -> a -> FlavorTextBuilder ()
+smallImgValidate cond =
+  addEntry . ModifyEntry [if cond then ValidEntry else InvalidEntry] . FT.smallImg . toCardCode
 
 chaosTokenImg :: ChaosTokenFace -> FlavorTextBuilder ()
 chaosTokenImg = addEntry . FT.chaosTokenImg

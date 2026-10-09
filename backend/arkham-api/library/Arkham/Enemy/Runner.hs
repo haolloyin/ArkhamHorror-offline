@@ -200,6 +200,7 @@ filterOutEnemyMessages eid ask'@(Ask pid q) = case q of
 filterOutEnemyMessages eid msg = case msg of
   InitiateEnemyAttack details | eid == attackEnemy details -> Nothing
   EnemyAttack details | eid == attackEnemy details -> Nothing
+  ChangeEnemyAttackDetails eid' _ | eid' == eid -> Nothing
   Discarded (EnemyTarget eid') _ _ | eid == eid' -> Nothing
   Do (Discarded (EnemyTarget eid') _ _) | eid == eid' -> Nothing
   PlaceEnemy eid' _ | eid' == eid -> Nothing
@@ -275,7 +276,9 @@ getPaths a destinations =
     Just loc -> do
       mods <- getModifiers a
       let locationMatcherModifier = if CanEnterEmptySpace `elem` mods then IncludeEmptySpace else id
-      let additionalConnections = [ConnectedToWhen (LocationWithId loc) (LocationWithId lid') | HunterConnectedTo lid' <- mods]
+      let additionalConnections =
+            [ConnectedToWhen (LocationWithId loc) (LocationWithId lid') | HunterConnectedTo lid' <- mods]
+              <> [ConnectedToWhen (LocationWithId loc) m | MovesAsIfConnectedTo m <- mods]
 
       pathIds' <- withModifiers loc (toModifiers a additionalConnections) do
         concatForM destinations
@@ -303,7 +306,9 @@ selectWithEnemyConnections a matcher =
     Nothing -> select matcher
     Just loc -> do
       mods <- getModifiers a
-      let additionalConnections = [ConnectedToWhen (LocationWithId loc) (LocationWithId lid') | HunterConnectedTo lid' <- mods]
+      let additionalConnections =
+            [ConnectedToWhen (LocationWithId loc) (LocationWithId lid') | HunterConnectedTo lid' <- mods]
+              <> [ConnectedToWhen (LocationWithId loc) m | MovesAsIfConnectedTo m <- mods]
       withModifiers loc (toModifiers a additionalConnections) $ select matcher
 
 getActualAvailablePrey :: HasGame m => EnemyAttrs -> m [InvestigatorId]
@@ -330,6 +335,15 @@ getAvailablePrey a = runDefaultMaybeT [] do
     other@(RestrictedBearerOf {}) -> do
       mBearer <- selectOne other
       pure $ maybe [] (\bearer -> [bearer | bearer `elem` iids]) mBearer
+
+{- | Whether a 'CannotBeDefeatedBy' modifier bans a defeat coming from this source. Damage
+defeats an enemy through 'CheckDefeated', which never reaches the 'DefeatEnemy' handler, so
+both gates have to ask.
+-}
+defeatBlockedBySource :: HasGame m => Source -> [ModifierType] -> m Bool
+defeatBlockedBySource source = anyM \case
+  CannotBeDefeatedBy sm -> sourceMatches source sm
+  _ -> pure False
 
 instance RunMessage EnemyAttrs where
   runMessage msg a@EnemyAttrs {..} = runQueueT $ case msg of
@@ -448,7 +462,10 @@ instance RunMessage EnemyAttrs where
         SpawnEngagedWith imatcher -> do
           iids <- select imatcher
           case iids of
-            [] -> pure ()
+            -- Nobody to engage. Doing nothing here would leave the enemy in play as
+            -- an Unplaced entity that can never act and never leaves, so resolve it
+            -- the way every other failed spawn does.
+            [] -> noSpawn a details.investigator
             [iid] -> do
               let
                 getModifiedSpawnAt [] = pure Nothing
@@ -1070,7 +1087,9 @@ instance RunMessage EnemyAttrs where
               DuringEnemyPhaseMustMoveToward (LocationTarget lid) -> Just lid
               _ -> Nothing
             forcedTargetLocation = firstJust matchForcedTargetLocation mods
-            additionalConnections = [ConnectedToWhen (LocationWithId loc) (LocationWithId lid') | HunterConnectedTo lid' <- mods]
+            additionalConnections =
+              [ConnectedToWhen (LocationWithId loc) (LocationWithId lid') | HunterConnectedTo lid' <- mods]
+                <> [ConnectedToWhen (LocationWithId loc) m | MovesAsIfConnectedTo m <- mods]
 
           enemiesAsInvestigatorLocations <-
             withModifiers loc (toModifiers a additionalConnections)
@@ -1501,14 +1520,14 @@ instance RunMessage EnemyAttrs where
       push $ Failed (Action.Evade, toProxyTarget target) iid source (toActionTarget target) n
       pure a
     Failed (Action.Evade, target) iid _ _ _ | isTarget a target -> do
-      mods <- getModifiers iid
+      mods <- getCombinedModifiers [toTarget iid, toTarget a]
       keywords <- getModifiedKeywords a
       canAttack <- canBeAttackedBy enemyId iid
       pushAll
         [ EnemyAttack $ viaAlert $ (enemyAttack enemyId a iid) {attackDamageStrategy = enemyDamageStrategy}
         | canAttack
         , Keyword.Alert `elem` keywords
-        , IgnoreRetaliate `notElem` mods
+        , IgnoreAlert `notElem` mods
         ]
       pure a
     InitiateEnemyAttack details | details.enemy == enemyId -> do
@@ -1576,13 +1595,29 @@ instance RunMessage EnemyAttrs where
       afterAttacksEventIfCancelledWindow <-
         checkWindows [mkAfter $ Window.EnemyAttacksEvenIfCancelled details]
       whenWouldAttackWindow <- checkWindows [mkWhen $ Window.EnemyWouldAttack details]
+      -- Two attacks by the same enemy can be in flight at once: a Retaliate attack
+      -- provoked from inside this enemy's own `when ... attacks` window (Survival
+      -- Knife's reaction fight) starts while the first attack is still waiting to
+      -- perform. 'enemyAttacking' holds one attack and the nested attack's After step
+      -- clears it, so the interrupted attack's PerformEnemyAttack found Nothing and
+      -- crashed (#5808). Put the interrupted details back behind the nested attack's
+      -- whole chain. A massive attack's per-target sub-attacks are delegation, not
+      -- nesting -- the parent has already performed -- so they must not reinstate it,
+      -- or 'attacking' would be left set forever.
+      let delegatedFrom outer = case outer.target of
+            MassiveAttackTargets ts -> details.target `elem` map SingleAttackTarget ts
+            SingleAttackTarget _ -> False
       pushAll
-        [ whenWouldAttackWindow
-        , whenAttacksWindow
-        , PerformEnemyAttack enemyId
-        , After (PerformEnemyAttack enemyId)
-        , afterAttacksEventIfCancelledWindow
-        ]
+        $ [ whenWouldAttackWindow
+          , whenAttacksWindow
+          , PerformEnemyAttack enemyId
+          , After (PerformEnemyAttack enemyId)
+          , afterAttacksEventIfCancelledWindow
+          ]
+        <> [ ChangeEnemyAttackDetails enemyId outer
+           | Just outer <- [enemyAttacking]
+           , not (delegatedFrom outer)
+           ]
 
       pure
         $ a
@@ -1788,7 +1823,7 @@ instance RunMessage EnemyAttrs where
             -- so the effects can differ; keep the incoming one rather than
             -- crashing -- only the DealtExcessDamage window reads it.
             combine l r = l {damageAssignmentAmount = l.amount + r.amount}
-          push $ AssignedDamage (toTarget a) amount' 0
+          push $ AssignedDamage (toTarget a) source amount' 0
           unless damageAssignment'.delayed do
             push $ checkDefeated source eid
           -- Damage reduced away was never dealt, so nothing happened "after" it.
@@ -1815,7 +1850,10 @@ instance RunMessage EnemyAttrs where
               _ -> First Nothing
             mOnlyBeDefeatedByModifier =
               getFirst $ foldMap canOnlyBeDefeatedByModifier modifiers'
-          let validDefeat = canBeDefeated && not hasSwarm && isNothing mOnlyBeDefeatedByModifier
+          blockedBySource <- defeatBlockedBySource source modifiers'
+          let
+            validDefeat =
+              canBeDefeated && not hasSwarm && isNothing mOnlyBeDefeatedByModifier && not blockedBySource
           when validDefeat $ do
             field EnemyHealth (toId a) >>= traverse_ \modifiedHealth -> do
               when (enemyDamage a >= modifiedHealth) $ do
@@ -1844,9 +1882,11 @@ instance RunMessage EnemyAttrs where
           when (amount' > 0) do
             let (before, _, after) = frame $ Window.PlacedDamage source (toTarget a) amount'
             pushAll [before, after]
+          blockedBySource <- defeatBlockedBySource source modifiers'
           validDefeat <-
             ( ( canBeDefeated
                   && not hasSwarm
+                  && not blockedBySource
               )
                 &&
             )
@@ -1922,13 +1962,7 @@ instance RunMessage EnemyAttrs where
           _ -> First Nothing
         mOnlyBeDefeatedByModifier =
           getFirst $ foldMap canOnlyBeDefeatedByModifier modifiers'
-      blockedBySource <-
-        anyM
-          ( \case
-              CannotBeDefeatedBy sm -> sourceMatches source sm
-              _ -> pure False
-          )
-          modifiers'
+      blockedBySource <- defeatBlockedBySource source modifiers'
       validDefeat <-
         ( ( canBeDefeated
               && (not canOnlyBeDefeatedByDamage || defeatedByDamage)
@@ -2532,7 +2566,7 @@ instance RunMessage EnemyAttrs where
     UseCardAbility iid (isSource a -> True) AbilityEngage _ _ -> do
       push $ EngageEnemy iid (toId a) Nothing False
       pure a
-    AssignDamage target | isTarget a target -> do
+    AssignDamage target _ | isTarget a target -> do
       pushAll $ map (`checkDefeated` a) (keys enemyAssignedDamage)
       pure a
     -- Removing from the game is still leaving play, so an in-play enemy has to go

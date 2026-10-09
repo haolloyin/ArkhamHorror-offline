@@ -109,7 +109,9 @@ runMessages :: TestAppT ()
 runMessages = do
   logger <- gets testLogger
   env <- get
-  runReaderT (Game.runMessages "TEST" logger) env
+  -- No narration in the harness: specs assert on game state, and a spec that
+  -- wants to check the log should opt in by passing observeNarration itself.
+  runReaderT (Game.runMessages "TEST" Game.noRunObservers {Game.observeMessage = logger}) env
 
 pushAndRun :: Message -> TestAppT ()
 pushAndRun msg = push msg >> runMessages
@@ -874,6 +876,7 @@ newGame scenario' investigator = do
       Game
         { gameWindowDepth = 0
         , gameWindowStack = Nothing
+        , gameRoundCount = 0
         , gameWindowTick = 0
         , gameRetainedQuestion = False
         , gameSimultaneousAsks = mempty
@@ -906,6 +909,7 @@ newGame scenario' investigator = do
         , gameModifiers = mempty
         , gameEncounterDiscardEntities = defaultEntities
         , gameInHandEntities = mempty
+        , gameCommittedEntities = mempty
         , gameInDiscardEntities = mempty
         , gameActionRemovedEntities = mempty
         , gameTombstones = mempty
@@ -945,6 +949,7 @@ newGame scenario' investigator = do
         , gameUndoRoundStep = Nothing
         , gameAsIfAtIgnored = mempty
         , gameLocationOffsets = mempty
+        , gameCardPlayStack = mempty
         }
 
   liftIO $ do

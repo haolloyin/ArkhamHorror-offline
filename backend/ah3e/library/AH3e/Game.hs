@@ -4,6 +4,7 @@ import AH3e.Message
 import AH3e.Prelude
 import AH3e.Types.Board
 import AH3e.Types.Card
+import AH3e.Types.Effect
 import AH3e.Types.Ids
 import AH3e.Types.Skill
 import AH3e.Types.State
@@ -25,12 +26,25 @@ data Investigator = Investigator
   , actionsTaken :: Int
   , spacesMoved :: Int
   -- ^ how far the move action in flight has carried them, for cards that count it
+  , spacesMovedThisRound :: Int
+  {- ^ how far they have been carried since the round began, which a sheet may
+  count across several moves (Stella Clark's delivery route)
+  -}
   , performed :: [ActionKind]
   , bonusActions :: Int
   , lockedAssets :: [CardId]
   , usedAssets :: [CardId]
   , usedAbilities :: [Text]
   -- ^ once-a-round abilities of the investigator's own, spent this round
+  , lastTestDice :: Maybe Int
+  {- ^ how many dice they last rolled, for a card that matches somebody else's
+  pool rather than working out its own (Anything You Can Do). Left optional, as
+  'fixedPoolNext' is, so a table saved before either existed still loads.
+  -}
+  , fixedPoolNext :: Maybe Int
+  {- ^ a pool their next test rolls in place of working one out, left by a card
+  that states it outright ("instead of your normal dice pool")
+  -}
   }
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON, FromJSON)
@@ -46,6 +60,10 @@ data Monster = Monster
   , damage :: Int
   , markers :: [Marker]
   -- ^ markers a scenario has put on the monster itself, which travel with it
+  , prey :: Maybe InvestigatorId
+  {- ^ whoever a card has named as this monster's prey for the monster phase,
+  in place of the rule its activation prints (Silas Marsh)
+  -}
   }
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON, FromJSON)
@@ -97,6 +115,10 @@ data Decks = Decks
   , starting :: [CardId]
   , conditions :: [CardId]
   , archive :: [CardId]
+  , investigation :: [ArchiveNumber]
+  -- ^ the archive cards a scenario is still choosing between (Dreams of R'lyeh)
+  , investigationUnder :: Maybe ArchiveNumber
+  -- ^ the codex card that pile lies under, so the table can show its depth there
   , setAside :: [CardId]
   , removed :: [CardId]
   }
@@ -104,7 +126,7 @@ data Decks = Decks
   deriving anyclass (ToJSON, FromJSON)
 
 emptyDecks :: Decks
-emptyDecks = Decks mempty [] [] [] mempty [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] []
+emptyDecks = Decks mempty [] [] [] mempty [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] Nothing [] []
 
 data PlayerState = PlayerState
   { id :: PlayerId
@@ -141,6 +163,16 @@ data Game = Game
   {- ^ the scenario sheet's other piles, by name: a sheet may collect damage and
   horror tokens as well as markers, and a scenario may keep its own state here.
   -}
+  , bystanders :: Maybe [(CardId, SpaceId)]
+  {- ^ Ally cards lying facedown on the board, which The Dead Cry Out calls
+  bystanders: monsters hunt them, and whoever reaches one first may take the card.
+  Optional, so a table saved before it loads.
+  -}
+  , unstableSpace :: Maybe SpaceId
+  {- ^ The space a card has made the unstable space in place of the one the
+  event deck names (Desperate Binding moves it to the Witch House). Optional, so
+  a table saved before it loads.
+  -}
   , cup :: [MythosToken]
   , drawnTokens :: [MythosToken]
   , turn :: Maybe InvestigatorId
@@ -159,6 +191,11 @@ data Game = Game
   , pendingSuccesses :: Int
   {- ^ Successes a card promised before its test began -- a spell's cast cost
   lands before the casting test does -- picked up by the next test to start.
+  -}
+  , pendingRiders :: Maybe [(EffectCtx, Effect)]
+  {- ^ Riders a card left before its test existed, the way 'pendingSuccesses'
+  banks successes (Book of Shadows arms itself as the cast is paid for). Picked
+  up by the next test to start. Optional, so a table saved before it loads.
   -}
   , damagePrevented :: Int
   {- ^ Damage a prevention test just prevented, waiting for the harm it was
@@ -208,9 +245,12 @@ newInvestigator iid pid =
     , assets = []
     , actionsTaken = 0
     , spacesMoved = 0
+    , spacesMovedThisRound = 0
     , performed = []
     , bonusActions = 0
     , lockedAssets = []
     , usedAssets = []
     , usedAbilities = []
+    , lastTestDice = Nothing
+    , fixedPoolNext = Nothing
     }

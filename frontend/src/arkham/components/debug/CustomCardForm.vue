@@ -7,8 +7,10 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import * as Api from '@/arkham/api'
 import {
+  ARKHAM_BUILD_ID_KEY,
   PLAYER_CARD_TYPES,
   cardArtReference,
+  isArkhamBuildCardId,
   renderCardPlaceholder,
   stripCardCodePrefix,
   type CustomCard,
@@ -80,9 +82,30 @@ const ICONS = [
   { value: 'Wild', label: 'Wild', icon: 'wild-icon' },
 ]
 const KEYWORDS = [
-  'Alert', 'Aloof', 'Elusive', 'Fast', 'Hunter', 'Massive', 'Myriad',
-  'Peril', 'Relentless', 'Retaliate', 'Surge', 'Doomed', 'Permanent', 'Predator',
+  'Alert', 'Aloof', 'Doomed', 'Elusive', 'Fast', 'Hidden', 'Hunter', 'Massive',
+  'Myriad', 'Peril', 'Permanent', 'Predator', 'Relentless', 'Retaliate', 'Surge',
 ]
+const ENEMY_TYPES = ['EnemyType', 'PlayerEnemyType']
+const TREACHERY_TYPES = ['TreacheryType', 'PlayerTreacheryType']
+/* Which card types can print a keyword, for the keywords only some can. The rest
+ * are open to any card. Fighting, evading, engaging and moving are things an
+ * enemy does, so the keywords about them are an enemy's alone; hidden is a
+ * revelation that puts the card in your hand, which only an enemy or a treachery
+ * has a placement for. */
+const KEYWORD_TYPES: Record<string, string[]> = {
+  Alert: ENEMY_TYPES,
+  Aloof: ENEMY_TYPES,
+  Doomed: ENEMY_TYPES,
+  Elusive: ENEMY_TYPES,
+  Hunter: ENEMY_TYPES,
+  Massive: ENEMY_TYPES,
+  Predator: ENEMY_TYPES,
+  Relentless: ENEMY_TYPES,
+  Retaliate: ENEMY_TYPES,
+  Hidden: [...ENEMY_TYPES, ...TREACHERY_TYPES],
+}
+const canPrintKeyword = (keyword: string, cardType: string) =>
+  !KEYWORD_TYPES[keyword] || KEYWORD_TYPES[keyword].includes(cardType)
 
 
 const blankForm = () => ({
@@ -127,6 +150,7 @@ const blankForm = () => ({
   actions: [] as string[],
   // grouping, so a set of cards made together can be found together
   cardNumber: '',
+  arkhamBuildId: '',
   // investigator
   elderSign: '1',
   elderSignRevealSteps: [] as any[],
@@ -198,14 +222,14 @@ function chooseType(cardType: string) {
   form.cardType = cardType
   form.unique = cardType === 'InvestigatorType'
   form.weaknessKind = ALWAYS_WEAKNESS.includes(cardType) ? 'Weakness' : ''
+  // Drop what the new type cannot print rather than keeping it where nothing shows it.
+  form.keywords = form.keywords.filter((k) => canPrintKeyword(k, cardType))
 }
 
 const artFor = (slot: string) => form.artUploaded[slot] || form.artUrls[slot]?.trim() || null
 
-const isEnemy = computed(() => form.cardType === 'EnemyType' || form.cardType === 'PlayerEnemyType')
-const isTreachery = computed(
-  () => form.cardType === 'TreacheryType' || form.cardType === 'PlayerTreacheryType',
-)
+const isEnemy = computed(() => ENEMY_TYPES.includes(form.cardType))
+const isTreachery = computed(() => TREACHERY_TYPES.includes(form.cardType))
 /* Only cards you can commit to a test print skill icons; an investigator has
  * stats instead, and enemies and treacheries have none at all. */
 const hasSkillIcons = computed(
@@ -220,6 +244,15 @@ const hasCost = computed(() => ['AssetType', 'EventType'].includes(form.cardType
 
 const art = computed(() => artFor('art'))
 const isInvestigator = computed(() => form.cardType === 'InvestigatorType')
+
+const keywordChoices = computed(() =>
+  KEYWORDS.filter((k) => canPrintKeyword(k, form.cardType)),
+)
+/* Read the same way the engine reads it: on a card type that cannot be hidden the
+ * keyword is printed text and changes nothing. */
+const isHidden = computed(
+  () => canPrintKeyword('Hidden', form.cardType) && form.keywords.includes('Hidden'),
+)
 
 const isWeakness = computed(() => !!form.weaknessKind)
 /* An asset or an event is a weakness only if it says so; a player treachery or
@@ -240,15 +273,18 @@ const canHaveRevelation = computed(
 /* A treachery always resolves when it is drawn, and so does a weakness asset or
  * event — without a revelation it would simply sit in your hand. A weakness
  * enemy is spawned by being drawn and needs no revelation to do it, so that one
- * is asked for. */
+ * is asked for — unless it is hidden, which is a revelation by definition. */
 const revelationImplied = computed(
-  () => isTreachery.value || (isWeakness.value && (isAsset.value || isEvent.value)),
+  () => isTreachery.value || isHidden.value || (isWeakness.value && (isAsset.value || isEvent.value)),
 )
 
 const hasRevelation = computed(() => revelationImplied.value || form.revelation)
 
-// Only what stays on the table has anywhere to be put.
-const hasRevelationPlacement = computed(() => isAsset.value || isTreachery.value)
+/* Only what stays on the table has anywhere to be put -- and a hidden card is
+ * already answered: it goes secretly into the drawing investigator's hand. */
+const hasRevelationPlacement = computed(
+  () => !isHidden.value && (isAsset.value || isTreachery.value),
+)
 
 const REVELATION_PLACEMENTS = computed(() =>
   isTreachery.value
@@ -287,6 +323,15 @@ const hasLevel = computed(
 // A class is a player-card idea, and a weakness has no class of its own.
 const hasClass = computed(
   () => (isPlayerCard.value || isInvestigator.value) && !isWeakness.value,
+)
+
+/* Only a card a deck can name needs to claim its arkham.build twin, and an
+ * investigator is one -- a deck names its investigator too, which is the case
+ * this was asked for. */
+const canClaimArkhamBuildId = computed(() => isPlayerCard.value || isInvestigator.value)
+
+const badArkhamBuildId = computed(
+  () => !!form.arkhamBuildId.trim() && !isArkhamBuildCardId(form.arkhamBuildId.trim()),
 )
 
 /* Signature cards are other cards in your library. Held on the investigator by
@@ -480,6 +525,12 @@ function buildDef(cardCode: string): Record<string, any> {
   }
 
   if (form.cardNumber.trim()) def.meta.number = form.cardNumber.trim()
+  /* Written for a player card only, and only when it is an id: a deck names a
+     card by one, so a typo here is a card that answers to nothing. */
+  const buildId = form.arkhamBuildId.trim()
+  if (buildId && canClaimArkhamBuildId.value && isArkhamBuildCardId(buildId)) {
+    def.meta[ARKHAM_BUILD_ID_KEY] = buildId
+  }
 
   if (isInvestigator.value) {
     if (num(form.elderSign) !== null) def.meta._elderSign = num(form.elderSign)
@@ -710,6 +761,7 @@ async function loadCard(card: CustomCard) {
   form.investigatorSanity = meta.sanity === undefined ? '7' : String(meta.sanity)
   form.signatures = (meta._signatures ?? []).map(stripCardCodePrefix)
   form.cardNumber = meta.number ?? ''
+  form.arkhamBuildId = meta[ARKHAM_BUILD_ID_KEY] ?? ''
   // Blank when the card has none, so no Elder sign tab is offered for it.
   form.elderSign = meta._elderSign === undefined ? '' : String(meta._elderSign)
   form.elderSignRevealSteps = meta._elderSignRevealSteps ?? []
@@ -781,7 +833,17 @@ function toggle(list: string[], value: string) {
   else list.splice(index, 1)
 }
 
-defineExpose({ loadCard, reset, buildCustomCard, cardType: computed(() => form.cardType) })
+/* What is in the editor right now, as a string to compare against.
+
+The fields themselves rather than the built def: 'buildCustomCard' validates and
+can throw on half-typed raw JSON, which is exactly the moment the caller most
+needs to know the card is unsaved. Reading `form` and `art` here is also what
+makes a caller's computed re-run as they type. */
+function snapshot(): string {
+  return JSON.stringify({ form, art: art.value })
+}
+
+defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(() => form.cardType) })
 </script>
 <template>
   <div class="custom-card-body">
@@ -912,7 +974,27 @@ defineExpose({ loadCard, reset, buildCustomCard, cardType: computed(() => form.c
               Card number
               <input v-model="form.cardNumber" type="text" placeholder="1" @keydown.stop />
             </label>
+            <label v-if="canClaimArkhamBuildId">
+              arkham.build card id
+              <input
+                v-model="form.arkhamBuildId"
+                type="text"
+                placeholder="6afb2ea0-d5c6-434a-aea9-2b1beff8c74a"
+                spellcheck="false"
+                @keydown.stop
+              />
+            </label>
           </div>
+          <p v-if="canClaimArkhamBuildId" class="hint" :class="{ bad: badArkhamBuildId }">
+            <template v-if="badArkhamBuildId">
+              Not an arkham.build id — a uuid, or the 32- or 8-character form a pack's cards
+              come through with. Left out until it is one.
+            </template>
+            <template v-else>
+              Optional. If this same card is published on arkham.build, paste its id and a deck
+              built there will find this copy instead of failing as an unimplemented card.
+            </template>
+          </p>
 
           <label>
             Traits
@@ -944,7 +1026,7 @@ defineExpose({ loadCard, reset, buildCustomCard, cardType: computed(() => form.c
             <legend>Keywords</legend>
             <div class="chips">
               <button
-                v-for="keyword in KEYWORDS"
+                v-for="keyword in keywordChoices"
                 :key="keyword"
                 type="button"
                 class="chip"
@@ -954,6 +1036,11 @@ defineExpose({ loadCard, reset, buildCustomCard, cardType: computed(() => form.c
                 {{ keyword }}
               </button>
             </div>
+            <p v-if="isHidden" class="hint">
+              Drawing this secretly puts it into your hand instead of resolving it, and only an
+              ability used "In your hand" can get it out again — nothing discards a hidden card.
+              An enemy's draw is still announced to the table unless it also prints Peril.
+            </p>
           </fieldset>
 
           <fieldset v-if="isInvestigator">
@@ -1239,6 +1326,8 @@ defineExpose({ loadCard, reset, buildCustomCard, cardType: computed(() => form.c
     background: none;
     border: none;
     border-bottom: 2px solid transparent;
+    /* The global button radius would curl the active underline up at both ends. */
+    border-radius: 0;
     color: #9ca3af;
     cursor: pointer;
     font-size: 0.95rem;
@@ -1464,6 +1553,12 @@ select {
   font-size: 0.8rem;
   margin: 0;
   opacity: 0.7;
+
+  /* Said while you are still typing the id, so it warns rather than refuses. */
+  &.bad {
+    color: color-mix(in srgb, var(--important) 85%, white);
+    opacity: 1;
+  }
 }
 
 .trait-preview {

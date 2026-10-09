@@ -1,12 +1,14 @@
 <script lang="ts" setup>
 import { computed, ref, watch } from 'vue'
 import { BugAntIcon } from '@heroicons/vue/20/solid'
-import { imgsrc } from '@/arkham/helpers'
+import { imgsrc, campaignBox, scenarioBox } from '@/arkham/helpers'
 import { chaosTokenImage, compareTokenFaces, type TokenFace } from '@/arkham/types/ChaosToken'
 import type { Difficulty } from '@/arkham/types/Difficulty'
 import type { Scenario, Campaign } from '@/arkham/data'
 import type { GameMode, MultiplayerVariant, CampaignType } from '@/arkham/types/NewGame'
 import { ACHIEVEMENT_CAMPAIGN_IDS } from '@/arkham/achievements'
+import { ultimatumEntryScope } from '@/arkham/homebrewData'
+import { refractionTagsFor } from '@/arkham/refractions'
 import { useSettings } from '@/stores/settings'
 
 type FullCampaignOption = {
@@ -18,7 +20,11 @@ type RecommendedToggle = {
   type: 'toggle'
   default?: boolean
   icon?: 'bug-ant'
-  option: { tag: string }
+  // A campaign that owns its own locale namespace (homebrew) names the scope
+  // holding `.title` / `.description`; otherwise they live under
+  // `create.recommendedOption.<tag>`.
+  i18n?: string
+  option: { tag: string; contents?: string }
 }
 
 const props = defineProps<{
@@ -168,15 +174,16 @@ const selectedSideStoryPart = computed(() => {
 })
 
 const selectionBoxSrc = computed(() => {
-  if (!selectionSummary.value) return null
+  const summary = selectionSummary.value
+  if (!summary) return null
   const part = selectedSideStoryPart.value
-  const id = part ? part.box ?? part.id : selectionSummary.value.id
+  const id = part ? part.box ?? part.id : summary.id
 
-  if (id.startsWith(":")) {
-    const homebrew = id.slice(1,)
-    return imgsrc(`homebrew/${homebrew}/boxes/${homebrew}.jpg`)
-  }
-  return imgsrc(`boxes/${id}.jpg`)
+  /* A side story is identified by a scenario id, and a homebrew scenario id
+     names both the campaign and the scenario (`:against-the-wendigo:001`).
+     campaignBox would read the whole thing as one folder name; scenarioBox
+     splits it. The two agree on official ids. */
+  return summary.kind === 'SideStory' ? scenarioBox(id) : campaignBox(id)
 })
 
 const selectionKind = computed(() => selectionSummary.value?.kind ?? null)
@@ -297,6 +304,18 @@ const uabGroups: { key: 'boons' | 'ultimatums'; beta?: boolean; tags: string[] }
   },
 ]
 
+/* Refractions belong to one campaign or scenario, so they are only offered
+while that campaign is the one being set up. */
+const refractionGroup = computed(() => {
+  const tags = refractionTagsFor(effectiveCampaignId.value)
+  return tags.length > 0 ? { key: 'refractions', beta: true, tags } : null
+})
+
+const uabAllGroups = computed(() => {
+  const refractions = refractionGroup.value
+  return refractions ? [...uabGroups, refractions] : uabGroups
+})
+
 // Entries enforced at deck construction (deckRestrictions.ts) rather than at
 // runtime — the in-game Ultimatums & Boons on/off toggle does not affect them.
 const UAB_DECKBUILDING_TAGS = new Set([
@@ -338,7 +357,11 @@ const recommendedToggles = computed<RecommendedToggle[]>(() => {
 })
 
 function optKey(o: RecommendedToggle) {
-  return o.option.tag
+  return o.option.contents ? `${o.option.tag}:${o.option.contents}` : o.option.tag
+}
+
+function optScope(o: RecommendedToggle) {
+  return o.i18n ?? `create.recommendedOption.${o.option.tag}`
 }
 
 function isOptEnabled(o: RecommendedToggle) {
@@ -537,7 +560,7 @@ function setOptEnabled(o: RecommendedToggle, enabled: boolean) {
                 :class="{ selected: selectedScenario == s.id }"
                 @click="selectedScenario = s.id"
               >
-                <img :src="imgsrc(`boxes/${s.id}.jpg`)" :alt="s.name" />
+                <img :src="scenarioBox(s.id)" :alt="s.name" />
               </button>
             </div>
           </div>
@@ -665,10 +688,10 @@ function setOptEnabled(o: RecommendedToggle, enabled: boolean) {
             <div class="recommended-text">
               <div class="recommended-name">
                 <BugAntIcon v-if="o.icon === 'bug-ant'" class="recommended-icon" aria-hidden="true" />
-                {{ $t(`create.recommendedOption.${o.option.tag}.title`) ?? o.option.tag }}
+                {{ $t(`${optScope(o)}.title`) ?? o.option.tag }}
               </div>
-              <div class="recommended-desc" v-if="$te?.(`create.recommendedOption.${o.option.tag}.description`)">
-                {{ $t(`create.recommendedOption.${o.option.tag}.description`) }}
+              <div class="recommended-desc" v-if="$te?.(`${optScope(o)}.description`)">
+                {{ $t(`${optScope(o)}.description`) }}
               </div>
             </div>
 
@@ -693,7 +716,7 @@ function setOptEnabled(o: RecommendedToggle, enabled: boolean) {
         </div>
       </div>
 
-      <template v-for="group in uabGroups" :key="group.key">
+      <template v-for="group in uabAllGroups" :key="group.key">
         <div v-if="group.tags.length > 0" class="card rules-card">
           <button type="button" class="rules-toggle" @click="uabExpanded[group.key] = !uabExpanded[group.key]">
             <span class="card-title" style="margin-bottom: 0">
@@ -716,12 +739,12 @@ function setOptEnabled(o: RecommendedToggle, enabled: boolean) {
                   <input type="checkbox" :value="tag" v-model="ultimatumsAndBoons" />
                   <span class="uab-text">
                     <span class="uab-name">
-                      {{ $t(`ultimatumsAndBoons.entries.${tag}.name`) }}
+                      {{ $t(`${ultimatumEntryScope(tag)}.name`) }}
                       <span v-if="UAB_DECKBUILDING_TAGS.has(tag)" class="uab-deckbuilding-badge">
                         {{ $t('ultimatumsAndBoons.deckbuildingBadge') }}
                       </span>
                     </span>
-                    <span class="uab-desc">{{ $t(`ultimatumsAndBoons.entries.${tag}.text`) }}</span>
+                    <span class="uab-desc">{{ $t(`${ultimatumEntryScope(tag)}.text`) }}</span>
                   </span>
                 </label>
               </div>

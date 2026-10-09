@@ -357,8 +357,18 @@ addCampaignCardToDeck
   -> ShuffleIn
   -> card
   -> m ()
-addCampaignCardToDeck investigator shouldShuffleIn card = do
-  push . Msg.AddCampaignCardToDeck (asId investigator) shouldShuffleIn =<< fetchCard card
+addCampaignCardToDeck investigator shouldShuffleIn card = void $ addCampaignCardToDeckCapture investigator shouldShuffleIn card
+
+addCampaignCardToDeckCapture
+  :: (AsId investigator, IdOf investigator ~ InvestigatorId, ReverseQueue m, FetchCard card)
+  => investigator
+  -> ShuffleIn
+  -> card
+  -> m Card
+addCampaignCardToDeckCapture investigator shouldShuffleIn card = do
+  x <- fetchCard card
+  push $ Msg.AddCampaignCardToDeck (asId investigator) shouldShuffleIn x
+  pure x
 
 addCampaignCardToDeckChoice
   :: (FetchCard card, ReverseQueue m) => [InvestigatorId] -> ShuffleIn -> card -> m ()
@@ -2854,8 +2864,8 @@ quietCancelCardDraw card = do
     Do (InvestigatorDrewEncounterCard _ c) -> c.id == card.id
     Do (InvestigatorDrewEncounterCardFrom _ c _) -> c.id == card.id
     InvestigatorDrewEncounterCard _ c -> c.id == card.id
-    Do (InvestigatorDrewPlayerCardFrom _ c _) -> c.id == card.id
-    InvestigatorDrewPlayerCardFrom _ c _ -> c.id == card.id
+    Do (InvestigatorDrewPlayerCardFrom _ c _ _) -> c.id == card.id
+    InvestigatorDrewPlayerCardFrom _ c _ _ -> c.id == card.id
     DrewTreachery _ _ c -> c.id == card.id
     DrewPlayerEnemy _ c -> c.id == card.id
     Revelation _ (CardIdSource cid) -> cid == card.id
@@ -3123,6 +3133,9 @@ withCardEntity (toCard -> card) body = do
     AssetType | Just Refl <- eqT @a @AssetId -> body (coerce uuid)
     _ -> pure ()
   push $ RemoveCardEntity uuid card
+
+forChoice :: ReverseQueue m => Int -> Message -> m ()
+forChoice n msg = push $ Msg.ForChoice n msg
 
 handleTarget
   :: (ReverseQueue m, Sourceable source, Targetable target) => InvestigatorId -> source -> target -> m ()

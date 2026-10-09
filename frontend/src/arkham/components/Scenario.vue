@@ -15,7 +15,7 @@ import {
   provide
 } from 'vue';
 import { type Game } from '@/arkham/types/Game';
-import { type Scenario, usesHardExpertReference } from '@/arkham/types/Scenario';
+import { type Scenario, type GroupLayout, usesHardExpertReference } from '@/arkham/types/Scenario';
 import { type Story as StoryAttrs } from '@/arkham/types/Story';
 import { type Enemy } from '@/arkham/types/Enemy';
 import { type ConcealedCard } from '@/arkham/types/ConcealedCard';
@@ -59,13 +59,14 @@ import { createRainAudio, type RainAudioInstance } from '@/arkham/rainAudio';
 import { useSoundsDisabled } from '@/composable/useSoundsDisabled';
 import PoolItem from '@/arkham/components/PoolItem.vue';
 import { chaosTokenImage } from '@/arkham/types/ChaosToken';
-import { homebrewTotalsTokens } from '@/arkham/homebrewData';
+import { homebrewNamespaceOf, homebrewTotalsTokens } from '@/arkham/homebrewData';
 import scenarioMetadata from '@/arkham/data/scenarios';
 import EncounterDeck from '@/arkham/components/EncounterDeck.vue';
 import VictoryDisplay from '@/arkham/components/VictoryDisplay.vue';
 import SkillTest from '@/arkham/components/SkillTest.vue';
 import ScenarioDeck from '@/arkham/components/ScenarioDeck.vue';
 import CthulhuBoard from '@/arkham/components/TheDrownedCity/CthulhuBoard.vue';
+import LocationCell from '@/arkham/components/LocationCell.vue';
 import { isCthulhuBoardEnemyInPlay } from '@/arkham/components/TheDrownedCity/cthulhuBoard';
 import ScenarioDebug from '@/arkham/components/ScenarioDebug.vue';
 import CardsUnderIndicator from '@/arkham/components/CardsUnderIndicator.vue';
@@ -309,7 +310,9 @@ function onFullscreenKeydown(event: KeyboardEvent) {
     locationsFullscreen.value = false
   }
 }
-const draggingLocationId = ref<string | null>(null)
+// Every location moved by the active drag -- a whole group's members, or the one
+// ungrouped location.
+const draggingLocationIds = ref<string[]>([])
 // Optimistic offsets after a drop, kept until the server echoes them back.
 // Stored in canonical (rotationSteps=0) coordinates, same as the backend.
 const pendingOffsets = ref<Record<string, { x: number, y: number }>>({})
@@ -317,8 +320,10 @@ const pendingOffsets = ref<Record<string, { x: number, y: number }>>({})
 // Plain (non-reactive) drag state. Mutated on every pointermove without
 // triggering Vue re-renders; the live drag visual is applied via direct DOM.
 type DragInternal = {
-  locationId: string
-  element: HTMLElement
+  // A grouped location never moves alone: the group's box is one unit, so a drag
+  // started on any member carries every member.
+  locationIds: string[]
+  elements: HTMLElement[]
   pointerId: number
   startX: number
   startY: number
@@ -409,6 +414,89 @@ const locationGridOffsets = computed<Record<string, { column: number, row: numbe
   return offsets
 })
 
+/* Location groups: several locations drawn inside one box, with connections routed to
+ * the box rather than to each member — every member of a Red Sunrise row connects to
+ * every member of the row below, so a flat map draws a dozen lines where one belongs.
+ *
+ * The scenario's layout names a group ONCE, with that label spanning as many columns as
+ * the group needs. The box is that named area and runs its own grid inside, so members
+ * are placed by the grid rather than nudged into position. The backend hands us each
+ * member's slot index, so the arrangement is stable across reloads, undo and replay. */
+const locationGroupMembers = computed<Record<string, typeof locations.value>>(() => {
+  const byKey: Record<string, typeof locations.value> = {}
+  for (const loc of locations.value) {
+    if (!loc.group) continue
+    if (!byKey[loc.group.key]) byKey[loc.group.key] = []
+    byKey[loc.group.key].push(loc)
+  }
+  for (const key of Object.keys(byKey)) {
+    byKey[key].sort((a, b) => (a.group?.index ?? 0) - (b.group?.index ?? 0))
+  }
+  return byKey
+})
+
+const locationGroupLayouts = computed<Record<string, GroupLayout>>(() =>
+  Object.fromEntries((props.scenario.locationGroups ?? []).map(g => [g.key, g.layout]))
+)
+
+/* The grid template actually in effect, parsed back out of `gridAreas` so it already
+ * reflects rotation, barrier columns, and whether the layout was authored or generated
+ * from grid positions. */
+const effectiveGridRows = computed<string[][]>(() => {
+  const areas = gridAreas.value
+  if (!areas) return []
+  return [...areas.matchAll(/"([^"]*)"/g)].map(m => m[1].trim().split(/\s+/))
+})
+
+const locationGroupBoxes = computed(() => {
+  const rows = effectiveGridRows.value
+  const named = new Set(rows.flat())
+
+  return Object.entries(locationGroupMembers.value).map(([key, members]) => {
+    const layout = locationGroupLayouts.value[key] ?? 'GroupRow'
+    const columns =
+      layout === 'GroupColumn' ? 1
+      : layout === 'GroupRow' ? members.length
+      : Math.ceil(Math.sqrt(Math.max(1, members.length)))
+
+    const style: Record<string, string> = {
+      'grid-template-columns': `repeat(${Math.max(1, columns)}, auto)`,
+    }
+
+    /* A group moves as one unit, so the drag offset rides on the box rather than on
+     * each member -- otherwise the members would slide out of their own frame. The
+     * offset is still stored per-location; read it off the first member. */
+    const off = rotateOffset(effectiveOffset(members[0].id), rotationSteps.value)
+    if (off.x !== 0 || off.y !== 0) style.transform = `translate(${off.x}px, ${off.y}px)`
+
+    if (named.has(key)) {
+      style['grid-area'] = key
+    } else {
+      /* A game set up before the scenario named its groups still carries the layout the
+       * grid generated from positions. Fall back to spanning where the members' own
+       * cells sit, so those saves keep rendering. */
+      let rowStart = Infinity, rowEnd = -1, colStart = Infinity, colEnd = -1
+      const areaNames = new Set(members.map(m => m.label))
+      rows.forEach((row, r) => {
+        row.forEach((cell, c) => {
+          if (!areaNames.has(cell)) return
+          rowStart = Math.min(rowStart, r); rowEnd = Math.max(rowEnd, r)
+          colStart = Math.min(colStart, c); colEnd = Math.max(colEnd, c)
+        })
+      })
+      if (rowEnd >= 0) {
+        style['grid-row'] = `${rowStart + 1} / ${rowEnd + 2}`
+        style['grid-column'] = `${colStart + 1} / ${colEnd + 2}`
+      }
+    }
+
+    return { key, members, style }
+  })
+})
+
+/** Locations the outer grid places directly, i.e. everything not inside a box. */
+const ungroupedLocations = computed(() => locations.value.filter(l => !l.group))
+
 const hasAnyOffset = computed(() =>
   Object.keys(locationOffsets.value).length > 0
     || Object.keys(pendingOffsets.value).length > 0
@@ -491,7 +579,7 @@ async function updateLayoutPadding() {
 
 // Returns the CANONICAL offset for a location (server-side coordinate frame).
 function effectiveOffset(locationId: string): { x: number, y: number } {
-  if (dragInternal && dragInternal.locationId === locationId && dragInternal.moved) {
+  if (dragInternal && dragInternal.moved && dragInternal.locationIds.includes(locationId)) {
     return { x: dragInternal.canonicalFinalX, y: dragInternal.canonicalFinalY }
   }
   return pendingOffsets.value[locationId] ?? locationOffsets.value[locationId] ?? { x: 0, y: 0 }
@@ -517,17 +605,22 @@ function locationOffsetStyle(location: { id: string }) {
   return style
 }
 
-function onLocationPointerDown(event: PointerEvent, location: { id: string }) {
+function onLocationPointerDown(event: PointerEvent, location: { id: string, group?: { key: string } | null }) {
   if (!locationsUnlocked.value) return
   event.preventDefault()
   event.stopPropagation()
   const element = event.currentTarget as HTMLElement | null
   if (!element) return
-  const baseCanonical = effectiveOffset(location.id)
+  const box = location.group ? element.closest('.location-group') as HTMLElement | null : null
+  const members = location.group && box ? locationGroupMembers.value[location.group.key] : null
+  const locationIds = members?.length ? members.map(m => m.id) : [location.id]
+  const elements = box ? [box] : [element]
+  // One base for the whole group, so members that somehow drifted apart converge.
+  const baseCanonical = effectiveOffset(locationIds[0])
   const baseScreen = rotateOffset(baseCanonical, rotationSteps.value)
   dragInternal = {
-    locationId: location.id,
-    element,
+    locationIds,
+    elements,
     pointerId: event.pointerId,
     startX: event.clientX,
     startY: event.clientY,
@@ -553,13 +646,15 @@ function onWindowPointerMove(event: PointerEvent) {
   if (!dragInternal.moved
     && Math.hypot(event.clientX - dragInternal.startX, event.clientY - dragInternal.startY) > DRAG_THRESHOLD_PX) {
     dragInternal.moved = true
-    draggingLocationId.value = dragInternal.locationId
+    draggingLocationIds.value = dragInternal.locationIds
   }
   if (dragInternal.moved) {
     // Live visual: screen-space delta on top of pre-drag screen position.
     const screenX = dragInternal.baseScreenX + screenDx
     const screenY = dragInternal.baseScreenY + screenDy
-    dragInternal.element.style.transform = `translate(${screenX}px, ${screenY}px)`
+    for (const el of dragInternal.elements) {
+      el.style.transform = `translate(${screenX}px, ${screenY}px)`
+    }
     // Mirror it in canonical coords (inverse rotation) for commit + fallback.
     const canonicalDelta = rotateOffset({ x: screenDx, y: screenDy }, -dragInternal.rotationAtStart)
     dragInternal.canonicalFinalX = dragInternal.baseCanonicalX + canonicalDelta.x
@@ -574,17 +669,21 @@ function onWindowPointerUp(event: PointerEvent) {
   window.removeEventListener('pointermove', onWindowPointerMove)
   window.removeEventListener('pointerup', onWindowPointerUp)
   window.removeEventListener('pointercancel', onWindowPointerUp)
-  draggingLocationId.value = null
+  draggingLocationIds.value = []
   if (!drag.moved) return
   // Stash the drop position before the next render so the inline style stays
   // at the drop point until the server echoes the new modifier back.
+  const dropped = { x: drag.canonicalFinalX, y: drag.canonicalFinalY }
   pendingOffsets.value = {
     ...pendingOffsets.value,
-    [drag.locationId]: { x: drag.canonicalFinalX, y: drag.canonicalFinalY },
+    ...Object.fromEntries(drag.locationIds.map(id => [id, dropped])),
   }
   nextTick(() => window.dispatchEvent(new Event('arkham-location-layout-change')))
-  void setLocationOffset(props.game.id, drag.locationId, drag.canonicalFinalX, drag.canonicalFinalY)
-    .finally(() => nextTick(() => window.dispatchEvent(new Event('arkham-location-layout-change'))))
+  // The offset stays per-location on the backend; a group just writes the same
+  // one to every member, so each member's own cell carries it for the padding math.
+  void Promise.all(drag.locationIds.map(id =>
+    setLocationOffset(props.game.id, id, dropped.x, dropped.y)
+  )).finally(() => nextTick(() => window.dispatchEvent(new Event('arkham-location-layout-change'))))
 }
 
 // Drop a pending entry once the server's modifier confirms it.
@@ -610,9 +709,9 @@ function cancelActiveDrag() {
   window.removeEventListener('pointermove', onWindowPointerMove)
   window.removeEventListener('pointerup', onWindowPointerUp)
   window.removeEventListener('pointercancel', onWindowPointerUp)
-  dragInternal.element.style.transform = ''
+  for (const el of dragInternal.elements) el.style.transform = ''
   dragInternal = null
-  draggingLocationId.value = null
+  draggingLocationIds.value = []
 }
 
 function toggleLocationsUnlocked() {
@@ -1014,7 +1113,6 @@ addEntry({
   action: toggleSplitView
 })
 
-
 addEntry({
   id: "viewRemovedFromPlay",
   icon: ArchiveBoxXMarkIcon,
@@ -1225,6 +1323,22 @@ const spokenHasturTooltip = computed(() => {
   return `Record that ${name} spoke HASTUR aloud and take 1 horror.`
 })
 
+/* Dark Matter's Ultimatum of the Unspeakable Oath is an honor rule -- the engine
+cannot hear a name said at the table -- so it gets the same one-click recorder
+Carcosa's Daniel's warning has. */
+const speaksTheUnspeakableOath = computed(
+  () =>
+    props.game.campaign?.id === ':dark-matter'
+    && props.game.settings.settingsUltimatumsAndBoonsEnabled
+    && props.game.settings.settingsUltimatumsAndBoons.includes(':dark-matter:UltimatumOfTheUnspeakableOath')
+)
+
+const unspeakableOathTooltip = computed(() => {
+  const name = hasturSpeaker.value?.name.title ?? 'an investigator'
+  return `Record that ${name} spoke HASTUR or TASSILDA aloud and take 1 horror.`
+})
+
+// Both recorders do the same thing: 1 horror, from the campaign.
 async function recordSpokenHastur() {
   const investigatorId = hasturSpeaker.value?.id
   if (!investigatorId) return
@@ -1337,7 +1451,7 @@ const locationStyles = computed(() => {
     gridAutoColumns: 'max-content',
     gridAutoRows: 'max-content',
     transform: `scale(${locationsZoom.value})`,
-    transformOrigin: locationsZoom.value >= 1 ? '0 0' : 'center center',
+    transformOrigin: '0 0',
     paddingLeft: `${pad.left + mobileEdgePadding}px`,
     paddingRight: `${pad.right + mobileEdgePadding}px`,
     paddingTop: `${pad.top}px`,
@@ -1351,13 +1465,11 @@ async function updateScrollMargins() {
   if (!grid) return
   const z = locationsZoom.value
   // offsetWidth/Height exclude margins, so we always read the natural grid size directly.
-  if (z >= 1) {
-    grid.style.marginRight  = `${grid.offsetWidth  * (z - 1)}px`
-    grid.style.marginBottom = `${grid.offsetHeight * (z - 1)}px`
-  } else {
-    grid.style.marginRight  = ''
-    grid.style.marginBottom = ''
-  }
+  // Zoomed out these go negative, which is the point: scale() leaves the grid's layout box at
+  // full size, so otherwise the scroller reserves the unzoomed height and the map floats in a
+  // band of empty space.
+  grid.style.marginRight  = `${grid.offsetWidth  * (z - 1)}px`
+  grid.style.marginBottom = `${grid.offsetHeight * (z - 1)}px`
 }
 
 const scenarioDeckStyles = computed(() => {
@@ -1449,7 +1561,6 @@ const positionToGridArea = function(pos: Position): string {
   return `pos${fmt(pos.x)}${fmt(pos.y)}`;  
 }
 
-
 const gridConcealed = computed<ConcealedGroup[]>(() => {
   const concealedCards = props.scenario.meta?.concealedCards as [[number, number], string[]][] | undefined
   if (!concealedCards) return []
@@ -1482,7 +1593,13 @@ function isHollow(m: ModifierType): m is Hollow {
 }
 const hollowed = computed(() => [...new Set(Object.values(props.game.investigators).flatMap(i => (i.modifiers || []).map((m) => m.type).filter(isHollow).map(m => props.game.cards[m.contents])))])
 
-const outOfPlay = computed(() => props.scenario?.setAsideCards || [])
+// An enemy that leaves play keeps its entity (defeated, in RemovedZone) while its card
+// goes back to the set-aside pile, so a card whose enemy is already drawn below would be
+// listed twice. The enemy is the richer view, so the bare card gives way.
+const outOfPlay = computed(() => {
+  const shown = new Set(outOfPlayEnemies.value.map((e) => e.cardId))
+  return (props.scenario?.setAsideCards || []).filter((card) => !shown.has(cardId(card)))
+})
 const removedFromPlay = computed(() => props.game.removedFromPlay)
 const noCards = computed<Card[]>(() => [])
 const topOfEncounterDiscard = computed(() => {
@@ -1543,6 +1660,15 @@ const activePlayerId = computed(() => props.game.activeInvestigatorId)
 const globalStories = computed(() => Object.values(props.game.stories).filter((story) =>
   story.placement.tag === "OtherPlacement" && story.placement.contents === "Global"
 ))
+
+/* Stories that occupy a grid cell of their own rather than sitting at a location —
+ * Red Sunrise's Path Forward sits beside a row of locations, in play but at no
+ * location. The label names the cell in the scenario's layout. */
+const gridStories = computed(() =>
+  Object.values(props.game.stories)
+    .filter(story => story.placement.tag === 'AsSelfLocation')
+    .map(story => ({ story, area: (story.placement as { contents: string }).contents }))
+)
 
 // Keep both faces of a double-sided story mounted as the same physical card.
 // The backend replaces the story entity when it flips, but a stable key lets
@@ -1791,7 +1917,6 @@ watchEffect(() => {
   }
 })
 
-
 // Helpers
 const cosmicEmissaryLabels = [
   'cosmicEmissaryPhantasm',
@@ -1814,7 +1939,7 @@ function locationHasManualOffset(el: HTMLElement): boolean {
   if (!locationId) return false
   return locationId in locationOffsets.value
     || locationId in pendingOffsets.value
-    || dragInternal?.locationId === locationId
+    || (dragInternal?.locationIds.includes(locationId) ?? false)
 }
 
 function transformTranslate(el: HTMLElement): { x: number, y: number } {
@@ -2176,9 +2301,25 @@ const bloodTokens = computed(() => props.scenario.chaosBag.chaosTokens.filter((t
 // totals bar via their campaign's homebrew tokens.json. Counted out of the
 // chaos bag only, like the bless/curse/frost/blood totals above: sealing takes
 // a token out of the bag, and sealed tokens show on the card they sit on.
+/* A homebrew campaign's tokens belong to that campaign only, so everything below
+works off the game's own namespace: the campaign id, or for a homebrew
+standalone the scenario id it was started from (both are ":<slug>:..."). */
+const homebrewNamespace = computed(() => {
+  const id = props.game.campaign?.id ?? props.scenario.id
+  if (!id.startsWith(':')) return null
+  const parts = id.split(':')
+  return parts[1] ? `:${parts[1]}` : null
+})
+
+const campaignTokens = computed(() =>
+  homebrewNamespace.value === null
+    ? []
+    : homebrewTotalsTokens.filter((cfg) => homebrewNamespaceOf(cfg.face) === homebrewNamespace.value)
+)
+
 const homebrewTotals = computed(() => {
   const all = props.scenario.chaosBag.chaosTokens
-  return homebrewTotalsTokens
+  return campaignTokens.value
     .map((cfg) => ({
       face: cfg.face,
       tooltip: cfg.tooltip,
@@ -2331,6 +2472,18 @@ async function addChaosToken(face: any){
             <span class="auto-fail"></span>
             <button class="button auto-fail-button" @click="addChaosToken('AutoFail')">+</button>
           </div>
+          <div
+            v-for="token in campaignTokens"
+            :key="token.face"
+            class="tri-button homebrew-token"
+            :style="{ backgroundColor: token.background, color: token.iconColor }"
+            :title="token.tooltip"
+          >
+            <button class="button" @click="removeChaosToken(token.face)">-</button>
+            <span v-if="token.icon" :class="token.icon"></span>
+            <span v-else><img :src="chaosTokenImage(token.face)" :alt="token.tooltip ?? token.face" /></span>
+            <button class="button" @click="addChaosToken(token.face)">+</button>
+          </div>
         </div>
       </ChaosBagWindow>
       <CardRow
@@ -2462,7 +2615,6 @@ async function addChaosToken(face: any){
               />
               <span class="deck-size">{{discards.length}}</span>
             </div>
-
 
             <div v-if="discards.length > 0" class="buttons">
               <CardsUnderIndicator
@@ -2721,6 +2873,18 @@ async function addChaosToken(face: any){
                 <img :src="imgsrc('chaos-tokens/ct-cultist.png')" alt="" />
               </button>
             </div>
+            <div v-if="speaksTheUnspeakableOath" class="spoken-hastur-recorder">
+              <button
+                type="button"
+                class="spoken-hastur-button"
+                :disabled="!hasturSpeaker"
+                v-tooltip="unspeakableOathTooltip"
+                :aria-label="unspeakableOathTooltip"
+                @click.stop.prevent="recordSpokenHastur"
+              >
+                <img :src="imgsrc('chaos-tokens/ct-elderthing.png')" alt="" />
+              </button>
+            </div>
           </div>
           <div class="keys" v-if="keys.length > 0">
             <KeyToken v-for="k in keys" :key="keyToId(k)" :keyToken="k" :game="game" :playerId="playerId" @choose="choose" />
@@ -2860,7 +3024,6 @@ async function addChaosToken(face: any){
         ></div>
       </div>
 
-
       <RainOverlay :enabled="showRain" :options="rainOptions">
       <div
         ref="locationCardsContainer"
@@ -2942,42 +3105,53 @@ async function addChaosToken(face: any){
                Great Lift sliding between levels) must stay the same element so
                TransitionGroup FLIP-animates it into its new cell. Keying by
                label made that read as a leave + enter, so it teleported. -->
+          <!-- A group's box is its own grid area and lays its members out inside it. -->
           <div
-            v-for="location in locations"
-            :key="location.id"
-            class="location-cell"
-            :class="{ 'location-cell--can-interact': locationCanInteract(location) }"
-            :data-location-id="location.id"
-            :data-label="location.label"
-            :style="[
-              { 'grid-area': location.label, 'justify-self': 'center' },
-              cosmicEmissaryLocationCellStyles[location.label] ?? {},
-            ]"
+            v-for="box in locationGroupBoxes"
+            :key="`group-${box.key}`"
+            class="location-group"
+            :class="{ 'location-group--dragging': draggingLocationIds.includes(box.members[0].id) }"
+            :data-id="box.key"
+            :data-group-key="box.key"
+            :style="box.style"
           >
-            <div
-              class="location-wrapper"
-              :style="locationOffsetStyle(location)"
-              @pointerdown.capture="onLocationPointerDown($event, location)"
-              @click.capture="suppressLocationInteractionWhenUnlocked"
-            >
-              <div
-                v-if="abyssIsLocation && location.label === 'theAbyss'"
-                class="abyss-location-count"
-                v-tooltip="`${abyssDeckCount} cards in The Abyss`"
-              >
-                {{ abyssDeckCount }}
-              </div>
-              <Location
-                class="location"
-                :class="{ 'location--unlocked': locationsUnlocked, 'location--dragging': draggingLocationId === location.id }"
-                :game="game"
-                :playerId="playerId"
-                :location="location"
-                @choose="choose"
-                @show="doShowCards"
-              />
-            </div>
+            <LocationCell
+              v-for="location in box.members"
+              :key="location.id"
+              :game="game"
+              :playerId="playerId"
+              :location="location"
+              :cellStyle="cosmicEmissaryLocationCellStyles[location.label] ?? {}"
+              :canInteract="locationCanInteract(location)"
+              :locationsUnlocked="locationsUnlocked"
+              :dragging="draggingLocationIds.includes(location.id)"
+              :abyssIsLocation="abyssIsLocation"
+              :abyssDeckCount="abyssDeckCount"
+              :onPointerDownCapture="onLocationPointerDown"
+              :onClickCapture="suppressLocationInteractionWhenUnlocked"
+              @choose="choose"
+              @show="doShowCards"
+            />
           </div>
+          <LocationCell
+            v-for="location in ungroupedLocations"
+            :key="location.id"
+            :game="game"
+            :playerId="playerId"
+            :location="location"
+            :gridArea="location.label"
+            :cellStyle="cosmicEmissaryLocationCellStyles[location.label] ?? {}"
+            :offsetStyle="locationOffsetStyle(location)"
+            :canInteract="locationCanInteract(location)"
+            :locationsUnlocked="locationsUnlocked"
+            :dragging="draggingLocationIds.includes(location.id)"
+            :abyssIsLocation="abyssIsLocation"
+            :abyssDeckCount="abyssDeckCount"
+            :onPointerDownCapture="onLocationPointerDown"
+            :onClickCapture="suppressLocationInteractionWhenUnlocked"
+            @choose="choose"
+            @show="doShowCards"
+          />
           <EnemyView
             v-for="enemy in enemiesAsLocations"
             :key="enemy.id"
@@ -2992,6 +3166,17 @@ async function addChaosToken(face: any){
             ]"
             @choose="choose"
           />
+          <!-- A story in a grid cell of its own, beside the map rather than at a
+               location (Red Sunrise's Path Forward). -->
+          <div
+            v-for="entry in gridStories"
+            :key="`grid-story-${entry.story.id}`"
+            class="grid-story"
+            :data-label="entry.area"
+            :style="{ 'grid-area': entry.area, 'justify-self': 'center', 'align-self': 'center' }"
+          >
+            <Story :story="entry.story" :game="game" :playerId="playerId" @choose="choose" />
+          </div>
           <div
             v-for="group in gridConcealed"
             :key="`${group.position.x}-${group.position.y}`"
@@ -3430,6 +3615,19 @@ async function addChaosToken(face: any){
   }
 }
 
+/* Unlocked for dragging: the stage is sized to max-content, so a location
+   translated past its own cell is clipped by the stage long before it reaches
+   the scroller. With a one-location map the stage IS the card, so any drag
+   makes it vanish. The scroller is the real boundary; let it do the clipping. */
+.location-group--dragging {
+  z-index: var(--z-index-50);
+  transition: none !important;
+}
+
+.location-cards-container--unlocked .location-cards-stage {
+  overflow: visible;
+}
+
 .location-cards-container--fullscreen {
   position: fixed;
   inset: 0;
@@ -3509,7 +3707,6 @@ async function addChaosToken(face: any){
   cursor: grabbing;
 }
 
-
 .location-cards-container--hidden-action-top {
   --hidden-location-action-top: var(--hidden-location-action-glow);
 }
@@ -3525,7 +3722,6 @@ async function addChaosToken(face: any){
 .location-cards-container--hidden-action-left {
   --hidden-location-action-left: var(--hidden-location-action-glow);
 }
-
 
 .portrait {
   border-radius: 3px;
@@ -3582,7 +3778,6 @@ async function addChaosToken(face: any){
   }
 }
 
-
 .view-out-of-play-button {
   text-decoration: none;
   position: absolute;
@@ -3635,7 +3830,6 @@ async function addChaosToken(face: any){
     display: none;
   }
 }
-
 
 .phase {
   display: flex;
@@ -3825,7 +4019,6 @@ async function addChaosToken(face: any){
   padding: 4px 8px 4px 6px;
   box-shadow: 0 1px 3px rgb(0 0 0 / 18%);
 }
-
 
 .scenario-badge-icon {
   flex: 0 0 auto;
@@ -4252,12 +4445,6 @@ async function addChaosToken(face: any){
   }
 }
 
-.location {
-  &:hover {
-    z-index: var(--z-index-100);
-  }
-}
-
 .button{
   border: 0;
   margin-top: 2px;
@@ -4316,7 +4503,6 @@ async function addChaosToken(face: any){
   font-weight: 700;
   text-transform: uppercase;
 }
-
 
 .spent-keys {
   pointer-events: none;
@@ -4384,6 +4570,31 @@ async function addChaosToken(face: any){
   height: 14px;
 }
 
+.location-group {
+  /* Its own named grid area, running its own grid so members are placed by the grid. */
+  display: grid;
+  align-items: center;
+  justify-items: center;
+  gap: inherit;
+  /* A location reserves a strip beneath its art for the investigator row, so the art
+     sits above the cell's centre. Padding the top by that strip re-centres the art in
+     the box rather than the cell box that contains it. */
+  padding-top: var(--location-group-art-offset, 18px);
+  /* Pull the boxes apart so the connections between them read as real links. */
+  margin-block: var(--location-group-spacing, 14px);
+  /* The frame itself is drawn by Connections.vue, into the SVG under the lines: this
+     div lives inside the scaled location grid, whose transform makes a stacking context,
+     so no sibling of that grid can ever paint between the box and its members. What is
+     left here is the layout and the box's bounds, which the frame is measured from.
+     No `position` -- positioning the box would make it the offsetParent of its members,
+     whose grid-relative offsetLeft the drag-padding math reads. */
+  z-index: 1;
+  /* Match .location-wrapper so a rotation reshuffle slides the offset into place. */
+  transition: transform 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+  /* Only a frame; the member cells inside re-enable their own pointer events. */
+  pointer-events: none;
+}
+
 .location-cell {
   /* Grid placement + TransitionGroup FLIP target. The inner .location carries
      the user's drag offset transform, so rotation reshuffles (which FLIP-
@@ -4408,49 +4619,6 @@ async function addChaosToken(face: any){
 .location-cell:has(.swarm:hover),
 .location-cell:has(.enemy--swarming.showAbilities) {
   z-index: var(--z-board-location-raised);
-}
-
-.location-wrapper {
-  width: fit-content;
-  padding-top: 5px;
-}
-
-.abyss-location-count {
-  display: block;
-  width: fit-content;
-  margin: 0 auto 6px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(10, 13, 25, 0.9);
-  border: 1px solid rgba(111, 225, 210, 0.8);
-  box-shadow: 0 0 8px rgba(111, 225, 210, 0.45);
-  color: white;
-  font-size: 0.85rem;
-  font-weight: bold;
-  cursor: help;
-}
-
-.location-cell > .location-wrapper {
-  pointer-events: auto;
-
-  /* Animate the offset along with the wrapper's FLIP move during rotation so
-     the offset doesn't snap to its rotated value before the wrapper slides
-     into place. Same easing/duration as .map-move keeps them in sync. */
-  transition: transform 0.6s cubic-bezier(0.23, 1, 0.32, 1);
-}
-
-.location--unlocked {
-  cursor: grab;
-  outline: 1px dashed var(--spooky-green);
-  outline-offset: 4px;
-  border-radius: 6px;
-  touch-action: none;
-}
-
-.location--dragging {
-  cursor: grabbing;
-  z-index: var(--z-index-50);
-  transition: none !important;
 }
 
 .zoom-slider {
@@ -4659,6 +4827,19 @@ async function addChaosToken(face: any){
   }
 }
 
+/* A campaign's own token: it brings its own background and glyph color (see its
+tokens.json), so nothing here may repaint them. */
+.homebrew-token {
+  button {
+    background: transparent;
+    color: inherit;
+  }
+  img {
+    width: 1em;
+    height: 1em;
+  }
+}
+
 .close-button{
   background: var(--button);
   &:hover {
@@ -4695,6 +4876,10 @@ async function addChaosToken(face: any){
   position: relative;
   width: 34px;
   height: 34px;
+  /* base.css gives every button `padding: 1px 11px`, which on a fixed-size
+     round button adds 22px to the width and stretches it into an oval. */
+  padding: 0;
+  box-sizing: border-box;
   display: inline-grid;
   place-items: center;
   border: 1px solid rgba(241, 196, 15, 0.45);
@@ -4718,7 +4903,6 @@ async function addChaosToken(face: any){
     cursor: not-allowed;
   }
 }
-
 
 .concealed-card {
   width: calc(var(--card-width) * 0.55);

@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import { computed, ref, watch } from 'vue'
-import type { Scenario, Campaign } from '@/arkham/data'
-import { imgsrc } from '@/arkham/helpers'
+import { sideStoryGroup, type Scenario, type Campaign } from '@/arkham/data'
+import { imgsrc, campaignBox, scenarioBox } from '@/arkham/helpers'
 
 type GameMode = 'Campaign' | 'SideStory'
 type CampaignGroup = 'chapter1' | 'chapter2' | 'homebrew'
@@ -23,8 +23,6 @@ const campaignGroup = defineModel<CampaignGroup>('campaignGroup', { required: tr
 const scenarioGroup = ref<ScenarioGroup>('sideStories')
 const emits = defineEmits(['go'])
 
-const isChapter2 = (id: string) => Number(id.slice(1,2)) >= 12
-const isHomebrew = (id: string) => id.startsWith(':')
 const isChallengeScenario = (scenario: Scenario) =>
   Boolean(scenario.requiredInvestigator) || Boolean(scenario.deckRequirements?.length)
 
@@ -37,23 +35,24 @@ const chapter2Campaigns = computed(() =>
 const homebrewCampaigns = computed(() =>
   props.campaigns.filter((c) => c.homebrew)
 )
+/* Which chapter a side story belongs to is declared in its entry (the ids are
+ * their own series and don't order by chapter), shared with the in-campaign
+ * side-story chooser. */
 const chapter1SideStories = computed(() =>
-  props.sideStories.filter((s) => !isChapter2(s.id) && !isHomebrew(s.id))
+  props.sideStories.filter((s) => sideStoryGroup(s) === 'chapter1')
 )
 const chapter2SideStories = computed(() =>
-  props.sideStories.filter((s) => isChapter2(s.id))
+  props.sideStories.filter((s) => sideStoryGroup(s) === 'chapter2')
 )
 const homebrewSideStories = computed(() =>
-  props.sideStories.filter((s) => isHomebrew(s.id))
+  props.sideStories.filter((s) => sideStoryGroup(s) === 'homebrew')
 )
 
 // Homebrew box art may not be present yet; fall back to a styled placeholder tile.
 const missingBoxArt = ref<Record<string, boolean>>({})
 
 function campaignBoxSrc(campaign: Campaign) {
-  if (!campaign.homebrew) return imgsrc(`boxes/${campaign.id}.jpg`)
-  const homebrewId = campaign.id.replace(/^:/, '')
-  return imgsrc(`homebrew/${homebrewId}/boxes/${homebrewId}.jpg`)
+  return campaignBox(campaign.id)
 }
 
 const chapterGroups = computed(() => [
@@ -69,12 +68,12 @@ const chapterGroups = computed(() => [
     campaigns: chapter2Campaigns.value,
     sideStories: chapter2SideStories.value,
   },
-  ...(!import.meta.env.PROD ? [{
+  {
     id: 'homebrew' as const,
     label: 'create.homebrewHeading',
     campaigns: homebrewCampaigns.value,
     sideStories: homebrewSideStories.value,
-  }] : []),
+  },
 ].filter((group) => group.campaigns.length || group.sideStories.length))
 
 const activeGroup = computed(() =>
@@ -185,7 +184,7 @@ function selectGameMode(mode: 'Campaign' | 'SideStory') {
           <img
             class="scenario-box"
             :class="{ 'selected-scenario': selectedScenario == s.id }"
-            :src="imgsrc(`boxes/${s.id}.jpg`)"
+            :src="scenarioBox(s.id)"
             @click="selectedScenario = s.id; emits('go')"
           />
         </div>
@@ -200,7 +199,7 @@ function selectGameMode(mode: 'Campaign' | 'SideStory') {
   </template>
   <template v-else>
     <div v-if="campaignGroup === 'homebrew'" class="homebrew-warning">
-      If you are seeing this, do not start one of these campaigns, they will break.
+      Fan-made campaigns, unofficial and still in testing. Expect rough edges.
     </div>
 
     <div class="campaigns">

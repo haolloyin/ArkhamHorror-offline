@@ -17,7 +17,27 @@ import { Difficulty, difficultyDecoder } from '@/arkham/types/Difficulty';
 import { Tokens, tokensDecoder } from '@/arkham/types/Token';
 import { TarotCard, tarotCardDecoder, tarotScopeDecoder } from '@/arkham/types/TarotCard';
 import { XpEntry, xpEntryDecoder} from '@/arkham/types/Xp';
-import { type TokenFace } from '@/arkham/types/ChaosToken';
+import { customTokenKey, type TokenFace } from '@/arkham/types/ChaosToken';
+
+/** A set of locations the map draws as one box, routing connections to the box. */
+export type GroupLayout = 'GroupRow' | 'GroupColumn' | 'GroupSquare'
+
+export type LocationGroup = {
+  key: string;
+  layout: GroupLayout;
+}
+
+export const locationGroupDecoder = JsonDecoder.object<LocationGroup>(
+  {
+    key: JsonDecoder.string(),
+    layout: JsonDecoder.oneOf<GroupLayout>([
+      JsonDecoder.literal('GroupRow'),
+      JsonDecoder.literal('GroupColumn'),
+      JsonDecoder.literal('GroupSquare'),
+    ], 'GroupLayout'),
+  },
+  'LocationGroup',
+)
 
 export type ScenarioName = {
   title: string;
@@ -52,6 +72,7 @@ export type Scenario = {
   difficulty: Difficulty;
   useHardExpertReference: boolean;
   locationLayout: string[] | null;
+  locationGroups: LocationGroup[];
   usesGrid: boolean;
   decksLayout: string[];
   decks: [string, Card[]][];
@@ -156,6 +177,7 @@ export const scenarioDecoder = JsonDecoder.object<DecodedScenario>({
   difficulty: difficultyDecoder,
   useHardExpertReference: withDefault(false, JsonDecoder.boolean()),
   locationLayout: JsonDecoder.nullable(JsonDecoder.array<string>(JsonDecoder.string(), 'GridLayout[]')),
+  locationGroups: JsonDecoder.failover([], JsonDecoder.array<LocationGroup>(locationGroupDecoder, 'LocationGroup[]')),
   usesGrid: JsonDecoder.boolean(),
   decksLayout: JsonDecoder.array<string>(JsonDecoder.string(), 'GridLayout[]'),
   decks: JsonDecoder.array<[string, Card[]]>(JsonDecoder.tuple([JsonDecoder.string(), JsonDecoder.array<Card>(cardDecoder, 'Card[]')], '[string, Card[]]'), '[string, Card[]][]'),
@@ -274,14 +296,20 @@ export function usesHardExpertReference(scenario: Scenario, difficulty?: string)
  * or the scenario has no i18n scope (unknown homebrew).
  */
 export function chaosTokenEffectKey(scenario: Scenario, face: TokenFace): string | null {
-  if (!(symbolChaosTokenFaces as readonly string[]).includes(face)) return null
-
   let scope: string
   try {
     scope = scenarioToI18n(scenario)
   } catch {
     return null
   }
+
+  /* A homebrew token's effect is a campaign rule rather than a scenario one -- the
+     moon reads the same in all eight Circus scenarios -- so it is keyed off the
+     campaign scope and has no difficulty tier. */
+  const custom = customTokenKey(face)
+  if (custom) return `${scope.split('.')[0]}.tokens.${custom}`
+
+  if (!(symbolChaosTokenFaces as readonly string[]).includes(face)) return null
 
   const difficulty = usesHardExpertReference(scenario) ? 'hardExpert' : 'easyStandard'
   const baseRef = scenario.reference.replace(/b$/, '')

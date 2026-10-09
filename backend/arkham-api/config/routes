@@ -45,7 +45,7 @@
       /published-card-sets ApiV1ArkhamPublishedCardSetsP:
         / ApiV1ArkhamPublishedCardSetsR GET
         /#ArkhamPublishedCardSetId ApiV1ArkhamPublishedCardSetP:
-          / ApiV1ArkhamPublishedCardSetR GET DELETE
+          / ApiV1ArkhamPublishedCardSetR GET PUT DELETE
           /subscribe ApiV1ArkhamPublishedCardSetSubscribeR POST
           /like ApiV1ArkhamPublishedCardSetLikeR POST DELETE
       /homebrew/cards ApiV1ArkhamHomebrewCardsR GET
@@ -78,6 +78,8 @@
           /undo/turn ApiV1ArkhamGameUndoTurnR PUT
           /undo/phase ApiV1ArkhamGameUndoPhaseR PUT
           /undo/round ApiV1ArkhamGameUndoRoundR PUT
+          /undo/step/#Int ApiV1ArkhamGameUndoStepR PUT
+          /log/before/#Int ApiV1ArkhamGameLogBeforeR GET
           /file-bug ApiV1ArkhamGameBugR POST
           /spectate ApiV1ArkhamGameSpectateR GET
           /export ApiV1ArkhamGameExportR GET
@@ -108,6 +110,15 @@
         / ApiV1AdminRoomsR GET
         /#ArkhamGameId ApiV1AdminRoomP:
           / ApiV1AdminRoomR DELETE
+      /game-stats ApiV1AdminGameStatsP:
+        / ApiV1AdminGameStatsR GET
+        !/refresh ApiV1AdminGameStatsRefreshR POST
+      /card-set-submissions ApiV1AdminCardSetSubmissionsP:
+        / ApiV1AdminCardSetSubmissionsR GET
+        /#ArkhamCardSetSubmissionId ApiV1AdminCardSetSubmissionP:
+          / ApiV1AdminCardSetSubmissionR GET
+          /approve ApiV1AdminCardSetSubmissionApproveR POST
+          /deny ApiV1AdminCardSetSubmissionDenyR POST
       /games ApiV1AdminGamesP:
         / ApiV1AdminGamesR GET
         !/active ApiV1AdminActiveGamesR GET

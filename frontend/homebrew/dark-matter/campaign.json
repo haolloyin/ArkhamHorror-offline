@@ -1,9 +1,21 @@
 {
   "id": ":dark-matter",
   "name": "Dark Matter",
+  "beta": true,
   "homebrew": true,
   "chapter": 1,
   "designer": "Axolotl",
+  "recommendedOptions": [
+    {
+      "type": "toggle",
+      "default": false,
+      "i18n": "darkMatter.scienceExpansion",
+      "option": {
+        "tag": "CampaignVariant",
+        "contents": "darkMatter.scienceExpansion"
+      }
+    }
+  ],
   "difficultyLevels": {
     "Easy": [
       "PlusOne",

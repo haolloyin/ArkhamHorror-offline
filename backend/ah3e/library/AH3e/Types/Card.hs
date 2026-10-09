@@ -67,6 +67,8 @@ data InvestigatorRule
   | MostItems
   | -- | Every investigator; the hunter pathway already prefers the closest.
     NearestInvestigator
+  | -- | that one investigator, named on a card that hunts or watches only them
+    NamedInvestigator InvestigatorId
   | LowestRemainingHealth
   | LowestRemainingSanity
   | TheLeader
@@ -222,6 +224,10 @@ data StartingPossession
   | StartingRemnants Int
   | StartingClues Int
   | StartingCondition ConditionName
+  | {- | anything else a sheet's setup says to do, as the sheet's own effect,
+    with the wording the sheet prints for it
+    -}
+    StartingEffect Text Effect
   | StartingChoice [[StartingPossession]]
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON, FromJSON)
@@ -255,6 +261,8 @@ data MythosToken
   | ReckoningToken
   | BlankToken
   | SpreadTerrorToken
+  | -- | a marker a card has added to the cup, which that card alone answers
+    WhiteMarkerToken
   deriving stock (Show, Eq, Ord, Generic)
   deriving anyclass (ToJSON, FromJSON)
 
@@ -289,6 +297,8 @@ data ScenarioDef = ScenarioDef
   , startingDoom :: [SpaceId]
   , startingMarkers :: [(SpaceId, Text)]
   -- ^ markers a sheet's setup puts on the board face up, with their colour
+  , startingBystanders :: [SpaceId]
+  -- ^ where a sheet lays an ally card facedown before play (The Dead Cry Out)
   , eventCards :: [CardCode]
   , setAside :: [CardCode]
   {- ^ Cards the setup holds back: the monsters a sheet says to set aside, and the

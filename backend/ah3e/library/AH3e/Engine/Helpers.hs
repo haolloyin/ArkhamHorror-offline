@@ -118,12 +118,22 @@ engageTargets mid present mPrey = do
           [i] -> Right [i]
           _ -> Left pool
 
+{- | Where a reckoning held back for the rest of the mythos phase is recorded, so
+the card that holds it and the step that reads it agree on the key.
+-}
+reckoningHeldKey :: Source -> Text
+reckoningHeldKey src = "reckoning-held:" <> tshow src
+
 activationPrey :: CardId -> GameM (Maybe InvestigatorRule)
-activationPrey mid =
-  monsterDef mid <&> \d -> case d.activation of
-    Hunter r -> Just r
-    Patrol _ r -> r
-    _ -> Nothing
+activationPrey mid = do
+  named <- uses #monsters (maybe Nothing (.prey) . Map.lookup mid)
+  case named of
+    Just who -> pure (Just (NamedInvestigator who))
+    Nothing ->
+      monsterDef mid <&> \d -> case d.activation of
+        Hunter r -> Just r
+        Patrol _ r -> r
+        _ -> Nothing
 
 isMonsterReady :: CardId -> GameM Bool
 isMonsterReady mid = uses #monsters (maybe False ((== Ready) . (.state)) . Map.lookup mid)
@@ -144,6 +154,7 @@ engage iid mid = do
         | otherwise = Engaged [iid]
   monsterL mid . #state .= st
   monsterL mid . #space .= sid
+  pushAll [CheckReactions (AfterEngaged iid mid) [], MonsterEngaged iid mid]
 
 -- 455.3: ready monsters in the space engage the entering investigator
 engageOnEntry :: InvestigatorId -> SpaceId -> GameM Bool
@@ -173,6 +184,20 @@ moveEngagedWatchers iid sid = do
   ms <- engagedMonsters iid
   for_ ms \m -> monsterL m.card . #space .= sid
 
+{- | "You may move one space or move to another <place of its kind>", which every
+travel route and wild gateway encounter offers. @elsewhere@ is the places of that
+kind, and a card that says "if you do" hands over an effect to ride on the options
+that move.
+-}
+offerOnward :: EffectCtx -> Text -> Bool -> [SpaceId] -> Maybe Effect -> GameM ()
+offerOnward ctx prompt mayStay elsewhere after =
+  chooseFor ctx.investigator prompt
+    $ label "Move one space" (ResolveEffect ctx (MoveUpTo 1) : onward)
+    : [Choice (SpaceLabel s) (MoveDirectly ctx.investigator s : onward) | s <- elsewhere]
+      <> [Choice (DoneLabel "Stay where you are") [] | mayStay]
+ where
+  onward = [ResolveEffect ctx e | e <- toList after]
+
 spaceChoices :: [SpaceId] -> (SpaceId -> [Message]) -> [Choice]
 spaceChoices sids f = [Choice (SpaceLabel s) (f s) | s <- sids]
 
@@ -181,6 +206,21 @@ eventDef cid =
   getCardDef cid <&> \d -> case d.kind of
     EventCard e -> e
     _ -> error ("not an event card " <> show cid)
+
+{- | The encounter deck an investigator would draw from where they stand. A street
+belongs to no neighborhood, so the street deck is what is drawn there.
+-}
+encounterDeckLens :: Maybe NeighborhoodId -> Lens' Game [CardId]
+encounterDeckLens = \case
+  Just nid -> #decks . #neighborhoods . at nid . non []
+  Nothing -> #decks . #street
+
+{- | Spend a once-a-round ability as its offer is taken rather than queueing
+'MarkAbilityUsed': the turn's action prompt is asked again before the queue
+unwinds, and would otherwise offer the same free action a second time.
+-}
+spendOncePerRound :: InvestigatorId -> Text -> GameM ()
+spendOncePerRound iid key = investigatorL iid . #usedAbilities %= (<> [key])
 
 allNeighborhoodSpaces :: GameM [SpaceId]
 allNeighborhoodSpaces = uses (#board . #spaces) (map (.id) . filter (isNeighborhoodSpace . (.kind)) . Map.elems)
@@ -225,7 +265,11 @@ newTest iid skill modifier kind after =
 
 -- 491.3b: reveal from the bottom of the monster deck until the trait is found
 revealMonstersFromBottom :: Trait -> Int -> GameM [CardId]
-revealMonstersFromBottom trait n = go n [] []
+revealMonstersFromBottom trait = revealMonstersMatching (elem trait . (.traits))
+
+-- | 'revealMonstersFromBottom' for a card that asks for something other than a trait.
+revealMonstersMatching :: (MonsterDef -> Bool) -> Int -> GameM [CardId]
+revealMonstersMatching wanted n = go n [] []
  where
   go 0 found revealed = finish found revealed
   go k found revealed = do
@@ -235,7 +279,7 @@ revealMonstersFromBottom trait n = go n [] []
       Just (cid, rest) -> do
         #decks . #monster .= rest
         d <- monsterDef cid
-        if trait `elem` d.traits
+        if wanted d
           then go (k - 1) (found <> [cid]) revealed
           else go k found (cid : revealed)
   finish found revealed = do
@@ -255,6 +299,12 @@ nearestSpacesMatching p from = do
 
 markersAt :: SpaceId -> GameM [Marker]
 markersAt sid = (.markers) <$> getSpace sid
+
+-- | Takes one marker out of a space's pile, for a card that discards or moves one.
+dropFirstMarker :: (Marker -> Bool) -> [Marker] -> [Marker]
+dropFirstMarker p ms = case break p ms of
+  (before, _ : after) -> before <> after
+  _ -> ms
 
 allMarkers :: GameM [(SpaceId, Marker)]
 allMarkers = uses (#board . #spaces) \spaces -> [(s.id, m) | s <- Map.elems spaces, m <- s.markers]

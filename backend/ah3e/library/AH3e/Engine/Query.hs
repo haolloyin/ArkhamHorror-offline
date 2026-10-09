@@ -71,6 +71,12 @@ investigatorNeighborhood iid = do
   board <- use #board
   pure $ msid >>= (`spaceNeighborhood` board)
 
+{- | The town an investigator stands in. A street belongs to no neighborhood and
+so to no town, which is what keeps a card printed "in Kingsport" off one.
+-}
+investigatorTown :: InvestigatorId -> GameM (Maybe Town)
+investigatorTown iid = investigatorNeighborhood iid >>= traverse (fmap (.town) . getNeighborhood)
+
 investigatorsAt :: SpaceId -> GameM [Investigator]
 investigatorsAt sid = filter ((== Just sid) . (.space)) <$> playingInvestigators
 
@@ -108,7 +114,57 @@ skillValue iid skill = do
   i <- getInvestigator iid
   d <- getInvestigatorDef iid
   shared <- sharedFocus iid skill
-  pure $ Map.findWithDefault 0 skill d.skills + Map.findWithDefault 0 skill i.focus + shared
+  -- a card may raise every skill for a phase (Adventurous Spirit)
+  phase <- use #phase
+  codes <- traverse cardCode [c | c <- i.assets, c `notElem` i.lockedAssets]
+  let phasely = if phase == EncounterPhase then sum (map encounterPhaseSkillBonus codes) else 0
+  pure
+    $ Map.findWithDefault 0 skill d.skills
+    + Map.findWithDefault 0 skill i.focus
+    + shared
+    + phasely
+
+{- | Money on the cards this investigator holds that they may spend as their own
+(Calling in Favors).
+-}
+cardMoney :: InvestigatorId -> GameM Int
+cardMoney iid = do
+  held <- spendableMoneyHeld iid
+  pure (sum (map snd held))
+
+-- | Everything they could put towards a price: their own money and their cards'.
+availableMoney :: InvestigatorId -> GameM Int
+availableMoney iid = do
+  i <- getInvestigator iid
+  (i.money +) <$> cardMoney iid
+
+{- | Spend that much, their own money first and then whatever their cards are
+holding for them, so an ordinary purchase asks nothing extra.
+-}
+spendMoney :: InvestigatorId -> Int -> GameM ()
+spendMoney iid n = do
+  i <- getInvestigator iid
+  let fromPocket = min n i.money
+  investigatorL iid . #money %= max 0 . subtract fromPocket
+  held <- spendableMoneyHeld iid
+  go (n - fromPocket) held
+ where
+  go left [] = when (left > 0) (logText "Not enough money")
+  go left ((cid, have) : rest)
+    | left <= 0 = pure ()
+    | otherwise = do
+        let taken = min left have
+        assetL cid . #tokens . at "money" ?= have - taken
+        go (left - taken) rest
+
+-- | The cards holding money for them, with how much each holds.
+spendableMoneyHeld :: InvestigatorId -> GameM [(CardId, Int)]
+spendableMoneyHeld iid = do
+  i <- getInvestigator iid
+  fmap catMaybes $ for i.assets \cid -> do
+    code <- cardCode cid
+    held <- uses #assets (maybe 0 (Map.findWithDefault 0 "money" . (.tokens)) . Map.lookup cid)
+    pure $ if code `elem` spendableMoneyCards && held > 0 then Just (cid, held) else Nothing
 
 {- | What the others in this space lend them: a card may share each skill its holder
 has focused with everyone standing there (Synergy).
@@ -131,16 +187,35 @@ focusLimit :: InvestigatorId -> GameM (Maybe Int)
 focusLimit iid = do
   base <- (.focusLimit) <$> getInvestigatorDef iid
   i <- getInvestigator iid
-  bonus <- sum <$> for i.assets (fmap focusLimitBonus . cardCode)
-  -- a sheet may say its limit is counted rather than printed (Dexter Drake's spells)
+  -- a double-sided card only raises the limit on the side that prints it (DRIVEN)
+  bonus <- fmap sum $ for i.assets \cid -> do
+    flipped <- uses #assets (maybe False (.flipped) . Map.lookup cid)
+    if flipped then pure 0 else focusLimitBonus <$> cardCode cid
+  -- a sheet may say its limit is counted rather than printed (Dexter Drake's
+  -- spells, Charlie Kane's allies)
   counted <-
-    if iid `elem` focusLimitFromSpells
-      then Just . length <$> matchingAssets iid SpellCard
-      else pure Nothing
+    if
+      | iid `elem` focusLimitFromSpells -> Just . length <$> matchingAssets iid SpellCard
+      | iid `elem` focusLimitFromAllies -> Just . length <$> matchingAssets iid AllyCard
+      | otherwise -> pure Nothing
   pure ((+ bonus) <$> maybe base Just counted)
 
+-- | Whether that rumor headline is the one sitting in the codex.
+rumorInPlay :: CardCode -> GameM Bool
+rumorInPlay code = do
+  mr <- use #rumor
+  codes <- traverse (cardCode . (.card)) mr
+  pure (codes == Just code)
+
+{- | Printed health, less what a rumor has taken off it. Piscine Pox reduces
+every investigator's health while it is in the codex; the floor keeps a card from
+reducing anyone to nothing.
+-}
 investigatorHealth :: InvestigatorId -> GameM Int
-investigatorHealth iid = (.health) <$> getInvestigatorDef iid
+investigatorHealth iid = do
+  base <- (.health) <$> getInvestigatorDef iid
+  plague <- rumorInPlay "piscine-pox-paralyzes-port"
+  pure (max 1 (base - (if plague then 1 else 0)))
 
 investigatorSanity :: InvestigatorId -> GameM Int
 investigatorSanity iid = (.sanity) <$> getInvestigatorDef iid
@@ -186,15 +261,43 @@ codexHas :: ArchiveNumber -> GameM Bool
 codexHas n = uses #codex (any ((== n) . (.number)))
 
 -- rule 493
+
+{- | The space a sheet starts its investigators in, as long as it is still on the
+board: a scenario can name a space its own map does not have, and one that devours
+spaces can eat the space out from under the sheet. Everything that reads the starting
+space goes through here, because a SpaceId the board does not know is an error
+wherever it is used.
+-}
+startingSpaceOnBoard :: GameM (Maybe SpaceId)
+startingSpaceOnBoard = do
+  start <- (.startingSpace) <$> getScenarioDef
+  spaces <- uses (#board . #spaces) Map.keys
+  pure (if start `elem` spaces then Just start else listToMaybe spaces)
+
 unstableSpaces :: GameM [SpaceId]
-unstableSpaces = do
+unstableSpaces =
+  use #unstableSpace >>= \case
+    Just sid -> pure [sid]
+    Nothing -> printedUnstableSpaces
+
+{- | Where the event deck says the unstable space is, whatever a card has to say. A
+scenario may take a whole tile off the board -- Tsathoggua eats one -- while the card on
+the discard still names a space that stood on it, so what it names is only the unstable
+space while it is still there.
+-}
+printedUnstableSpaces :: GameM [SpaceId]
+printedUnstableSpaces = do
   discard <- use (#decks . #eventDiscard)
-  case discard of
+  named <- case discard of
     (top : _) ->
       getCardDef top <&> \d -> case d.kind of
         EventCard e -> nub e.doomSpaces
         _ -> []
-    [] -> pure . (.startingSpace) <$> getScenarioDef
+    [] -> pure []
+  board <- use #board
+  case filter (`Map.member` board.spaces) named of
+    [] -> maybeToList <$> startingSpaceOnBoard
+    there -> pure there
 
 mostDoomSpaces :: GameM [SpaceId]
 mostDoomSpaces = do
@@ -218,6 +321,7 @@ ruleInvestigators rule = do
     LeastDamage -> extremal minimum (pure . (.damage)) invs
     MostItems -> extremal maximum (\i -> length <$> filterM' (cardMatches ItemCard) i.assets) invs
     NearestInvestigator -> pure invs
+    NamedInvestigator who -> pure (filter ((== who) . (.id)) invs)
     LowestRemainingHealth -> extremal minimum (\i -> subtract i.damage <$> investigatorHealth i.id) invs
     LowestRemainingSanity -> extremal minimum (\i -> subtract i.horror <$> investigatorSanity i.id) invs
     TheLeader -> do
@@ -260,7 +364,7 @@ ruleSpaces' :: Maybe CardId -> SpaceRule -> GameM [SpaceId]
 ruleSpaces' mid = \case
   UnstableSpace -> unstableSpaces
   MostDoomSpace -> mostDoomSpaces
-  StartingSpace -> pure . (.startingSpace) <$> getScenarioDef
+  StartingSpace -> maybeToList <$> startingSpaceOnBoard
   NamedSpace sid -> pure [sid]
   PreySpace rule -> mapMaybe (.space) <$> ruleInvestigators rule
   NearestStreetTo mrule -> do
@@ -302,7 +406,7 @@ canPayCost :: InvestigatorId -> Cost -> GameM Bool
 canPayCost iid cost = do
   i <- getInvestigator iid
   case cost of
-    SpendMoney n -> pure (i.money >= n)
+    SpendMoney n -> (>= n) <$> availableMoney i.id
     SpendRemnants n -> pure (i.remnants >= n)
     SpendClues n -> pure (i.clues >= n)
     SpendFocus n -> pure (focusCount i >= n)
@@ -377,6 +481,22 @@ holdsCard iid wanted = do
 -- | Whether this card's once-per-round ability has already been spent.
 usedThisRound :: CardId -> InvestigatorId -> GameM Bool
 usedThisRound cid iid = elem cid . (.usedAssets) <$> getInvestigator iid
+
+{- | Whether nobody else stands anywhere in this investigator's neighborhood. A
+street is in no neighborhood, so nobody is ever alone in one.
+-}
+onlyInvestigatorInNeighborhood :: InvestigatorId -> GameM Bool
+onlyInvestigatorInNeighborhood iid =
+  investigatorNeighborhood iid >>= \case
+    Nothing -> pure False
+    Just nid -> do
+      spaces <- uses #board (neighborhoodSpaces nid)
+      others <- filter ((/= iid) . (.id)) <$> playingInvestigators
+      pure (not (any (maybe False (`elem` spaces) . (.space)) others))
+
+-- | Everyone in play that no monster is engaged with.
+unengagedInvestigators :: GameM [Investigator]
+unengagedInvestigators = playingInvestigators >>= filterM (fmap null . engagedMonsters . (.id))
 
 -- | Clues sitting in the investigator's neighborhood; zero while in a street.
 neighborhoodClues :: InvestigatorId -> GameM Int

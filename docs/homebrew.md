@@ -78,6 +78,7 @@ it. A minimal campaign is really just cards plus a couple of list files.
 | `Actions.hs` | new actions (like Dark Matter's "Scan") |
 | `ScenarioDeckKeys.hs` | new named decks a scenario sets aside |
 | `Tokens.hs` | custom chaos tokens |
+| `AchievementDefs.hs`, `Achievements.hs` | your achievement list, and the code that notices when one is earned |
 | `Sets.hs` | your encounter sets |
 | `Helpers.hs`, `Import.hs`, `ChaosBag.hs` | campaign-specific helpers, shared import surface, chaos bag |
 | `Scenarios/<Name>.hs` | your scenario runners |
@@ -285,6 +286,162 @@ another (`RevealAnother`), or seal-and-reveal-another
 tests, so custom tokens are inert outside them; anything richer, your scenario
 handles in its own message code.
 
+### Achievements
+
+Printed an achievement list for your campaign? Two files. The list itself goes in
+`AchievementDefs.hs` — a plain enum, in printed order, and nothing else:
+
+```haskell
+module Arkham.Homebrew.YourCampaign.AchievementDefs where
+
+import Arkham.Homebrew.AchievementDefs
+import Arkham.Prelude
+
+achievementCampaign :: Text
+achievementCampaign = ":your-campaign"
+
+data YourCampaignAchievement
+  = Scapegoat
+  | ManyFutures
+  deriving stock (Show, Read, Eq, Ord, Enum, Bounded)
+
+-- Items for achievements that are finished across several playthroughs; `[]` for
+-- an ordinary one-shot earn.
+achievementChecklistItems :: YourCampaignAchievement -> [Text]
+achievementChecklistItems = \case
+  ManyFutures -> ["OracleOfPurity", "OracleOfMystery"]
+  _ -> []
+
+data YourCampaignAchievements
+
+instance IsHomebrewAchievements YourCampaignAchievements where
+  homebrewAchievements =
+    campaignAchievements achievementCampaign $ map def [minBound .. maxBound]
+   where
+    def a = case achievementChecklistItems a of
+      [] -> achievement (tshow a)
+      items -> checklistAchievement (tshow a) items
+```
+
+That file is deliberately a leaf — it imports nothing from the engine — because
+the base game reads your list out of it to build the achievement catalog. Keep
+the detection out of it.
+
+The detection goes in `Achievements.hs`, hooked into your campaign's own
+`runMessage`, which sees every message in the game before anything else does:
+
+```haskell
+runMessage msg c =
+  runQueueT $ campaignI18n $ lift (runYourCampaignAchievements msg) *> case msg of
+```
+
+```haskell
+earn :: (HasGame m, HasQueue Message m) => YourCampaignAchievement -> m ()
+earn = earnAchievement . homebrewAchievement achievementCampaign . tshow
+```
+
+`earnAchievement` already checks that achievements are on for this game and that
+the campaign is yours, and the server ignores an earn it has already recorded, so
+a condition that re-checks itself is fine. Cross-playthrough items are reported
+with `achievementProgress` instead; the server collects them per player and
+awards the achievement once every box is checked. Study
+`Arkham/Homebrew/CircusExMortis/Achievements.hs` — it is the worked example, and
+its header lists the timing traps (never key on `ScenarioResolution`; key on what
+a resolution *records*).
+
+On the frontend, `frontend/homebrew/<campaign>/achievements.json` lists the same
+keys in printed order and is discovered like every other homebrew file:
+
+```json
+{
+  "campaign": ":your-campaign",
+  "entries": [
+    { "key": "Scapegoat" },
+    { "key": "ManyFutures", "items": ["OracleOfPurity", "OracleOfMystery"] }
+  ]
+}
+```
+
+Names and descriptions live in your own locale folder, in
+`locales/en/achievements.json` under an `achievements` key —
+`achievements.Scapegoat.name` / `.text`, and `.items.<key>` for a checklist's
+boxes. Write token names as words ("moon tokens"), not `{moon}`: achievement text
+is rendered as plain strings. Nothing else is needed — the new-game toggle, the
+campaign log's Achievements tab, the /achievements page and the unlock toast all
+read the catalog.
+
+### Drawing one of your own questions
+
+A question your campaign asks renders through `StoryQuestion`, which draws card
+choices as a small row of images marked `no-overlay` — they cannot be zoomed. When
+that is the wrong shape (a shop, a board, anything where the player has to *read*
+the cards), draw the question yourself: drop a component at
+
+```
+frontend/homebrew/<campaign>/question-panels/<label path>.vue
+```
+
+named after the question's label with its campaign scope and `label.` prefix
+stripped — `questionLabeled "scienceExpansion.purchase"` under `campaignI18n`
+builds `$darkMatter.label.scienceExpansion.purchase`, so the file is
+`question-panels/scienceExpansion.purchase.vue`. Discovered like your locales and
+`campaign.json`; nothing is registered centrally.
+
+The component is handed `{ game, playerId, viewOnly }` and emits `choose(index)`
+against the question's own choices, exactly like a log panel:
+
+```vue
+const props = defineProps<{ game: Game; playerId: string; viewOnly?: boolean }>()
+const emit = defineEmits<{ choose: [value: number] }>()
+```
+
+Read the choices off `game.question[playerId]` (unwrap `QuestionLabel` to its
+`question`), pick out the `CardLabel`s by index, and emit the index the player
+clicked. The panel owns its whole layout and styles, so size the cards however
+your content needs — and leave `no-overlay` off the images if you want the normal
+hover zoom as well.
+
+### Extra actions on the continuation screen
+
+The screen between scenarios shows Continue, Upgrade Decks and Add Side Scenario.
+A campaign can add buttons of its own to it — Dark Matter's Science Expansion
+sells its "Researched" story assets there — by answering
+`campaignContinueOptions`:
+
+```haskell
+instance IsCampaign YourCampaign where
+  campaignContinueOptions (YourCampaign attrs) =
+    [ ContinueOption
+        { key = "yourCampaign.theShop"
+        , label = "yourCampaign.theShop.button" -- a full i18n key
+        , available = somethingAboutAttrs
+        }
+    ]
+```
+
+Only `available` options are drawn. Pressing one answers with
+`CampaignOptionStep <key> <a continuation that redraws this screen>` — a whole
+`ContinueCampaignStep`, not the bare next step, or handing it back would start the
+next scenario instead. You handle it like any other step and hand the table back
+when you are done:
+
+```haskell
+    CampaignStep (CampaignOptionStep k ret) | k == "yourCampaign.theShop" -> do
+      ...                   -- your prompts
+      push $ SetCampaignStep ret
+      push $ CampaignStep ret
+      pure c
+```
+
+`label` is a whole i18n key rather than a scoped fragment, because your campaign
+owns its own locale namespace (`yourCampaign.*`).
+
+One gotcha that is not about this seam: a campaign option chosen at creation time
+(`frontend/homebrew/<campaign>/campaign.json`'s `recommendedOptions`) only
+reaches the campaign log if the campaign *handles* it —
+`HandleOption opt -> pure $ YourCampaign $ c.attrs & logL . optionsL %~ insertSet opt`.
+There is no generic handler; an unhandled option is silently dropped.
+
 ## The frontend side
 
 Your campaign's art, text, and player-facing config live in
@@ -296,8 +453,9 @@ leading colon), discovered the same hands-off way — no registration anywhere:
 | `campaign.json` | your campaign's new-game entry — name, `designer`, `chapter`, difficulty chaos bags. Appears in a dedicated **Homebrew** section of the new-game screen with a "designed by …" credit. |
 | `scenarios.json` | the scenario list; each entry's `i18n` key names its locale scope |
 | `icons.json` | custom icon names, e.g. `{"moon": "moon-icon"}` — hooks `{moon}` into flavor text and `[moon]` into card text. Style the class in `style.css`; if the icon is art rather than a font glyph, `mask` the image and paint it with `background-color: currentColor` so it follows the surrounding text color (button labels are light-on-dark) |
-| `tokens.json` | custom tokens to show in the scenario **totals bar**, e.g. `[{ "face": ":your-campaign:moon", "tooltip": "Moon Tokens" }]` (counted across the chaos bag and players' sealed tokens) |
+| `tokens.json` | custom tokens to show in the scenario **totals bar** and in the chaos-bag debug panel, e.g. `[{ "face": ":your-campaign:moon", "tooltip": "Moon Tokens", "icon": "moon-icon", "background": "#ffffff", "iconColor": "#2D3F4E" }]` (counted across the chaos bag and players' sealed tokens) |
 | `style.css` | your campaign's styling (use absolute `/img/arkham/homebrew/<campaign>/…` urls inside) |
+| `fonts.json` | fonts your text uses, family name → file, e.g. `{"Corvisa": "fonts/corvisa.ttf"}`, or an object to give a face its own settings: `size` (`"2em"`) and `stroke` (`"0.15px"`, a hairline for a font that ships only one weight). Each entry gets an `@font-face` and a `.font-<slug>` class (`Corvisa` → `font-corvisa`), so flavor text can say `<div class='font-corvisa'>…</div>`. Drop the file in the campaign folder; Vite bundles it, so there is nothing to sync. |
 | `locales/en/*.json` | your text — `base.json`, `interludes.json`, one file per scenario; merged under the campaign's message scope, with English fallback for other languages |
 | `img/` | art: `cards/`, `boxes/`, `chaos-tokens/`, `icons/`, `encounter-sets/`. Synced to the asset host by `make sync-images`; in dev a Vite middleware serves them straight from this folder, so a local/empty asset host works without syncing. |
 
@@ -311,8 +469,44 @@ say it outright. It preselects the Chapter 1/Chapter 2 rules toggle (currently
 the "as if" ruling) on the new-game screen; players can still override it there
 and in game settings. Omit it and you get Chapter 1.
 
+`fonts.json` covers the whole job of using your own typeface: the family is
+registered and a class is generated, so you never write `@font-face` yourself.
+The class works on a wrapper as well as a single element, because the generated
+rule reaches paragraphs inside it — flavor text styles every `<p>` it renders,
+which would otherwise beat a family inherited from an ancestor. A
+`<p class='basic'>` inside keeps the plain UI font, since `basic` means "not
+flavor text"; so does a `_bold_` run. Families are shared across campaigns, so
+name yours after the typeface and expect the last one registered to win a clash.
+The class works inline too, so one word can be set in a different hand — the
+signature on Erich Zann's opening letter is a `<span class='font-vivaldi'>`
+inside a paragraph the rest of the letter sets in Corvisa. Give a display script
+a `size` and it also gets `line-height: 1`, so an inline run at `2em` does not
+crash into the line above it.
+
+`stroke` is there because `font-weight` cannot help a single-weight face: the
+browser's synthetic bold is all-or-nothing and smears a script badly. A hairline
+in `currentColor` thickens it by as little as you like. A family that really
+does ship a bold should register that file as its own entry instead. Because
+`-webkit-text-stroke` inherits, every generated class states its own width — `0`
+when none was asked for — so a face nested inside a stroked one does not wear
+its parent's stroke, and `.basic` opts out the same way it opts out of the font.
+
+Watch out for a font file that *fetches* fine and still never appears: Chrome
+runs every webfont through the OpenType Sanitizer, and a rejection shows up only
+as a console warning (`Failed to decode downloaded font`, then `OTS parsing
+error: …`). Old conversions often trip it — this campaign's Vivaldi declared
+`language=1` on its `cmap` subtables where the sanitizer demands 0, which
+`fontTools` resets in a few lines.
+
 `tokens.json` is a nice small example of a self-configuring feature: list a token
-face there and it appears in the on-screen totals with no code changes.
+face there and it appears in the on-screen totals and in the chaos-bag debug
+panel (as a −/icon/+ button that adds and removes it) with no code changes. Only
+*your* campaign's games offer it: a token belongs to the campaign named in its
+slug. `icon` names a class your `style.css` defines — a masked glyph painted with
+`currentColor`, like the one `icons.json` hooks into card text — and
+`background`/`iconColor` are your control over how the button reads; `iconColor`
+paints the glyph *and* the −/+ labels, so pick a pair that contrasts. Leave `icon`
+out and the debug button falls back to the token art.
 
 ## Getting started
 

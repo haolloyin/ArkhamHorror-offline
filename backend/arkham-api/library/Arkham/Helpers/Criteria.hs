@@ -29,7 +29,7 @@ import {-# SOURCE #-} Arkham.Entities
 import Arkham.Event.Types (Event, Field (..))
 import Arkham.Event.Types qualified
 import {-# SOURCE #-} Arkham.Game
-import Arkham.Game.Settings (settingsAchievementsEnabled)
+import Arkham.Game.Settings (activeUltimatumsAndBoons, settingsAchievementsEnabled)
 import Arkham.GameEnv
 import Arkham.Helpers (unDeck)
 import Arkham.Helpers.Ability (getCanPerformAbility)
@@ -47,7 +47,11 @@ import Arkham.Helpers.Doom (getDoomCount)
 import Arkham.Helpers.GameValue (gameValueMatches)
 import Arkham.Helpers.History (historyMatches)
 import Arkham.Helpers.Investigator (getAsIfInHandCardsNotForPlay)
-import Arkham.Helpers.Location (getCanMoveToMatchingLocations, locationMatches)
+import Arkham.Helpers.Location (
+  getAccessibleLocations,
+  getCanMoveToMatchingLocations,
+  locationMatches,
+ )
 import Arkham.Helpers.Log (getHasRecord, getRecordCount, getSomeRecordSetJSON, scenarioCount)
 import Arkham.Helpers.Modifiers (getModifiers, hasModifier, withModifiersOf)
 import Arkham.Helpers.Phase (matchPhase)
@@ -65,7 +69,7 @@ import Arkham.Helpers.Scenario (
 import Arkham.Helpers.SkillTest (skillTestMatches)
 import Arkham.Helpers.Source (sourceMatches)
 import Arkham.Helpers.Tarot (affectedByTarot)
-import Arkham.Helpers.Window (getPassedBy, getWindowAsset)
+import Arkham.Helpers.Window (getPassedBy, getWindowActivatedAsset, getWindowRevealedCardId)
 import Arkham.Id
 import Arkham.Investigator.Types (Field (..))
 import Arkham.Key
@@ -227,8 +231,19 @@ passesCriteria iid mcard source' requestor windows' ctr = case ctr of
         -- ability (action/fast/reaction) when treated as True Magick. We reuse
         -- the same hand-entity builder that surfaces the re-sourced abilities to
         -- Sign Magick (3) so the two stay in lockstep.
-        results <- eachTrueMagickHandAbility attrs iid \_card abilities ->
-          anyM (getCanPerformAbility iid windows') abilities
+        --
+        -- A card already revealed in this chain is skipped, exactly as the ability's
+        -- own handler skips it: True Magick became a copy of it, so re-revealing it
+        -- would be the SAME asset. Keeping the two in step is what stops Sign Magick (3)
+        -- being offered with nothing left to reveal, which would reach an empty
+        -- `chooseOne` (#5801). The trigger window is stripped from the performability
+        -- check for the same reason the handler strips it.
+        let revealed = mapMaybe getWindowRevealedCardId windows'
+        let ws' = filter (isNothing . getWindowRevealedCardId) windows'
+        results <- eachTrueMagickHandAbility attrs iid \card abilities ->
+          if toCardId card `elem` revealed
+            then pure False
+            else anyM (getCanPerformAbility iid ws') abilities
         pure $ or results
       _ -> error $ "wrong source: " <> show source'
   Criteria.HasCalculation c valueMatcher -> do
@@ -247,6 +262,11 @@ passesCriteria iid mcard source' requestor windows' ctr = case ctr of
       <$> selectCount (Matcher.ChaosTokenFaceIs #curse)
       <*> selectCount (Matcher.ChaosTokenFaceIs #bless)
   Criteria.CanMoveTo matcher -> notNull <$> getCanMoveToMatchingLocations iid source matcher
+  Criteria.AccessibleToYou matcher -> do
+    -- getAccessibleLocations injects the mover's own as-if connections before asking
+    -- the board, and already limits the answer to locations they may enter.
+    ls <- getAccessibleLocations iid source
+    any (`elem` ls) <$> select (Matcher.IncludeEmptySpace matcher)
   Criteria.CanMoveThis dir -> do
     case source of
       LocationSource lid -> do
@@ -302,6 +322,17 @@ passesCriteria iid mcard source' requestor windows' ctr = case ctr of
       then pure False
       else (== uneliminated) <$> select investigatorMatcher
   Criteria.Never -> pure False
+  Criteria.IsCommitted -> do
+    -- The entity's id IS the card's UUID (preloadCommittedEntities keys it that
+    -- way), so an in-play copy of the same card -- whose id is random -- never
+    -- answers true here.
+    committed <- fieldMap InvestigatorCommittedCards (map toCardId) iid
+    pure $ case source of
+      AssetSource aid -> unsafeToCardId aid `elem` committed
+      EventSource eid -> unsafeToCardId eid `elem` committed
+      SkillSource sid -> unsafeToCardId sid `elem` committed
+      TreacherySource tid -> unsafeToCardId tid `elem` committed
+      _ -> False
   Criteria.InYourHand -> do
     hand <-
       liftA2
@@ -696,6 +727,8 @@ passesCriteria iid mcard source' requestor windows' ctr = case ctr of
           Nothing -> pure False
           Just scenario -> pure $ "5" `T.isPrefixOf` coerce scenario
       Just campaign -> pure $ "5" `T.isPrefixOf` coerce campaign
+  Criteria.UltimatumOrBoonIsActive variant ->
+    member variant . activeUltimatumsAndBoons . gameSettings <$> getGame
   Criteria.ScenarioExists matcher -> selectAny matcher
   Criteria.DifferentAssetsExist matcher1 matcher2 -> do
     m1 <- select (Matcher.replaceYouMatcher iid matcher1)
@@ -744,12 +777,16 @@ passesCriteria iid mcard source' requestor windows' ctr = case ctr of
     case drawers of
       iid' : _ -> iid' <=~> Matcher.replaceYouMatcher iid whoMatcher
       [] -> pure False
-  Criteria.ExcludeWindowAssetExists matcher -> case getWindowAsset windows' of
+  -- A True Magick (5) borrowed activation excludes NOTHING in play: what was activated
+  -- is the revealed [Spell] True Magick became a copy of, so True Magick is still "a
+  -- different [Spell] asset" the trigger may point back at (FAQ v2.5 Q69). Hence
+  -- getWindowActivatedAsset rather than getWindowAsset, which looks through the proxy.
+  Criteria.ExcludeWindowAssetExists matcher -> case getWindowActivatedAsset windows' of
     Nothing -> pure False
-    Just aid -> do
+    Just mAid -> do
       selectAny
-        $ Matcher.NotAsset (Matcher.AssetWithId aid)
-        <> Matcher.replaceYouMatcher iid matcher
+        $ maybe id (\aid -> (Matcher.NotAsset (Matcher.AssetWithId aid) <>)) mAid
+        $ Matcher.replaceYouMatcher iid matcher
   Criteria.TreacheryExists matcher -> selectAny matcher
   Criteria.InvestigatorExists matcher ->
     -- Because the matcher can't tell who is asking, we need to replace

@@ -54,6 +54,7 @@ import Arkham.Source
 import Arkham.Taboo.Types
 import Arkham.Token
 import Arkham.Trait (Trait)
+import Arkham.UltimatumsAndBoons.Types (UltimatumOrBoon)
 import Arkham.Zone
 import Control.Lens (Plated, Prism', prism')
 import Data.Aeson.TH
@@ -175,6 +176,12 @@ overCriteria f = \case
 data Criterion
   = AssetExists AssetMatcher
   | TargetExists TargetMatcher
+  | {- | This Ultimatum or Boon is active. Ability lists are pure, so a card
+    whose printed behavior a Refraction rewrites cannot ask
+    'Arkham.UltimatumsAndBoons.hasUltimatum' for itself; it declares both
+    versions and tells them apart with this.
+    -}
+    UltimatumOrBoonIsActive UltimatumOrBoon
   | ScenarioExists ScenarioMatcher
   | DifferentTargetsExist TargetMatcher TargetMatcher
   | DifferentAssetsExist AssetMatcher AssetMatcher
@@ -195,6 +202,11 @@ data Criterion
   | StoryExists StoryMatcher
   | InYourHand
   | InYourDiscard
+  | {- | This card is on the current skill test as a committed card. Pairs with
+    'Arkham.Card.CardDef.CommittedEffect', which is what gives it an entity to
+    carry the ability from there.
+    -}
+    IsCommitted
   | DoomCountIs ValueMatcher
   | PlayerCountIs Int
   | OnAct Int
@@ -272,6 +284,15 @@ data Criterion
   | ConcealedCardCount Int ConcealedCardMatcher
   | CanMoveThis GridDirection
   | CanMoveTo LocationMatcher
+  | {- | The matching location is one you could move to right now, counting the
+    connections you personally move as if you had ('MovesAsIfConnectedTo').
+
+    Not 'OnLocation' + 'accessibleTo': that asks the board which locations reach the
+    destination, and an as-if connection belongs to the mover rather than to either
+    location, so a location-side question cannot see it. This resolves through the
+    mover, which is also what keeps it from leaking to someone standing beside them.
+    -}
+    AccessibleToYou LocationMatcher
   | TabooCriteria TabooList Criterion Criterion
   | NotYetRecorded CampaignLogKey
   | HasRecord CampaignLogKey
@@ -561,7 +582,9 @@ prohibit = require . not
 
 canFightCriteriaObeyAloof :: Bool -> Criterion
 canFightCriteriaObeyAloof obeyAloof =
-  OnSameLocation
+  -- Cnidathqua is fought "as if it were at your location" from anywhere, so the
+  -- modifier stands in for the location check rather than narrowing it.
+  oneOf [OnSameLocation, thisEnemy (InPlayEnemy $ EnemyWithModifier CanBeFoughtAsIfAtYourLocation)]
     <> EnemyCriteria (ThisEnemy $ CanBeAttackedBy You)
     <> CanAttack
     <> (if obeyAloof then aloofFightRestriction else NoRestriction)

@@ -11,6 +11,7 @@ import Arkham.Deck
 import Arkham.Id
 import Arkham.Json
 import Arkham.Key
+import Arkham.Location.Grid (posFromGridLabel)
 import Arkham.Matcher
 import Arkham.Modifier (Modifier)
 import Arkham.Movement
@@ -148,7 +149,7 @@ instance FromJSON EnemyAttrs where
     enemyCardId <- v .: "cardId"
     enemyCardCode <- v .: "cardCode"
     enemyOriginalCardCode <- v .: "originalCardCode"
-    enemyPlacement <- v .: "placement"
+    parsedPlacement <- v .: "placement"
     enemyFight <- v .:? "fight" <|> (Just . Fixed <$> v .: "fight")
     enemyHealth <- v .:? "health" <|> (Just . GameValueCalculation <$> v .: "health")
     enemyEvade <- v .:? "evade" <|> (Just . Fixed <$> v .: "evade")
@@ -184,4 +185,13 @@ instance FromJSON EnemyAttrs where
     enemyMovement <- v .:? "movement"
     enemyAttackOfOpportunityFlagged <- v .:? "attackOfOpportunityFlagged" .!= False
     enemyDrawnFrom <- v .:? "drawnFrom"
+    {- No engine path gives an enemy an 'AsSelfLocation' placement: @asSelfLocation@ is
+    the grid cell it draws in, independent of where it actually is. A save carrying one
+    was rewritten by a migration that conflated the two, so undo it. A label written by
+    'gridLabel' came from 'InPosition' (Harm's Way, which must stay at no location);
+    anything else is a layout cell name and came from 'Global'. Placements lost to
+    'AtLocation'/'AtLocations' are not recoverable. -}
+    let enemyPlacement = case parsedPlacement of
+          AsSelfLocation label -> maybe Global InPosition (posFromGridLabel label)
+          placement -> placement
     pure EnemyAttrs {..}

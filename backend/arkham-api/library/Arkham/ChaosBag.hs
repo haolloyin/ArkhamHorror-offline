@@ -19,11 +19,14 @@ import Arkham.Helpers.Window (checkWhen, checkWindows)
 import Arkham.Homebrew.Tokens (chaosTokenFacePool, pooledChaosTokenFaces)
 import Arkham.Id
 import Arkham.Investigator.Types (Investigator)
+import Arkham.Log (LogPart (..), ikeyPart, investigatorRef, mechanic, toLogPart, (~>))
+import Arkham.Log.Refs (sendLogInOpenBlock)
 import Arkham.Matcher (
   ChaosTokenMatcher (AnyChaosToken, ChaosTokenFaceIs, ChaosTokenFaceIsNot, IncludeSealed),
  )
 import Arkham.Message.Lifted.Queue
 import Arkham.Modifier (_CancelAnyChaosToken, _CancelAnyChaosTokenAndDrawAnother)
+import Arkham.Name (toName)
 import Arkham.Prelude
 import Arkham.Projection
 import Arkham.RequestedChaosTokenStrategy
@@ -174,13 +177,13 @@ resolveFirstUnresolved source iid strategy = \case
       bagChaosTokens <- gets chaosBagChaosTokens
       forceDraw <- gets chaosBagForceDraw
       case forceDraw of
-        Just face -> do
+        face : rest -> do
           -- force draw acts like a regular draw
           case find ((== face) . chaosTokenFace) bagChaosTokens of
             Nothing -> do
               (drawn, remaining) <- splitAt 1 <$> shuffleM bagChaosTokens
               modify'
-                ( (forceDrawL .~ Nothing)
+                ( (forceDrawL .~ rest)
                     . (chaosTokensL .~ remaining)
                     . (setAsideChaosTokensL %~ (<> filter (not . (.sealed)) drawn))
                 )
@@ -188,12 +191,12 @@ resolveFirstUnresolved source iid strategy = \case
             Just drawn -> do
               let remaining = delete drawn bagChaosTokens
               modify'
-                ( (forceDrawL .~ Nothing)
+                ( (forceDrawL .~ rest)
                     . (chaosTokensL .~ remaining)
                     . (setAsideChaosTokensL %~ (<> filter (not . (.sealed)) [drawn]))
                 )
               pure (Resolved [drawn], [])
-        Nothing -> do
+        [] -> do
           (ignored, drawnAndRemaining) <- breakM (`matches` inner) =<< shuffleM bagChaosTokens
           case drawnAndRemaining of
             [] -> do
@@ -208,12 +211,12 @@ resolveFirstUnresolved source iid strategy = \case
       bagChaosTokens <- gets chaosBagChaosTokens
       forceDraw <- gets chaosBagForceDraw
       case forceDraw of
-        Just face -> do
+        face : rest -> do
           case find ((== face) . chaosTokenFace) bagChaosTokens of
             Nothing -> do
               (drawn, remaining) <- splitAt 1 <$> shuffleM bagChaosTokens
               modify'
-                ( (forceDrawL .~ Nothing)
+                ( (forceDrawL .~ rest)
                     . (chaosTokensL .~ remaining)
                     . (setAsideChaosTokensL %~ (<> filter (not . (.sealed)) drawn))
                 )
@@ -221,12 +224,12 @@ resolveFirstUnresolved source iid strategy = \case
             Just drawn -> do
               let remaining = delete drawn bagChaosTokens
               modify'
-                ( (forceDrawL .~ Nothing)
+                ( (forceDrawL .~ rest)
                     . (chaosTokensL .~ remaining)
                     . (setAsideChaosTokensL %~ (<> filter (not . (.sealed)) [drawn]))
                 )
               pure (Resolved [drawn], [])
-        Nothing -> do
+        [] -> do
           (drawn, remaining) <- splitAt 1 <$> shuffleM bagChaosTokens
           modify'
             ((chaosTokensL .~ remaining) . (setAsideChaosTokensL %~ (<> filter (not . (.sealed)) drawn)))
@@ -637,9 +640,11 @@ instance RunMessage ChaosBag where
     ForceChaosTokenDraw face -> do
       activeInvestigatorId <- getActiveInvestigatorId
       push $ StartSkillTest activeInvestigatorId
-      pure $ c & forceDrawL ?~ face
+      pure $ c & forceDrawL <>~ [face]
     ForceChaosTokenDrawToken token -> do
-      pure $ c & forceDrawL ?~ token.face
+      pure $ c & forceDrawL <>~ [token.face]
+    DebugSetForcedChaosTokenDraws faces -> do
+      pure $ c & forceDrawL .~ faces
     SetChaosTokens rawTokens -> do
       -- Ultimatums that alter chaos bag construction. Applied whenever the bag
       -- is (re)built from a face list, which in practice is setup.
@@ -898,14 +903,23 @@ instance RunMessage ChaosBag where
                       [token | token <- tokens', not token.cancelled]
               pure $ cancelMsgs <> whenMsgs <> afterMsgs
             Nothing -> pure []
+          {- Structured, and still batched: a two-token draw is one line, not
+          two, which a per-token narration could not preserve.
+
+          'sendLogInOpenBlock', so a test's own draw lands inside the test's
+          block instead of beside it. A draw with no test open -- Dark Prophecy,
+          an ability that reveals -- is an ordinary top-level line. -}
           for_ miid \iid -> do
             investigator <- getAttrs @Investigator iid
-            send
-              $ format investigator
-              <> " draws "
-              <> formatAsSentence tokens'
-              <> " chaos "
-              <> (if length tokens' == 1 then "token" else "tokens")
+            sendLogInOpenBlock
+              $ mechanic
+                [ ikeyPart
+                    "log.drawsChaosTokens"
+                    [ "investigator" ~> investigatorRef investigator.id (toName investigator)
+                    , "tokens" ~> LogList (map (toLogPart . (.face)) tokens')
+                    , "count" ~> length tokens'
+                    ]
+                ]
 
           -- the skill test handles revealing its own tokens so we only reveal
           -- here if the source was something else and we have an investigator

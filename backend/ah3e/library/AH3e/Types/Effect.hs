@@ -65,9 +65,12 @@ data Where
   | TheSpace SpaceId
   | TheUnstableSpace
   | AdjacentStreet
+  | AnyStreetSpace
   | AdjacentSpace
   | YourSpaceOrAdjacent
   | AnySpaceWithDoom
+  | -- | any space of a neighborhood other than the one you stand in
+    SpaceInAnotherNeighborhood
   | AdjacentSpaceWithMostDoom
   | SourceSpace
   | ScenarioSheet
@@ -97,6 +100,8 @@ data Predicate
   | HasClues Int
   | HasRemnants Int
   | HasCondition ConditionName
+  | -- | that condition would actually reach you, which "if you cannot" asks about
+    CanGainCondition ConditionName
   | HasCard CardFilter
   | IsDelayed
   | -- | one of the counts an effect can read has reached this much
@@ -152,6 +157,8 @@ data Effect
   | RecoverSanity Recipient Amount
   | RecoverBoth Recipient Amount Amount
   | RemoveDoomFrom Where Amount
+  | -- | discard one marker of that colour from each space named, face up for choice
+    RemoveMarkerAt Where Text
   | PlaceDoomAt Where Amount
   | SpreadDoomOnce
   | SpawnOneClue

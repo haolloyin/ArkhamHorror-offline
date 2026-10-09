@@ -7,7 +7,13 @@ import AH3e.Engine.Helpers
 import AH3e.Engine.Hooks
 import AH3e.Engine.Monad
 import AH3e.Engine.Query
-import AH3e.Engine.Setup (availableScenarios, setupScenario)
+import AH3e.Engine.Setup (
+  availableScenarios,
+  buildBoard,
+  moveCornerTile,
+  setupScenario,
+  turnThresholdTile,
+ )
 import AH3e.Engine.Test
 import AH3e.Game
 import AH3e.Message
@@ -20,10 +26,68 @@ import AH3e.Types.Skill
 import AH3e.Types.State
 import Data.List (findIndex, nub)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text qualified as T
 
+{- | A card can leave a message for the test it belongs to queued behind that test's
+own ending -- Chef's Knife's raise, a reroll a reaction bought -- and by the time it
+runs there is nothing left to act on. Rather than let each of them fail on a test
+that has gone, the ones that only speak to a test in progress are skipped.
+-}
 runMessage :: Message -> GameM ()
-runMessage msg = case msg of
+runMessage msg = do
+  live <- uses #test isJust
+  gone <- case namesAMonsterOnTheBoard msg of
+    Just mid -> uses #monsters (not . Map.member mid)
+    Nothing -> pure False
+  unless (gone || (actsOnTestInProgress msg && not live)) (dispatch msg)
+
+{- | A monster a queued message names can be defeated before that message runs -- the
+monster phase lines up a ready step for every exhausted monster at once, and a card
+answering the first can finish off a later one -- and the handler then has nothing to
+look up. Only the messages that read a monster already on the board are listed: the
+ones that put one there must still run.
+-}
+namesAMonsterOnTheBoard :: Message -> Maybe CardId
+namesAMonsterOnTheBoard = \case
+  ReadyMonster mid -> Just mid
+  DisengageMonster _ mid -> Just mid
+  MonsterStep mid _ _ -> Just mid
+  AttackMonster _ mid -> Just mid
+  CheckEngagement mid -> Just mid
+  _ -> Nothing
+
+actsOnTestInProgress :: Message -> Bool
+actsOnTestInProgress = \case
+  RollDice -> True
+  ContinueTest -> True
+  FinishTest -> True
+  ToggleTestAsset _ -> True
+  SetTestSkill _ -> True
+  SpendForReroll _ -> True
+  RerollDie _ _ -> True
+  RerollUpTo _ _ -> True
+  RerollUpToNow _ _ -> True
+  RerollOneOf {} -> True
+  RerollAll _ -> True
+  RaiseInsteadOfReroll {} -> True
+  RollAdditionalDice _ _ -> True
+  RollADiePerFailure _ -> True
+  RemoveADie _ -> True
+  RemoveDieAt _ -> True
+  AddToDie _ -> True
+  ChooseDieToSet _ -> True
+  ChooseDieResult -> True
+  SetDieValue _ _ -> True
+  RaiseDie _ -> True
+  MarkUsedInTest _ -> True
+  {- Successes and riders are not among them: both are banked for the next test to
+  begin when there is none in progress, which is how a spell's cast cost reaches the
+  test it pays for. -}
+  _ -> False
+
+dispatch :: Message -> GameM ()
+dispatch msg = case msg of
   -- Choose scenario (rule 101)
   ChooseScenario -> do
     expansions <- use #expansions
@@ -77,13 +141,19 @@ runMessage msg = case msg of
     StartingRemnants n -> addRemnants iid n
     StartingClues n -> addClues iid n
     StartingCondition name -> push (GainConditionMsg iid name)
-    StartingChoice options -> do
-      pile <- startingPool
-      choices <- for options \o -> do
-        cids <- fmap concat $ for [code | StartingCard code <- o] \code ->
-          take 1 <$> filterM (fmap (== code) . cardCode) pile
-        pure $ Choice (CardsLabel (possessionsText o) cids) [GainStartingPossessions iid o]
-      chooseFor iid "Choose a starting possession" choices
+    StartingEffect _ eff -> push (ResolveEffect (EffectCtx iid (SourceInvestigator iid) Nothing) eff)
+    {- The pictures go on the button by card code: the investigator's own copy does
+    not exist until it is taken, and a box that is not on the table has dealt no
+    copy to borrow one from. -}
+    StartingChoice options ->
+      chooseFor
+        iid
+        "Choose a starting possession"
+        [ Choice
+            (CardCodesLabel (possessionsText o) [code | StartingCard code <- o])
+            [GainStartingPossessions iid o]
+        | o <- options
+        ]
   GainNamedStarting iid code -> do
     pile <- use (#decks . #starting)
     matches <- filterM (fmap (== code) . cardCode) pile
@@ -101,8 +171,12 @@ runMessage msg = case msg of
     sc <- getScenarioDef
     pushAll
       $ [SpawnClue, SpawnClue, SpawnClue]
-      <> [PlaceDoomInOrder SourceRules sc.startingDoom | not (null sc.startingDoom)]
+      {- The sheet prints a space for each of these, so there is nothing for anyone to
+      decide: they go down as printed rather than asking the table to order them. -}
+      <> map (PlaceDoom SourceRules) sc.startingDoom
       <> [SpreadDoom]
+      -- the ally deck is shuffled by now, so a bystander is whoever comes off the top
+      <> map PlaceBystander sc.startingBystanders
       <> map AddArchiveToCodex sc.codex
       <> [SetupEncounterDecks, BeginRound]
   SetupEncounterDecks -> setupScenarioDecks
@@ -112,7 +186,8 @@ runMessage msg = case msg of
     #rumorIgnored .= []
     #activatedMonsters .= []
     #terrorEncountered .= []
-    #investigators %= Map.map \i -> i {performed = [], usedAssets = [], usedAbilities = []}
+    #investigators %= Map.map \i ->
+      i {performed = [], usedAssets = [], usedAbilities = [], spacesMovedThisRound = 0}
     r <- use #round
     logText ("Round " <> tshow r)
     push BeginActionPhase
@@ -144,13 +219,24 @@ runMessage msg = case msg of
         allowance <- actionAllowance iid
         -- a free ability is still on offer once both actions are spent
         free <- freeActionsFor iid
-        let endTurn = Choice (DoneLabel "End turn") [EndActionTurn iid]
+        {- A turn ends once, even when a card hands out another action and the turn
+        comes back round to here (DRIVEN); whatever answers the ending has had its
+        say by then. -}
+        wrapped <- usedAbility iid "end-of-turn"
+        -- what a card takes as the turn closes, behind whatever was offered
+        closing <- if wrapped then pure [] else atEndOfOwnerTurnFor iid
+        let wrapUp =
+              [MarkAbilityUsed iid "end-of-turn" | not wrapped]
+                <> [CheckReactions (AtEndOfTurn iid) [] | not wrapped]
+                <> closing
+                <> [EndActionTurn iid]
+            endTurn = Choice (DoneLabel "End turn") wrapUp
             freeChoices =
               [Choice (TextLabel a.label) [PerformFreeAction iid ref n] | (ref, n, a) <- free]
         if i.actionsTaken >= allowance
           then
             if null freeChoices
-              then push (EndActionTurn iid)
+              then pushAll wrapUp
               else chooseFor iid actionPrompt (freeChoices <> [endTurn])
           else
             if i.delayed
@@ -186,6 +272,23 @@ runMessage msg = case msg of
     when (if again then kind `elem` done else kind `elem` legal) do
       unless again $ investigatorL iid . #performed %= (<> [kind])
       performAction iid kind
+  {- 'legalActions' leaves out what they have already done this round, which is
+  the one rule this action lifts, so the list is taken with their record set aside. -}
+  GrantAnotherAction iid -> do
+    i <- getInvestigator iid
+    investigatorL iid . #performed .= []
+    options <- legalActions iid
+    investigatorL iid . #performed .= i.performed
+    components <- componentActionsFor iid
+    let actionLabel = \case
+          ComponentAction ref n
+            | (name : _) <- [def.label | (r, k, def) <- components, r == ref, k == n] ->
+                TextLabel name
+          a -> ActionLabel a
+    chooseFor
+      iid
+      "Take an additional action"
+      [Choice (actionLabel k) [PerformGrantedAction iid k (k `elem` i.performed)] | k <- options]
   OfferGrantedAction from kind -> do
     others <- filter ((/= from) . (.id)) <$> playingInvestigators
     takers <- filterM (fmap (elem kind) . legalActions . (.id)) others
@@ -216,21 +319,32 @@ runMessage msg = case msg of
     t <- use #turn
     ph <- use #phase
     moved <- (.spacesMoved) <$> getInvestigator iid
+    others <- filter ((/= iid) . (.id)) <$> playingInvestigators
+    fromCards <- afterOwnerActionFor iid kind
     pushAll
-      $ [CheckReactions (AfterGatherResources iid) [] | kind == GatherResourcesAction]
+      $ fromCards
+      <> [CheckReactions (AfterGatherResources iid) [] | kind == GatherResourcesAction]
       <> [CheckReactions (AfterResearchAction iid) [] | kind == ResearchAction]
       <> [CheckReactions (AfterMoveAction iid) [] | kind == MoveAction]
       <> [CheckReactions (AfterMoveDistance iid moved) [] | kind == MoveAction]
       <> [CheckReactions (AfterAnyAction iid kind) []]
+      <> [CheckReactions (AnotherPerformsAction o.id iid kind) [] | o <- others]
+      <> [MonstersWatchAction iid kind]
       <> [ActionTurn iid | t == Just iid, ph == ActionPhase]
+  {- A card may answer the end of a turn by handing out another action (DRIVEN), and
+  the turn then comes back round to here; the second pass finds it already over and
+  leaves the earlier one to stand. -}
   EndActionTurn iid -> do
-    investigatorL iid . #active .= False
-    #turn .= Nothing
-    push NextActionTurn
+    turn <- use #turn
+    when (turn == Just iid) do
+      investigatorL iid . #active .= False
+      #turn .= Nothing
+      push NextActionTurn
   -- Monster phase (rule 202)
   BeginMonsterPhase -> do
     enterPhase MonsterPhase
     #activatedMonsters .= []
+    #monsters %= Map.map (\m -> m {prey = Nothing})
     push MonsterActivationStep
   MonsterActivationStep -> do
     done <- use #activatedMonsters
@@ -259,8 +373,9 @@ runMessage msg = case msg of
     ready <- isMonsterReady mid
     when ready do
       d <- monsterDef mid
+      named <- activationPrey mid
       case d.activation of
-        Hunter rule -> push (MonsterStep mid d.speed (TowardPrey rule))
+        Hunter rule -> push (MonsterStep mid d.speed (TowardPrey (fromMaybe rule named)))
         Patrol dest _ -> push (MonsterStep mid d.speed (TowardSpaces dest))
         Lurker eff -> do
           ctx <- monsterCtx mid
@@ -272,12 +387,20 @@ runMessage msg = case msg of
     ready <- isMonsterReady mid
     m <- getMonster mid
     when (ready && remaining > 0) do
-      targets <- case target of
+      {- A card may put something on the board that every monster makes for as
+      though it were an investigator, so it joins whatever the activation names. -}
+      quarry <- codexQuarrySpaces
+      hunted <- case target of
         TowardSpaces rule -> ruleSpaces (Just mid) rule
-        TowardPrey rule -> do
-          prey <- ruleInvestigators rule
-          noticed <- filterM (fmap not . monsterIgnores mid . (.id)) prey
-          pure (mapMaybe (.space) noticed)
+        TowardPrey rule ->
+          -- a codex card may send every hunter after something else entirely
+          codexPreyInstead mid >>= \case
+            Just sids -> pure sids
+            Nothing -> do
+              prey <- ruleInvestigators rule
+              noticed <- filterM (fmap not . monsterIgnores mid . (.id)) prey
+              pure (mapMaybe (.space) noticed)
+      let targets = nub (hunted <> quarry)
       closest <- closestTo m.space targets
       steps <- nub . concat <$> traverse (nextStepsToward m.space) closest
       chooseGroup
@@ -288,12 +411,20 @@ runMessage msg = case msg of
     push (MonsterEngagesIn mid sid)
   MonsterEngagesIn mid sid -> do
     ready <- isMonsterReady mid
-    when ready do
+    holds <- monsterHoldsItsQuarry mid
+    codex <- codexMonsterArrived mid sid
+    -- whether it walked in or spawned there, it has arrived (One Man Army)
+    arrivedFor <- investigatorsAt sid
+    pushAll (codex <> [CheckReactions (AfterMonsterArrives i.id mid) [] | i <- arrivedFor])
+    when (ready && not holds) do
       here <- investigatorsAt sid
       present <- filterM (fmap not . monsterIgnores mid . (.id)) here
       prey <- activationPrey mid
       engageTargets mid present prey >>= \case
-        Right is -> for_ is \i -> engage i.id mid
+        Right is -> for_ is \i ->
+          engagementReplacement mid i.id >>= \case
+            Just instead -> pushAll instead
+            Nothing -> engage i.id mid
         Left pool ->
           chooseGroup
             "Choose the investigator the monster engages"
@@ -333,17 +464,23 @@ runMessage msg = case msg of
   MonsterReadyStep -> do
     ms <- uses #monsters (filter ((== Exhausted) . (.state)) . Map.elems)
     everyone <- playingInvestigators
+    closing <- codexEndOfMonsterPhase
     pushAll
       $ [ReadyMonster m.card | m <- ms]
+      <> closing
       <> [CheckReactions (AtEndOfMonsterPhase i.id) [] | i <- everyone]
       <> [BeginEncounterPhase]
   ReadyMonster mid -> do
     m <- getMonster mid
-    setMonsterState mid Ready
-    push (MonsterEngagesIn mid m.space)
+    may <- monsterCanReady mid
+    when may do
+      setMonsterState mid Ready
+      push (MonsterEngagesIn mid m.space)
   ExhaustMonster mid -> do
     ok <- canBeExhausted mid
-    when ok $ setMonsterState mid Exhausted
+    when ok do
+      setMonsterState mid Exhausted
+      monsterBehavior mid >>= \b -> b.afterExhausted mid >>= pushAll
   {- Someone standing beside the one a monster picks may take the engagement instead
   (Tommy Muldoon, Mr. Pawterson's neighbour), so the engagement itself waits behind
   that offer. -}
@@ -359,10 +496,20 @@ runMessage msg = case msg of
           [ Choice (DoneLabel "No") [EngageMonsterNow iid mid]
           , Choice (TextLabel "Engage me instead") [EngageMonsterNow guardian mid]
           ]
-  EngageMonsterNow iid mid -> engage iid mid
+  EngageMonsterNow iid mid ->
+    engagementReplacement mid iid >>= \case
+      Just instead -> pushAll instead
+      Nothing -> engage iid mid
+  SetMonsterPrey mid iid -> do
+    monsterL mid . #prey ?= iid
+    name <- (.name) <$> getCardDef mid
+    who <- (.name) <$> getInvestigatorDef iid
+    logText (name <> " sets its sights on " <> who)
   DisengageMonster iid mid -> do
+    holds <- monsterHoldsItsQuarry mid
     m <- getMonster mid
     case m.state of
+      _ | holds -> pure ()
       Engaged is -> setMonsterState mid (if length is > 1 then Engaged (filter (/= iid) is) else Ready)
       _ -> pure ()
     b <- monsterBehavior mid
@@ -414,7 +561,21 @@ runMessage msg = case msg of
     case (s.kind, special) of
       (SpecialSpace, Just eff) -> pushAll [ResolveEffect (EffectCtx iid SourceScenario Nothing) eff, EndEncounterTurn iid]
       (SpecialSpace, Nothing) -> push (EndEncounterTurn iid)
-      _ -> pushAll [ResolveEncounterFrom iid (if anomaly then AnomalyDeck else deck), EndEncounterTurn iid]
+      _ -> do
+        {- An "Encounter:" ability replaces the encounter, so it is offered beside
+        it -- but not where an anomaly has already replaced what would be read. -}
+        abilities <- if anomaly then pure [] else encounterAbilitiesFor iid
+        let normal = [ResolveEncounterFrom iid (if anomaly then AnomalyDeck else deck), EndEncounterTurn iid]
+        if null abilities
+          then pushAll normal
+          else
+            chooseFor iid "Resolve an encounter, or an encounter ability"
+              $ label "Resolve an encounter" normal
+              : [ Choice (TextLabel a.label) [UseEncounterAbility iid ref n, EndEncounterTurn iid]
+                | (ref, n, a) <- abilities
+                ]
+  UseEncounterAbility iid ref n ->
+    lookupEncounterAbility iid ref n >>= traverse_ \a -> a.perform (EffectCtx iid (refSource ref) Nothing)
   ResolveTerrorEncounter iid -> do
     #terrorEncountered %= (<> [iid])
     nid <- fromJustNote "neighborhood" <$> investigatorNeighborhood iid
@@ -425,21 +586,33 @@ runMessage msg = case msg of
     use #encounter >>= traverse_ \enc ->
       chooseFor enc.investigator "Encounter resolved" [Choice (DoneLabel "Continue") []]
   FinishEncounter -> do
-    who <- uses #encounter (fmap (.investigator))
+    menc <- use #encounter
     finishEncounter
-    for_ who \iid -> push (CheckReactions (AfterEncounter iid) [])
+    for_ menc \enc ->
+      pushAll
+        $ [CheckReactions (AfterStreetEncounter enc.investigator) [] | enc.deck == StreetDeck]
+        <> [CheckReactions (AfterEncounter enc.investigator) []]
   EndEncounterTurn iid -> do
     investigatorL iid . #active .= True
     #turn .= Nothing
     push NextEncounterTurn
   -- Mythos phase (rule 204)
   BeginMythosPhase -> do
+    #sheetTokens %= Map.filterWithKey (\k _ -> not ("reckoning-held:" `T.isPrefixOf` k))
     enterPhase MythosPhase
     order <- playerOrder
     push (MythosTurn order)
   MythosTurn [] -> push EndRound
   MythosTurn (p : ps) -> pushAll [DrawMythosToken p, DrawMythosToken p, MythosTurn ps]
   DrawMythosToken pid -> do
+    offers <- investigatorOfPlayer pid >>= maybe (pure []) mythosDrawOffers
+    if null offers
+      then push (DrawMythosTokenNow pid)
+      else
+        ask pid "Draw a mythos token?"
+          $ Choice (DoneLabel "Draw the token") [DrawMythosTokenNow pid]
+          : [Choice (TextLabel r.label) r.messages | r <- offers]
+  DrawMythosTokenNow pid -> do
     cup <- use #cup
     when (null cup) do
       drawn <- use #drawnTokens
@@ -454,21 +627,38 @@ runMessage msg = case msg of
       #activeToken ?= tok
       logText ("Mythos: " <> tshow tok)
       -- the token is read, then put away; its effect resolves without it on show
-      pushAll [AcknowledgeMythosToken pid tok, ClearActiveToken, ResolveMythosToken pid tok]
-  ResolveMythosToken pid tok -> case tok of
-    SpreadDoomToken -> push SpreadDoom
-    SpawnMonsterToken -> push (SpawnMonsterAt Nothing False)
-    ReadHeadlineToken -> investigatorOfPlayer pid >>= traverse_ (push . DrawHeadline)
-    SpawnClueToken -> push SpawnClue
-    GateBurstToken -> push GateBurst
-    ReckoningToken -> reckoningSources >>= push . ResolveReckonings
-    BlankToken -> investigatorOfPlayer pid >>= traverse_ (\iid -> push (CheckReactions (DrewBlankToken iid) []))
-    SpreadTerrorToken -> do
-      board <- use #board
-      nids <- nub . mapMaybe (`spaceNeighborhood` board) <$> unstableSpaces
-      chooseGroup
-        "Choose the neighborhood to spread terror in"
-        [label (coerce n) [SpreadTerror n] | n <- nids]
+      pushAll
+        [AcknowledgeMythosToken pid tok, ClearActiveToken, ResolveMythosToken pid tok, CheckStateTriggers]
+  {- A card its drawer holds may answer the token flatly (TAINTED's doom); it
+  lands behind whatever the token itself sets going. -}
+  ResolveMythosToken pid tok -> do
+    answers <- investigatorOfPlayer pid >>= maybe (pure []) (`afterMythosTokenFor` tok)
+    pushAll (ResolveMythosTokenNow pid tok : answers)
+  ResolveMythosTokenNow pid tok -> do
+    mine <- investigatorOfPlayer pid
+    -- queued first so the token's own resolution, pushed below, still lands ahead of it
+    maybe (pure []) (`codexTokenDrawn` tok) mine >>= pushAll
+    case tok of
+      SpreadDoomToken -> push SpreadDoom
+      SpawnMonsterToken -> push (SpawnMonsterAt Nothing False)
+      ReadHeadlineToken -> investigatorOfPlayer pid >>= traverse_ (push . DrawHeadline)
+      SpawnClueToken -> push SpawnClue
+      GateBurstToken -> push GateBurst
+      ReckoningToken -> reckoningSources >>= push . ResolveReckonings
+      BlankToken -> investigatorOfPlayer pid >>= traverse_ (\iid -> push (CheckReactions (DrewBlankToken iid) []))
+      {- A white marker is taken out of the cup for good: whichever card put it there
+      says where it goes, so it is never among the tokens returned when the cup runs
+      out. -}
+      WhiteMarkerToken ->
+        #drawnTokens %= \ts -> case break (== WhiteMarkerToken) ts of
+          (before, _ : after) -> before <> after
+          _ -> ts
+      SpreadTerrorToken -> do
+        board <- use #board
+        nids <- nub . mapMaybe (`spaceNeighborhood` board) <$> unstableSpaces
+        chooseGroup
+          "Choose the neighborhood to spread terror in"
+          [label (coerce n) [SpreadTerror n] | n <- nids]
   EndRound -> do
     ps <- use #players
     invs <- use #investigators
@@ -498,7 +688,18 @@ runMessage msg = case msg of
   MoveStep ms -> moveStep ms
   MoveInvestigator ms sid -> do
     investigatorL ms.investigator . #spacesMoved += 1
+    investigatorL ms.investigator . #spacesMovedThisRound += 1
     from <- fromJustNote "space" <$> investigatorSpace ms.investigator
+    -- a vehicle takes whoever is standing there along (Delivery Truck)
+    driving <- hasAssetWith ms.investigator (.carriesPassengers)
+    riders <-
+      if driving
+        then do
+          here <- investigatorsAt from
+          free <- filterM (fmap null . engagedMonsters . (.id)) here
+          pure [i.id | i <- free, i.id /= ms.investigator]
+        else pure []
+    unless (null riders) $ pushEnd (OfferRide riders sid)
     board <- use #board
     investigatorL ms.investigator . #space ?= sid
     moveEngagedWatchers ms.investigator sid
@@ -507,11 +708,24 @@ runMessage msg = case msg of
       Just hz | canContinue ms -> hazardPrompt ms hz
       _ -> push (MoveStep ms)
   UseTravelRoute ms sid -> do
-    addMoney ms.investigator (-1)
+    spendMoney ms.investigator 1
     investigatorL ms.investigator . #space ?= sid
     moveEngagedWatchers ms.investigator sid
     engaged <- enterWith ms sid
     unless engaged $ push (MoveStep ms)
+  OfferRide [] _ -> pure ()
+  OfferRide (iid : rest) sid -> do
+    playing <- investigatorIsPlaying iid
+    if not playing
+      then push (OfferRide rest sid)
+      else do
+        name <- (.name) <$> getSpace sid
+        chooseFor
+          iid
+          ("Ride along to " <> name <> "?")
+          [ Choice (SpaceLabel sid) [MoveDirectly iid sid, OfferRide rest sid]
+          , Choice (DoneLabel "Stay") [OfferRide rest sid]
+          ]
   MoveDirectly iid sid -> do
     allowed <- reachable [sid]
     unless (null allowed) do
@@ -688,7 +902,10 @@ runMessage msg = case msg of
     h <- investigatorHealth iid
     s <- investigatorSanity iid
     when (isPlaying i && (i.damage >= h || i.horror >= s)) $ push (DefeatInvestigator iid)
-  DefeatInvestigator iid -> removeInvestigator iid Defeated True
+  DefeatInvestigator iid -> do
+    removeInvestigator iid Defeated True
+    -- a card may want them kept rather than put away (Scraping at the Door)
+    codexInvestigatorDefeated iid >>= pushAll
   DevourInvestigator iid -> removeInvestigator iid Devoured True
   RetireInvestigator iid -> removeInvestigator iid Retired False
   RecoverInvestigator iid hp sp -> do
@@ -722,17 +939,30 @@ runMessage msg = case msg of
         -- check, so a monster this damage already killed is simply no longer there
         -- to strike -- DealMonsterDamage no-ops for a monster out of play.
         answers <- afterMonsterDamagedFor mid src
-        pushAll
-          $ case mh of
-            Just h | m'.damage >= h -> [DefeatMonster mid src]
-            _ -> []
-          <> answers
+        {- Pursuit: struck from somewhere it cannot reach back to, the monster
+        comes after whoever did it. A blow that finishes it earns no chase. -}
+        chase <- case src of
+          SourceInvestigator iid | Pursuit `elem` d.keywords -> do
+            there <- investigatorSpace iid
+            pure
+              [ MonsterStep mid d.speed (TowardPrey (NamedInvestigator iid))
+              | there `notElem` [Nothing, Just m'.space]
+              ]
+          _ -> pure []
+        let defeated = maybe False (m'.damage >=) mh
+        pushAll $ (if defeated then [DefeatMonster mid src] else chase) <> answers
   DefeatMonster mid src -> do
     logText "Monster defeated"
     answers <- codexAboutDefeat mid src
     -- read the monster's traits while it is still on the board
     fromCards <- cardsAboutDefeat mid src
-    pushAll (DiscardMonster mid : answers <> fromCards)
+    own <- monsterBehavior mid >>= \b -> b.afterDefeated mid src
+    beside <- case src of
+      SourceInvestigator iid -> do
+        ms <- filter ((/= mid) . (.card)) <$> engagedMonsters iid
+        concat <$> for ms \m -> monsterBehavior m.card >>= \b -> b.afterAnotherDefeated m.card mid iid
+      _ -> pure []
+    pushAll (DiscardMonster mid : answers <> fromCards <> own <> beside)
   DiscardMonster mid -> do
     d <- monsterDef mid
     gone <- (.removedWhenDefeated) <$> monsterBehavior mid
@@ -771,41 +1001,45 @@ runMessage msg = case msg of
           , Choice (TextLabel r.label) r.messages
           ]
   PlaceMonsterNow mid sid state -> do
-    #monsters . at mid ?= Monster {card = mid, space = sid, state, damage = 0, markers = []}
+    #monsters
+      . at mid
+      ?= Monster {card = mid, space = sid, state, damage = 0, markers = [], prey = Nothing}
     answers <- codexAboutMonster (.afterMonsterSpawn) mid
-    pushAll (MonsterEngagesIn mid sid : answers)
+    everyone <- playingInvestigators
+    pushAll
+      $ (MonsterEngagesIn mid sid : answers)
+      <> [CheckReactions (AfterMonsterSpawned i.id mid) [] | i <- everyone]
   AttackDamage iid mid n -> do
     exists <- uses #monsters (Map.member mid)
     when exists do
       before <- (.damage) <$> getMonster mid
       pushAll [DealMonsterDamage mid (SourceInvestigator iid) n, AttackResolved iid mid before]
+  ChooseAttackTarget iid -> do
+    msid <- investigatorSpace iid
+    ms <- maybe (pure []) monstersAt msid
+    chooseFor
+      iid
+      "Choose a monster to attack"
+      [Choice (MonsterLabel m.card) [AttackMonster iid m.card] | m <- ms]
   AttackMonster iid mid -> do
     m <- getMonster mid
     d <- monsterDef mid
     unless (m.state == Exhausted) $ engage iid mid
     -- attacking provokes it even if the attack cannot engage it
     #provoked %= Map.insertWith (<>) mid [iid]
-    let attackTest skill = newTest iid skill d.attackModifier (ActionTest AttackAction (Just mid)) (AfterAttack iid mid)
+    attackMod <- readMonsterModifier iid mid AttackModifier d.attackModifier
+    let attackTest skill = newTest iid skill attackMod (ActionTest AttackAction (Just mid)) (AfterAttack iid mid)
         attackWith skill = BeginTest (attackTest skill)
-    -- a card like Storm of Spirits offers another skill in place of strength; the
-    -- monster's attack modifier applies either way
-    i <- getInvestigator iid
-    alternatives <-
-      if d.attackSkill /= Strength
-        then pure []
-        else fmap catMaybes $ for [c | c <- i.assets, c `notElem` i.lockedAssets] \c ->
-          fmap (c,) . (.attackSkillInstead) <$> assetBehavior c
+    -- a card like Storm of Spirits offers another skill in place of the monster's;
+    -- its attack modifier applies either way
+    alternatives <- attackSkillAlternatives iid d.attackSkill
     if null alternatives
       then push (attackWith d.attackSkill)
       else do
-        names <- for alternatives \(c, skill) -> (c,skill,) . (.name) <$> getCardDef c
+        offers <- for alternatives \(c, skill) -> testWithCard iid c (attackTest skill)
         chooseFor iid "Choose the skill to test"
           $ label ("Test " <> T.toLower (tshow d.attackSkill)) [attackWith d.attackSkill]
-          : [ Choice
-                (CardsLabel ("Test " <> T.toLower (tshow skill) <> " with " <> name) [c])
-                [CastSpell iid c [BeginTest (attackTest skill) {casting = Just c}]]
-            | (c, skill, name) <- names
-            ]
+          : offers
   AttackResolved iid mid before -> do
     mm <- use (#monsters . at mid)
     dealt <- case mm of
@@ -816,35 +1050,143 @@ runMessage msg = case msg of
       Just m -> pure (m.damage > before)
     gone <- uses #monsters (not . Map.member mid)
     retaliators <- filterM (hasKeyword Retaliate . (.card)) =<< engagedMonsters iid
+    b <- monsterBehavior mid
+    own <- if gone then pure [] else b.afterAttackAction mid iid dealt
+    -- "even if you defeat it", so this one is asked of a monster already gone
+    exacted <- if dealt then b.afterDamagedInAttack mid iid else pure []
     pushAll
-      $ [MonsterAttacks r.card iid | r <- retaliators, r.card /= mid || not dealt]
+      $ own
+      <> exacted
+      <> [MonsterAttacks r.card iid | r <- retaliators, r.card /= mid || not dealt]
       <> [CheckReactions (AfterDamageMonsterInAttack iid mid) [] | dealt]
       <> [CheckReactions (AfterDefeatMonsterInAttack iid) [] | gone]
   ClearSpaceDoom sid -> spaceL sid . #doom .= 0
   WardRemove iid sid n -> do
+    meddles <- hasAssetWith iid (.wardAlternative)
+    if meddles
+      then push (WardStep iid sid n 0)
+      else do
+        s <- getSpace sid
+        let k = min n s.doom
+        when (k >= 2) $ push (GainRemnants iid 1)
+        pushAll [RemoveDoom sid k, CheckReactions (AfterDoomRemoved iid k) []]
+  WardStep iid sid left removed -> do
     s <- getSpace sid
-    let k = min n s.doom
-    when (k >= 2) $ push (GainRemnants iid 1)
-    pushAll [RemoveDoom sid k, CheckReactions (AfterDoomRemoved iid k) []]
-  PayMoney iid n -> addMoney iid (negate n)
+    ms <- monstersAt sid
+    exhaustable <- filterM (canBeExhausted . (.card)) ms
+    names <- for exhaustable \m -> (m.card,) . (.name) <$> getCardDef m.card
+    let finish =
+          [GainRemnants iid 1 | removed >= 2] <> [CheckReactions (AfterDoomRemoved iid removed) []]
+        options =
+          [ label "Remove one doom" [RemoveDoom sid 1, WardStep iid sid (left - 1) (removed + 1)]
+          | s.doom > 0
+          ]
+            <> [ Choice
+                   (CardsLabel ("Exhaust " <> nm) [mid])
+                   [ExhaustMonster mid, WardStep iid sid (left - 1) removed]
+               | (mid, nm) <- names
+               ]
+    if left <= 0 || null options
+      then pushAll finish
+      else
+        chooseFor iid ("Spend a success (" <> tshow left <> " left)")
+          $ options
+          <> [Choice (DoneLabel "Stop") [WardStep iid sid 0 removed]]
+  PayMoney iid n -> spendMoney iid n
   BuyFromDisplayMore ctx mtrait pricing limit ifBought n -> buyPrompt ctx mtrait pricing limit ifBought n
   EvadeMonsters iid n -> do
-    ms <- map (.card) <$> engagedMonsters iid
+    ms <- filterM (fmap not . monsterHoldsItsQuarry) . map (.card) =<< engagedMonsters iid
     if n >= length ms
       then do
-        for_ ms \mid -> pushAll [DisengageMonster iid mid, ExhaustMonster mid]
+        for_ ms \mid -> do
+          own <- monsterBehavior mid >>= \b -> b.afterEvaded mid iid
+          pushAll
+            $ [DisengageMonster iid mid, ExhaustMonster mid]
+            <> own
+            <> [CheckReactions (AfterEvadeMonster iid mid) []]
         unless (null ms) $ investigatorL iid . #bonusActions += 1
       else
         when (n > 0)
           $ chooseFor
             iid
             "Choose a monster to evade"
-            [ Choice (MonsterLabel m) [DisengageMonster iid m, ExhaustMonster m, EvadeMonsters iid (n - 1)]
+            [ Choice (MonsterLabel m) [EvadedMonster iid m, EvadeMonsters iid (n - 1)]
             | m <- ms
             ]
+  MonstersWatchAction iid kind -> do
+    ms <- engagedMonsters iid
+    answers <- for ms \m -> monsterBehavior m.card >>= \b -> b.afterAction m.card iid kind
+    pushAll (concat answers)
+  MonsterEngaged iid mid -> do
+    here <- uses #monsters (Map.member mid)
+    when here $ monsterBehavior mid >>= \b -> b.afterEngaged mid iid >>= pushAll
+  EvadedMonster iid mid -> do
+    own <- monsterBehavior mid >>= \b -> b.afterEvaded mid iid
+    pushAll
+      $ [DisengageMonster iid mid, ExhaustMonster mid]
+      <> own
+      <> [CheckReactions (AfterEvadeMonster iid mid) []]
   -- Doom and clues (rules 406, 412, 423, 461)
   {- A card may stop doom being put down in its owner's neighborhood, so the ones
   that could are asked before it lands. -}
+  {- A piece of map arriving part way through a scenario. It is built on its own
+  with the tile it hangs off at the origin, so everything it carries is shifted
+  onto that tile's live position and merged in; the union keeps the board's own
+  entry for anything it already has, so the tile it is laid against is untouched. -}
+  AddToBoard against piece -> do
+    board <- use #board
+    let added = buildBoard piece
+        placedAt ts = listToMaybe [t | t <- ts, t.neighborhood == against]
+    case (placedAt board.layout.tiles, placedAt piece.layout.tiles) of
+      (Just live, Just origin) -> do
+        let dx = live.x - origin.x
+            dy = live.y - origin.y
+            known = Map.keysSet board.neighborhoods
+            here = Map.keysSet board.spaces
+            fresh = Map.keysSet added.neighborhoods `Set.difference` known
+        #board . #neighborhoods %= (<> added.neighborhoods)
+        #board . #spaces %= (<> added.spaces)
+        #board . #borders %= \old -> Map.unionWith (<>) old added.borders
+        #board
+          . #layout
+          . #tiles
+          %= ( <>
+                 [ TilePlacement t.neighborhood (t.x + dx) (t.y + dy)
+                 | t <- added.layout.tiles
+                 , t.neighborhood `Set.member` fresh
+                 ]
+             )
+        #board
+          . #layout
+          . #streets
+          %= ( <>
+                 [ StreetPlacement p.space (p.x + dx) (p.y + dy) p.angle
+                 | p <- added.layout.streets
+                 , not (p.space `Set.member` here)
+                 ]
+             )
+        #board
+          . #layout
+          . #anchors
+          %= ( <>
+                 [ SpaceAnchor a.space (a.x + dx) (a.y + dy)
+                 | a <- added.layout.anchors
+                 , not (a.space `Set.member` here)
+                 ]
+             )
+        {- A threshold piece laid down now has its icons printed on it the same way one
+        laid at setup does, so it is turned the same way too; otherwise the board shows
+        one hazard while the engine charges another. -}
+        let laid =
+              [ s.id
+              | s <- Map.elems added.spaces
+              , not (s.id `Set.member` here)
+              , case s.kind of ThresholdSpace _ -> True; _ -> False
+              ]
+        traverse_ turnThresholdTile laid
+        for_ (Map.elems (Map.restrictKeys added.neighborhoods fresh)) \n ->
+          logText (n.name <> " is added to the board")
+      _ -> logText "Nothing on the board to add that map against"
   PlaceDoom src sid -> whenSpaceExists sid do
     stops <- placementStops PlacingDoom sid
     case stops of
@@ -893,7 +1235,10 @@ runMessage msg = case msg of
       Just instead -> pushAll instead
       Nothing -> do
         #sheetDoom += n
-        push CheckStateTriggers
+        everyone <- playingInvestigators
+        pushAll
+          $ [CheckReactions (AfterDoomOnSheet i.id n) [] | n > 0, i <- everyone]
+          <> [CheckStateTriggers]
   RemoveDoom sid n -> do
     s <- getSpace sid
     let k = min n s.doom
@@ -907,6 +1252,71 @@ runMessage msg = case msg of
     when exists do
       monsterL mid . #markers %= (<> [Marker colour True])
       logText ("A " <> colour <> " marker is placed on a monster")
+  PlaceMarkerFacedown sid colour -> do
+    s <- getSpace sid
+    spaceL sid . #markers %= (<> [Marker colour False])
+    logText ("A marker is placed face down at " <> s.name)
+  RevealMarkerAt sid -> do
+    s <- getSpace sid
+    case [m | m <- s.markers, not m.faceUp] of
+      [] -> logText ("Nothing is hidden at " <> s.name)
+      (m : _) -> do
+        spaceL sid . #markers %= turnOne
+        logText ("The marker at " <> s.name <> " is " <> m.color)
+        push CheckStateTriggers
+   where
+    turnOne ms = case break (not . (.faceUp)) ms of
+      (before, m : after) -> before <> (m {faceUp = True} : after)
+      _ -> ms
+  PlaceBystander sid ->
+    use (#decks . #ally) >>= \case
+      [] -> logText "No ally card is left to stand in for a bystander"
+      (cid : rest) -> do
+        #decks . #ally .= rest
+        #bystanders %= Just . (<> [(cid, sid)]) . fromMaybe []
+        s <- getSpace sid
+        logText ("A bystander is left at " <> s.name)
+  -- the card was face down, so what they have saved is only now known
+  TakeBystander iid cid -> do
+    standing <- uses #bystanders (any ((== cid) . fst) . fromMaybe [])
+    when standing do
+      #bystanders %= fmap (filter ((/= cid) . fst))
+      d <- getCardDef cid
+      logText (d.name <> " is helped to safety")
+      pushAll [GainAsset iid cid, CheckStateTriggers]
+  DiscardBystander cid -> do
+    standing <- uses #bystanders (any ((== cid) . fst) . fromMaybe [])
+    when standing do
+      #bystanders %= fmap (filter ((/= cid) . fst))
+      #decks . #ally %= (<> [cid])
+      d <- getCardDef cid
+      logText (d.name <> " is lost to the monsters")
+      push CheckStateTriggers
+  MoveCornerTile piece around -> moveCornerTile piece around
+  TakeClues iid n -> addClues iid n
+  MarkCodexToken card name k -> do
+    #codex
+      . traversed
+      . filtered ((== card) . (.number))
+      . #tokens
+      . at name
+      %= Just
+      . max 0
+      . (+ k)
+      . fromMaybe 0
+    push CheckStateTriggers
+  PlaceNeighborhoodMarker nid colour faceUp -> do
+    n <- getNeighborhood nid
+    neighborhoodL nid . #markers %= (<> [Marker colour faceUp])
+    logText ("A " <> colour <> " marker is placed in " <> n.name)
+  AddSheetClues n -> do
+    #sheetClues += n
+    push CheckStateTriggers
+  DiscardMarkers colour -> do
+    let drop' = filter ((/= colour) . (.color))
+    #board . #spaces . traversed . #markers %= drop'
+    #board . #neighborhoods . traversed . #markers %= drop'
+    logText ("All " <> colour <> " markers are discarded")
   PlaceMarker sid colour -> do
     s <- getSpace sid
     spaceL sid . #markers %= (<> [Marker colour True])
@@ -921,19 +1331,8 @@ runMessage msg = case msg of
       #activeCard ?= cid
       e <- eventDef cid
       pushAll [PlaceDoomInOrder SourceMythos e.doomSpaces, ClearActiveCard cid]
-  SpawnClue -> withEventDeck \case
-    [] -> pure ()
-    (cid : rest) -> do
-      #decks . #event .= rest
-      #revealedEvent ?= cid
-      #activeCard ?= cid
-      e <- eventDef cid
-      neighborhoodL e.neighborhood . #clues += 1
-      nd <- use (#decks . #neighborhoods . at e.neighborhood . non [])
-      nd' <- shuffleIntoTopTwo cid nd
-      #decks . #neighborhoods . at e.neighborhood ?= nd'
-      logText ("A clue spawns in " <> coerce e.neighborhood)
-      push (ClearActiveCard cid)
+  SpawnClue -> spawnOneClue False
+  SpawnClueOnTop -> spawnOneClue True
   GateBurst -> withEventDeck \case
     [] -> pure ()
     (cid : rest) -> do
@@ -970,6 +1369,7 @@ runMessage msg = case msg of
   -- Assets (rules 405, 408, 415, 446, 482, 483, 485)
   {- A card that bans conditions or traits discards what its new owner already
   holds; a card whose own trait is banned never arrives at all. -}
+  GainNow ctx g -> gain ctx g
   GainAsset iid cid -> do
     applyBans iid cid
     refused <- traitIsBanned iid cid
@@ -981,7 +1381,8 @@ runMessage msg = case msg of
     case matches of
       (cid : _) -> pushAll [GainAsset iid cid, AfterGainedFromDeck iid cid]
       [] -> logText ("Special card unavailable: " <> name)
-  GainConditionMsg iid name -> gainCondition iid name
+  GainConditionMsg iid name -> gainCondition False iid name
+  GainAnotherCondition iid name -> gainCondition True iid name
   FocusSkill iid skill evenIfExceeds -> do
     i <- getInvestigator iid
     most <- focusPerSkillFor iid
@@ -989,8 +1390,12 @@ runMessage msg = case msg of
     when (on < most) do
       investigatorL iid . #focus . at skill ?= on + 1
       checkFocusLimit iid evenIfExceeds
+  {- A second token on a skill already focused, for a card that says so outright
+  (Life of Privilege, Just That Good). The per-skill limit is what the card lifts;
+  the focus limit still holds. -}
   FocusSkillAgain iid skill -> do
     investigatorL iid . #focus . at skill %= Just . maybe 1 (+ 1)
+    checkFocusLimit iid False
   DiscardFocus iid skill ->
     investigatorL iid . #focus . at skill %= \case
       Just n | n > 1 -> Just (n - 1)
@@ -1025,8 +1430,9 @@ runMessage msg = case msg of
         [Choice (AmountLabel k) [ResearchCluesExact iid k] | k <- [0 .. maxN]]
   ResearchCluesExact iid k -> do
     addClues iid (negate k)
-    #sheetClues += k
-    pushAll [CheckReactions (AfterCluesResearched iid k) [], CheckStateTriggers]
+    instead <- sheetCluesInstead k
+    pushAll
+      (CheckReactions (AfterCluesResearched iid k) [] : fromMaybe [AddSheetClues k] instead)
   TradeWith iid other -> tradePrompt iid other
   TradeTransfer giver receiver item -> do
     case item of
@@ -1044,7 +1450,14 @@ runMessage msg = case msg of
         investigatorL receiver . #assets %= (<> [cid])
         assetL cid . #owner .= receiver
         when used $ investigatorL receiver . #lockedAssets %= (<> [cid])
+  {- A card may swap something into the display before its owner shops (Eye for
+  Appraisal), so the prices are read only once the shelf is settled. -}
   BuyFromDisplayMsg ctx mtrait pricing limit ifBought -> do
+    offers <- reactionsFor (BeforeAcquiring ctx.investigator mtrait)
+    pushAll
+      $ [CheckReactions (BeforeAcquiring ctx.investigator mtrait) [] | not (null offers)]
+      <> [BuyFromDisplayNow ctx mtrait pricing limit ifBought]
+  BuyFromDisplayNow ctx mtrait pricing limit ifBought -> do
     let iid = ctx.investigator
         buy = BuyFromDisplayChecked ctx mtrait pricing limit ifBought
     markup <- displayMarkup iid
@@ -1063,7 +1476,7 @@ runMessage msg = case msg of
           ]
   BuyFromDisplayChecked ctx mtrait pricing limit ifBought -> buyPrompt ctx mtrait pricing limit ifBought 0
   BuyCard iid cid price -> do
-    addMoney iid (negate price)
+    spendMoney iid price
     push (GainAsset iid cid)
   CycleDisplay iid n -> when (n > 0) do
     display <- use (#decks . #display)
@@ -1080,6 +1493,17 @@ runMessage msg = case msg of
   ReturnToBottom kind cards -> assetDeckLens kind %= (<> cards)
   GainFromDisplay iid cid -> push (GainAsset iid cid)
   -- Codex (rules 407, 413)
+  RevealArchiveCard n after -> do
+    found <- archiveCardFor n
+    case found of
+      Just cid -> do
+        #activeCard ?= cid
+        d <- getCardDef cid
+        logText ("Turned up: " <> (if d.name == "" then "card " <> tshow (coerce n :: Int) else d.name))
+        askLeader
+          ("Card " <> tshow (coerce n :: Int) <> " turned up")
+          [Choice (DoneLabel "Continue") (ClearActiveCard cid : after)]
+      Nothing -> pushAll after
   AddArchiveToCodex n -> addToCodex n False
   AddArchiveToCodexFlipped n -> addToCodex n True
   ChooseInvestigatorsFor ctx n candidates eff
@@ -1112,6 +1536,7 @@ runMessage msg = case msg of
       [Choice (DoneLabel "Continue") [FlipCodexCard n]]
   FlipCodexCard n -> do
     #codex %= map (\e -> if e.number == n then e {flipped = not e.flipped, fired = []} else e)
+    codexChanged
     push CheckStateTriggers
     codexEntry n >>= traverse_ \e -> do
       logText ("Card " <> tshow (coerce n :: Int) <> " flips")
@@ -1141,18 +1566,22 @@ runMessage msg = case msg of
         #decks . #headline .= rest
         #activeCard ?= cid
         d <- getCardDef cid
-        case d.kind of
-          HeadlineCard h -> do
-            logText ("Headline: " <> d.name)
-            asked <- use #questionsAsked
-            let ctx = EffectCtx {investigator = iid, source = SourceHeadline cid, testResult = Nothing}
-            pushAll
-              [ ResolveEffect ctx h.effect
-              , AcknowledgeHeadline iid asked
-              , DiscardHeadline cid
-              , ClearActiveCard cid
-              ]
-          _ -> error "not a headline"
+        -- a codex card may have shuffled something in that is no headline at all
+        instead <- codexHeadlineInstead iid cid
+        case instead of
+          Just msgs -> pushAll (msgs <> [ClearActiveCard cid])
+          Nothing -> case d.kind of
+            HeadlineCard h -> do
+              logText ("Headline: " <> d.name)
+              asked <- use #questionsAsked
+              let ctx = EffectCtx {investigator = iid, source = SourceHeadline cid, testResult = Nothing}
+              pushAll
+                [ ResolveEffect ctx h.effect
+                , AcknowledgeHeadline iid asked
+                , DiscardHeadline cid
+                , ClearActiveCard cid
+                ]
+            _ -> error "not a headline"
   DiscardHeadline cid -> do
     d <- getCardDef cid
     case d.kind of
@@ -1190,11 +1619,25 @@ runMessage msg = case msg of
   ResolveReckonings [] -> pure ()
   -- askLeader, not chooseGroup: the last reckoning is asked for too, since the
   -- prompt is what points it out on the table
-  ResolveReckonings ss ->
+  ResolveReckonings ss -> do
+    -- a card may ask to go last, which the leader's free choice of order would break
+    late <- filterM isLateReckoning ss
+    let offer = case filter (`notElem` late) ss of [] -> ss; early -> early
     askLeader
       "Choose the next reckoning to resolve"
-      [Choice (SourceLabel s) [ResolveReckoning s, ResolveReckonings (filter (/= s) ss)] | s <- ss]
-  ResolveReckoning src -> resolveReckoning src
+      [Choice (SourceLabel s) [ResolveReckoning s, ResolveReckonings (filter (/= s) ss)] | s <- offer]
+  ResolveReckoning src -> do
+    held <- uses #sheetTokens (Map.member (reckoningHeldKey src))
+    offers <- if held then pure [] else reckoningOffers src
+    if
+      | held -> logText "That reckoning does not resolve this mythos phase"
+      | null offers -> push (ResolveReckoningNow src)
+      | otherwise ->
+          askLeader "Answer this reckoning?"
+            $ Choice (DoneLabel "Let it resolve") [ResolveReckoningNow src]
+            : [Choice (TextLabel r.label) r.messages | r <- offers]
+  ResolveReckoningNow src -> resolveReckoning src
+  CancelReckoning key -> #sheetTokens . at key ?= 1
   -- Effects and tests
   ResolveEffect ctx eff -> resolveEffect ctx eff
   PayCost ctx cost -> payCost ctx cost
@@ -1216,7 +1659,9 @@ runMessage msg = case msg of
               ( Choice (DoneLabel "Gain the remnant") [GainRemnantsNow iid 1, GainRemnants iid (n - 1)]
                   : [Choice (TextLabel r.label) (r.messages <> [GainRemnants iid (n - 1)]) | r <- offers]
               )
-  GainRemnantsNow iid n -> addRemnants iid n
+  GainRemnantsNow iid n -> do
+    addRemnants iid n
+    when (n > 0) $ afterGainRemnantFor iid >>= pushAll
   RaiseInsteadOfReroll cost idx cid -> do
     ts <- fromJustNote "no test" <$> use #test
     payRerollCost ts.investigator cost
@@ -1224,16 +1669,41 @@ runMessage msg = case msg of
     #test . _Just . #dice . ix idx . #value += 1
     testPrompt
   ToggleTestAsset cid -> toggleTestAsset cid
+  SetTestSkill skill -> do
+    #test . _Just . #skill .= skill
+    push ContinueTest
+  AttachAsset cid target -> do
+    assetL cid . #attachedTo ?= target
+    name <- (.name) <$> getCardDef cid
+    onto <- (.name) <$> getCardDef target
+    logText (name <> " is attached to " <> onto)
   RollDice -> rollTestDice
   SpendForReroll cost -> chooseRerollDie cost
   RerollDie cost idx -> rerollDie cost idx
-  RerollUpTo src n -> rerollUpTo src n
+  RerollUpTo src n -> rerollUpToPaying src n
+  RerollUpToNow src n -> rerollUpTo src n
   RerollOneOf src n idx -> rerollOneOf src n idx
   RerollAll src -> rerollAll src
+  RollAdditionalDice src n -> rollAdditionalDice src n
+  RollADiePerFailure src -> rollADiePerFailure src
+  RemoveADie src -> removeADie src
+  RemoveDieAt idx -> #test . _Just . #dice . ix idx . #removed .= True
   AddToDie src -> chooseDieToRaise src
   ChooseDieToSet n -> chooseDieToSet n
+  {- Lucky Coin names the result before the die, since the die it changes is the
+  one the result is wanted on. -}
+  ChooseDieResult ->
+    use #test >>= traverse_ \ts ->
+      chooseFor
+        ts.investigator
+        "Choose the die's new result"
+        [Choice (AmountLabel v) [ChooseDieToSet v] | v <- [1 .. 6]]
   SetDieValue idx n -> setDieValue idx n
-  AddTestRider ctx eff -> #test . _Just . #riders %= (<> [(ctx, eff)])
+  AddTestRider ctx eff -> do
+    inTest <- uses #test isJust
+    if inTest
+      then #test . _Just . #riders %= (<> [(ctx, eff)])
+      else #pendingRiders %= Just . (<> [(ctx, eff)]) . fromMaybe []
   RaiseDie idx -> raiseDie idx
   MarkUsedInTest cid -> markUsedInTest cid
   FinishTest -> finishTest
@@ -1263,15 +1733,18 @@ runMessage msg = case msg of
     (y : ys) -> if x == y then ys else y : deleteOne x ys
   canContinue ms = ms.remaining > 0 || ms.paidSteps < ms.maxPaidSteps
 
+{- | Every investigator from every box, whichever expansions are on the table: the
+chosen expansions pick the scenario and its content, not who may play it. A
+possession from a box that is not in play is minted rather than taken
+('GainNamedStarting').
+-}
 availableInvestigators :: GameM [InvestigatorDef]
 availableInvestigators = do
   used <- use #usedInvestigators
-  expansions <- use #expansions
   let usedNames = [d.name | iid <- used, Just d <- [investigatorDef iid]]
   pure
     [ d
     | d <- Map.elems investigatorDefs
-    , d.expansion `elem` expansions
     , d.id `notElem` used
     , d.name `notElem` usedNames
     ]
@@ -1284,6 +1757,9 @@ monsterCtx mid = do
 
 performAction :: InvestigatorId -> ActionKind -> GameM ()
 performAction iid kind = do
+  {- A card that matches somebody else's pool reads it off the action just taken, so
+  the count starts again here and stays at nothing for an action with no test. -}
+  investigatorL iid . #lastTestDice .= Nothing
   sid <- fromJustNote "space" <$> investigatorSpace iid
   let after = AfterAction iid kind
   case kind of
@@ -1326,9 +1802,21 @@ performAction iid kind = do
       chooseFor
         iid
         "Choose a skill to focus"
-        [Choice (SkillLabel s) [FocusSkill iid s False, after] | s <- options]
-    WardAction ->
-      pushAll [BeginTest (newTest iid Lore 0 (ActionTest WardAction Nothing) (AfterWard iid sid)), after]
+        -- the skill that was focused is read off the choice, for a card that adds
+        -- to that same one (Life of Privilege)
+        [ Choice (SkillLabel s) [FocusSkill iid s False, CheckReactions (AfterFocusedSkill iid s) [], after]
+        | s <- options
+        ]
+    WardAction -> do
+      alternatives <- codexWardSkills
+      let attempt s = BeginTest (newTest iid s 0 (ActionTest WardAction Nothing) (AfterWard iid sid))
+      case alternatives of
+        [] -> pushAll [attempt Lore, after]
+        _ ->
+          chooseFor
+            iid
+            "Choose the skill for the ward"
+            [Choice (SkillLabel s) [attempt s, after] | s <- Lore : alternatives]
     ResearchAction ->
       pushAll
         [ BeginTest (newTest iid Observation 0 (ActionTest ResearchAction Nothing) (AfterResearch iid))
@@ -1336,7 +1824,8 @@ performAction iid kind = do
         ]
     EvadeAction -> do
       ms <- engagedMonsters iid
-      mods <- for ms \m -> (.evadeModifier) <$> monsterDef m.card
+      mods <- for ms \m ->
+        readMonsterModifier iid m.card EvadeModifier . (.evadeModifier) =<< monsterDef m.card
       i <- getInvestigator iid
       -- Mists of R'lyeh offers lore in place of observation; the monster's evade
       -- modifier applies either way
@@ -1346,20 +1835,14 @@ performAction iid kind = do
       if null alternatives
         then pushAll [BeginTest (evadeTest Observation), after]
         else do
-          names <- for alternatives \(c, skill) -> (c,skill,) . (.name) <$> getCardDef c
+          offers <- for alternatives \(c, skill) -> testWithCard iid c (evadeTest skill)
           chooseFor iid "Choose the skill to test"
             $ label "Test observation" [BeginTest (evadeTest Observation), after]
-            : [ Choice
-                  (CardsLabel ("Test " <> T.toLower (tshow skill) <> " with " <> name) [c])
-                  [CastSpell iid c [BeginTest (evadeTest skill) {casting = Just c}], after]
-              | (c, skill, name) <- names
-              ]
-    AttackAction -> do
-      ms <- monstersAt sid
-      chooseFor
-        iid
-        "Choose a monster to attack"
-        [Choice (MonsterLabel m.card) [AttackMonster iid m.card, after] | m <- ms]
+            : [Choice l (ms' <> [after]) | Choice l ms' <- offers]
+    {- The target is chosen after anything printed "before you perform an attack
+    action" has run, so a monster hauled in by then can be the one attacked. -}
+    AttackAction ->
+      pushAll [CheckReactions (BeforePerformAction iid AttackAction) [], ChooseAttackTarget iid, after]
     TradeAction -> do
       others <- tradePartners iid
       chooseFor
@@ -1372,6 +1855,21 @@ performAction iid kind = do
         Just a -> do
           push after
           a.perform (EffectCtx iid (refSource ref) Nothing)
+
+{- | Testing a skill some card of theirs offers in place of the printed one. A
+spell is cast to do it, which costs horror and can be interrupted; an item simply
+lends the skill.
+-}
+testWithCard :: InvestigatorId -> CardId -> TestState -> GameM Choice
+testWithCard iid cid ts = do
+  name <- (.name) <$> getCardDef cid
+  isSpell <- maybe False ((== Spell) . (.assetType)) <$> assetDef cid
+  let lbl = CardsLabel ("Test " <> T.toLower (tshow ts.skill) <> " with " <> name) [cid]
+  pure
+    $ Choice lbl
+    $ if isSpell
+      then [CastSpell iid cid [BeginTest ts {casting = Just cid}]]
+      else [BeginTest ts]
 
 -- | The source a component's own ability speaks with.
 refSource :: ComponentRef -> Source
@@ -1423,23 +1921,38 @@ enterWith ms sid =
 
 -- | Walking into a space engages what is there, bar what passes you by.
 noticedEngageOnEntry :: InvestigatorId -> SpaceId -> GameM Bool
-noticedEngageOnEntry iid = engageOnEntryWhere (fmap not . flip monsterIgnores iid) iid
+noticedEngageOnEntry iid = engageOnEntryWhere notices iid
+ where
+  -- a monster that holds its quarry passes everyone else by
+  notices mid = do
+    ignores <- monsterIgnores mid iid
+    holds <- monsterHoldsItsQuarry mid
+    pure (not ignores && not holds)
 
 moveStep :: MoveState -> GameM ()
 moveStep ms = do
   i <- getInvestigator ms.investigator
   board <- use #board
+  purse <- availableMoney ms.investigator
   for_ i.space \sid -> do
     adj <- reachable (adjacentSpaces sid board)
     routeSpaces <- reachable (sameRouteSpaces sid board)
+    -- a card may throw in a space of its own for the dollar (Cabbie's Favor)
+    tips <- extraPaidSteps ms.investigator
     let free = ms.remaining > 0
-        paid = not free && ms.paidSteps < ms.maxPaidSteps && i.money >= 1
+        paid = not free && ms.paidSteps < ms.maxPaidSteps && purse >= 1
+        bought =
+          ms
+            { paidSteps = ms.paidSteps + 1
+            , remaining = ms.remaining + sum (map snd tips)
+            }
+        marks = [MarkAssetUsed ms.investigator c | (c, _) <- tips]
         stepChoices
           | free = spaceChoices adj \s -> [MoveInvestigator ms {remaining = ms.remaining - 1} s]
-          | paid = spaceChoices adj \s -> [PayMoney ms.investigator 1, MoveInvestigator ms {paidSteps = ms.paidSteps + 1} s]
+          | paid = spaceChoices adj \s -> marks <> [PayMoney ms.investigator 1, MoveInvestigator bought s]
           | otherwise = []
         routes =
-          if ms.voluntary && i.money >= 1
+          if ms.voluntary && purse >= 1
             then [Choice (SpaceLabel r) [UseTravelRoute ms r] | r <- routeSpaces]
             else []
         choices = stepChoices <> routes
@@ -1523,6 +2036,7 @@ discardAsset cid = do
     #assets . at cid .= Nothing
     b <- assetBehavior cid
     b.onDiscard cid a.owner >>= pushAll
+    (investigatorBehavior a.owner).onOwnedDiscard a.owner cid >>= pushAll
     attached <- uses #assets (filter ((== Just cid) . (.attachedTo)) . Map.elems)
     for_ attached \x -> discardAsset x.card
     d <- getCardDef cid
@@ -1539,10 +2053,13 @@ discardAsset cid = do
       MonsterCard _ -> #decks . #monster %= (cid :)
       _ -> #decks . #removed %= (cid :)
 
--- 415.4, 415.6
-gainCondition :: InvestigatorId -> ConditionName -> GameM ()
-gainCondition iid name = do
-  already <- hasCondition iid name
+{- | Hands over a condition by name (415.4, 415.6). @another@ is for a card that says to
+take one although its holder has one already ("keep all of them"), which the rules
+otherwise refuse.
+-}
+gainCondition :: Bool -> InvestigatorId -> ConditionName -> GameM ()
+gainCondition another iid name = do
+  already <- if another then pure False else hasCondition iid name
   banned <- hasAssetWith iid (elem name . (.bansConditions))
   bannedBySheet <- pure (name `elem` (investigatorBehavior iid).bansConditions)
   -- an investigator still joining is being set up, and may start with a condition
@@ -1553,14 +2070,21 @@ gainCondition iid name = do
     "BLESSED" -> conditionCard iid "CURSED"
     "CURSED" -> conditionCard iid "BLESSED"
     _ -> pure Nothing
+  {- FATIGUED does not cancel with DRIVEN but turns it out: the DRIVEN already held
+  goes, and no new one may be taken while the fatigue lasts. -}
+  spent <- if name == "FATIGUED" then conditionCard iid "DRIVEN" else pure Nothing
+  tooTired <- if name == "DRIVEN" then hasCondition iid "FATIGUED" else pure False
   case opposing of
-    _ | banned || bannedBySheet -> do
+    _ | banned || bannedBySheet || tooTired -> do
       logText (coerce name <> " cannot be held, and is discarded")
       conditionCard iid name >>= traverse_ (push . DiscardAsset)
     Just cid | playing -> do
       logText "The opposing condition is discarded instead"
       push (DiscardAsset cid)
     _ -> when (playing && not already) do
+      for_ spent \cid -> do
+        logText "The drive gives out"
+        push (DiscardAsset cid)
       pile <- use (#decks . #conditions)
       copies <- fmap catMaybes $ for pile \cid ->
         getCardDef cid <&> \d -> case d.kind of
@@ -1671,7 +2195,6 @@ buyPrompt ctx mtrait pricing limit ifBought bought = do
       finish = if bought > 0 then [ResolveEffect ctx ifBought] else [CycleDisplay iid 2]
   markup <- displayMarkup iid
   display <- use (#decks . #display)
-  i <- getInvestigator iid
   priced <- fmap catMaybes $ for display \cid -> do
     ok <- maybe (pure True) (\t -> cardMatches (WithTrait t) cid) mtrait
     md <- assetDef cid
@@ -1682,9 +2205,10 @@ buyPrompt ctx mtrait pricing limit ifBought bought = do
       pure (cid, applyPricing pricing v)
   -- a card that halves a price (Fine Clothes, Henry Wan) says it does not stack,
   -- so it is offered only on a purchase that is not halved already
+  purse <- availableMoney iid
   discounts <- case pricing of HalfPrice -> pure []; _ -> halfPriceCards iid
   let more = BuyFromDisplayMore ctx mtrait pricing limit ifBought (bought + 1)
-      options = [o | o@(_, price) <- priced, price <= i.money]
+      options = [o | o@(_, price) <- priced, price <= purse]
       halved price = (price + 1) `div` 2
   -- what a card offers in place of simply paying (Good Standing's test), one offer
   -- per card on sale, since the price it changes is that card's
@@ -1702,7 +2226,7 @@ buyPrompt ctx mtrait pricing limit ifBought bought = do
                  [MarkAssetUsed iid dcid, BuyCard iid cid (halved price), more]
              | (dcid, name) <- discounts
              , (cid, price) <- priced
-             , halved price <= i.money
+             , halved price <= purse
              ]
           <> offers
 
@@ -1726,12 +2250,6 @@ offerRecoverySanity target msid = for_ msid \sid -> do
 starting space (Tsathoggua devours whole tiles), so what is left of the board
 stands in for it.
 -}
-startingSpaceOnBoard :: GameM (Maybe SpaceId)
-startingSpaceOnBoard = do
-  start <- (.startingSpace) <$> getScenarioDef
-  spaces <- uses (#board . #spaces) Map.keys
-  pure (if start `elem` spaces then Just start else listToMaybe spaces)
-
 displayMarkup :: InvestigatorId -> GameM Int
 displayMarkup iid = do
   mr <- use #rumor
@@ -1739,13 +2257,28 @@ displayMarkup iid = do
   codes <- traverse (cardCode . (.card)) mr
   pure $ if codes == Just "truckers-strike-leads-to-shortages" && not ignored then 2 else 0
 
+{- | The table's cards hear that the codex has changed (Death). Queued before
+whatever the card itself sets going, so it is asked once that has resolved.
+-}
+codexChanged :: GameM ()
+codexChanged = do
+  invs <- playingInvestigators
+  pushAll [CheckReactions (AfterCodexChanged i.id) [] | i <- invs]
+
+{- | The card in the archive that an archive number names. Most are archive cards
+and carry the number themselves; the artifacts printed on one are assets, and only
+their code says which number they were.
+-}
+archiveCardFor :: ArchiveNumber -> GameM (Maybe CardId)
+archiveCardFor n = do
+  archive <- use (#decks . #archive)
+  let numbered d = case d.kind of ArchiveCard a -> a.number == n; _ -> False
+      coded d = d.code == CardCode ("archive-" <> tshow (coerce n :: Int))
+  listToMaybe <$> filterM (\cid -> getCardDef cid <&> \d -> numbered d || coded d) archive
+
 addToCodex :: ArchiveNumber -> Bool -> GameM ()
 addToCodex n flipped = do
-  archive <- use (#decks . #archive)
-  matches <-
-    filterM
-      (\cid -> getCardDef cid <&> \d -> case d.kind of ArchiveCard a -> a.number == n; _ -> False)
-      archive
+  matches <- maybeToList <$> archiveCardFor n
   case matches of
     (cid : _) -> do
       removeCardEverywhere cid
@@ -1753,18 +2286,10 @@ addToCodex n flipped = do
       #codex %= (<> [entry])
       logText
         ("Card " <> tshow (coerce n :: Int) <> " added to the codex" <> (if flipped then " facedown" else ""))
+      codexChanged
       push CheckStateTriggers
       (codexBehavior n).onAdd entry
     [] -> logText ("Archive card unavailable: " <> tshow (coerce n :: Int))
-
-{- | Cards a starting possession's picture may be taken from. The investigator's
-own copy of a deck card does not exist until it is taken, so for the choice
-buttons a deck's copy stands in; nothing is moved by looking.
--}
-startingPool :: GameM [CardId]
-startingPool = do
-  d <- use #decks
-  pure (d.starting <> d.spell <> d.item <> d.ally <> d.special)
 
 possessionsText :: [StartingPossession] -> Text
 possessionsText [] = "Nothing"
@@ -1776,6 +2301,7 @@ possessionsText ps = T.intercalate ", " (map one ps)
     StartingRemnants n -> tshow n <> " remnants"
     StartingClues n -> tshow n <> " clues"
     StartingCondition c -> coerce c
+    StartingEffect txt _ -> txt
     StartingChoice os -> T.intercalate " or " (map possessionsText os)
 
 gainFromDeck :: InvestigatorId -> AssetDeckKind -> Maybe Trait -> Maybe ValueBound -> GameM ()
@@ -1794,13 +2320,13 @@ buyRevealed :: EffectCtx -> AssetDeckKind -> [CardId] -> Maybe Int -> Pricing ->
 buyRevealed ctx kind revealed limit pricing bought = do
   let iid = ctx.investigator
       finish = [ReturnToBottom kind revealed]
-  i <- getInvestigator iid
+  purse <- availableMoney iid
   options <- fmap catMaybes $ for revealed \cid -> do
     mv <- cardValue cid
     pure do
       v <- mv
       let price = applyPricing pricing v
-      guard (price <= i.money)
+      guard (price <= purse)
       pure (cid, price)
   if maybe False (bought >=) limit || null revealed
     then pushAll finish
@@ -1888,6 +2414,7 @@ mythosTokenName = \case
   ReckoningToken -> "Reckoning"
   BlankToken -> "Blank"
   SpreadTerrorToken -> "Spread terror"
+  WhiteMarkerToken -> "White marker"
 
 reckoningSources :: GameM [Source]
 reckoningSources = do
@@ -1924,6 +2451,26 @@ resolveReckoning src = do
         HeadlineCard h -> for_ h.reckoning \e -> push (ResolveEffect (EffectCtx leaderInv src Nothing) e)
         _ -> pure ()
     _ -> pure ()
+
+{- | A clue spawning (430.7): the top event card is read, its neighborhood gains
+the clue, and the card goes back among the top two of that neighborhood's deck.
+A card may say to leave it on top instead, so the clue is where it was put
+(Spirit Camera).
+-}
+spawnOneClue :: Bool -> GameM ()
+spawnOneClue onTop = withEventDeck \case
+  [] -> pure ()
+  (cid : rest) -> do
+    #decks . #event .= rest
+    #revealedEvent ?= cid
+    #activeCard ?= cid
+    e <- eventDef cid
+    neighborhoodL e.neighborhood . #clues += 1
+    nd <- use (#decks . #neighborhoods . at e.neighborhood . non [])
+    nd' <- if onTop then pure (cid : nd) else shuffleIntoTopTwo cid nd
+    #decks . #neighborhoods . at e.neighborhood ?= nd'
+    logText ("A clue spawns in " <> coerce e.neighborhood)
+    push (ClearActiveCard cid)
 
 withEventDeck :: ([CardId] -> GameM ()) -> GameM ()
 withEventDeck f = do
@@ -2022,6 +2569,7 @@ resolveEncounter iid deck = do
         , deck = deck
         , gainedNeighborhoodClue = False
         , returnToArchive = False
+        , returnToTop = Nothing
         , section = Nothing
         }
     d <- getCardDef cid
@@ -2114,16 +2662,19 @@ finishEncounter = do
     d <- getCardDef enc.card
     if enc.returnToArchive
       then #decks . #archive %= (enc.card :)
-      else case (d.kind, enc.deck) of
-        (EventCard e, _)
-          | enc.gainedNeighborhoodClue -> #decks . #eventDiscard %= (enc.card :)
-          | otherwise -> do
-              let l :: Lens' Game [CardId]
-                  l = #decks . #neighborhoods . at e.neighborhood . non []
-              deck <- use l
-              l <~ shuffleIntoTopTwo enc.card deck
-        (_, TerrorDeck _) -> #decks . #terror %= (<> [enc.card])
-        (_, deck) -> deckLens deck %= (<> [enc.card])
+      else
+        if enc.returnToTop == Just True
+          then deckLens enc.deck %= (enc.card :)
+          else case (d.kind, enc.deck) of
+            (EventCard e, _)
+              | enc.gainedNeighborhoodClue -> #decks . #eventDiscard %= (enc.card :)
+              | otherwise -> do
+                  let l :: Lens' Game [CardId]
+                      l = #decks . #neighborhoods . at e.neighborhood . non []
+                  deck <- use l
+                  l <~ shuffleIntoTopTwo enc.card deck
+            (_, TerrorDeck _) -> #decks . #terror %= (<> [enc.card])
+            (_, deck) -> deckLens deck %= (<> [enc.card])
 
 setupScenarioDecks :: GameM ()
 setupScenarioDecks = do

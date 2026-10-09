@@ -119,6 +119,8 @@ export interface Neighborhood {
   clues: number
   anomaly: boolean
   terror: number
+  // terror cards attached to this neighborhood, which lie across its encounter deck
+  attachedTerror?: CardId[]
   markers: Marker[]
 }
 
@@ -193,7 +195,7 @@ export interface CodexEntry {
   number: number
   card: CardId
   flipped: boolean
-  tokens?: { clues?: number }
+  tokens?: { clues?: number; doom?: number } & Record<string, number | undefined>
 }
 
 export interface Decks {
@@ -209,6 +211,10 @@ export interface Decks {
   event: CardId[]
   eventDiscard: CardId[]
   display: CardId[]
+  // the archive numbers still face down under the codex, in the scenarios that have one,
+  // and the codex card they lie under
+  investigation?: number[]
+  investigationUnder?: number | null
 }
 
 export interface Game {
@@ -242,4 +248,6 @@ export interface Game {
   sheetDoom: number
   sheetClues: number
   sheetMarkers: number
+  // ally cards lying facedown on the board, each with the space it lies in
+  bystanders?: [CardId, string][] | null
 }

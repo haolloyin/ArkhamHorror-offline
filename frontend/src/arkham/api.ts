@@ -1,4 +1,5 @@
 import api from '@/api';
+import { logRowDecoder, type LogRow } from '@/arkham/types/GameLog';
 import { Game, GameDetailsEntry, gameDecoder, gameDetailsEntryDecoder } from '@/arkham/types/Game';
 import { ArkhamDbDecklist, Deck, deckDecoder } from '@/arkham/types/Deck';
 import { CardDef, cardDefDecoder } from '@/arkham/types/CardDef';
@@ -84,8 +85,7 @@ export const findGame = async (playerId: string): Promise<GameDetailsEntry> => {
 
 export const fetchGames = async (): Promise<GameDetailsEntry[]> => {
   const { data } = await api.get('arkham/games')
-  const passed = data.filter((g: { error?: string }) => g.error === undefined)
-  return JsonDecoder.array(gameDetailsEntryDecoder, 'GameEntryDetails[]').decodePromise(passed)
+  return JsonDecoder.array(gameDetailsEntryDecoder, 'GameEntryDetails[]').decodePromise(data)
 }
 
 export const fetchDecks = async (): Promise<Deck[]> => {
@@ -143,6 +143,15 @@ export type StoredCustomCard = {
 export type StoredCustomCardSet = {
   id: string
   name: string
+  /* What the set is, in its author's words. Seeds the marketplace listing when
+   * the set is published, and is the one thing a set says about itself beyond
+   * its name. */
+  description: string | null
+  /* Where the set lives in the world: the post announcing it, the thread it is
+   * discussed in. Seeds the listing alongside the description. Always an http
+   * address -- the server refuses anything else, so this is safe to put in an
+   * anchor. */
+  url: string | null
   // The pack id an imported set came from, so re-importing that pack replaces
   // this set rather than making a second copy of it. Null for a set made here.
   sourceCode: string | null
@@ -153,20 +162,51 @@ export type StoredCustomCardSet = {
   publishedCardSetId: string | null
   subscribedVersion: number | null
   latestVersion: number | null
+  /* Your own marketplace listing for this set, if you have submitted it, and
+   * where that submission stands. Distinct from `publishedCardSetId`, which is a
+   * listing of somebody else's that this set is a copy of. */
+  submittedCardSetId: string | null
+  submittedVersion: number | null
+  submissionStatus: ReviewStatus | null
+  // Only ever set on a denial, and the one thing the author has to read.
+  submissionReason: string | null
+  // The version of this set that is in the marketplace now, which is not
+  // necessarily the one last submitted.
+  approvedVersion: number | null
 }
+
+/* Where a submission stands. A set is listed only once a version of it is
+ * approved, and every version is reviewed on its own. */
+export type ReviewStatus = 'pending' | 'approved' | 'denied' | 'none'
 
 export const fetchCustomCardSets = async (): Promise<StoredCustomCardSet[]> => {
   const { data } = await api.get('arkham/custom-card-sets')
   return data
 }
 
-export const createCustomCardSet = async (name: string): Promise<StoredCustomCardSet> => {
-  const { data } = await api.post('arkham/custom-card-sets', { name })
+export const createCustomCardSet = async (
+  name: string,
+  description?: string | null,
+  url?: string | null,
+): Promise<StoredCustomCardSet> => {
+  const { data } = await api.post('arkham/custom-card-sets', { name, description, url })
   return data
 }
 
-export const renameCustomCardSet = async (id: string, name: string): Promise<StoredCustomCardSet> => {
-  const { data } = await api.put(`arkham/custom-card-sets/${id}`, { name })
+/* Name, description and link in one call, because they are one form.
+ *
+ * `description` and `url` are three-valued on the wire: leaving the key out
+ * keeps whatever is stored, `null` clears it. So a caller that only means to
+ * rename passes neither rather than passing null, which would silently wipe
+ * them.
+ *
+ * Renaming stops a set following a published one; changing only the description
+ * or the link does not. */
+export const updateCustomCardSet = async (
+  id: string,
+  changes: { name: string; description?: string | null; url?: string | null },
+): Promise<StoredCustomCardSet> => {
+  const { data } = await api.put(`arkham/custom-card-sets/${id}`, changes)
   return data
 }
 
@@ -181,6 +221,10 @@ export const deleteCustomCardSet = async (id: string): Promise<void> => {
  * name otherwise. */
 export const importCustomCardSet = async (payload: {
   name: string
+  // A file written before descriptions existed carries none, and the server
+  // leaves the set's own alone rather than blanking it.
+  description?: string | null
+  url?: string | null
   sourceCode: string | null
   cards: { def: any; art: string | null }[]
 }): Promise<{ set: StoredCustomCardSet; cards: StoredCustomCard[] }> => {
@@ -197,9 +241,29 @@ export const importCustomCardSet = async (payload: {
 export type PublishedCardSet = {
   id: string
   name: string
+  /* What the set is. The listing's own copy, not the version's: the author can
+   * rewrite it at any time without republishing and without it being reviewed
+   * again, because the cards have not changed. */
+  description: string | null
+  /* Where the set lives in the world, for the one thing a listing cannot say
+   * for itself. The listing's own, like the description. */
+  url: string | null
   author: string
   mine: boolean
+  /* Whether the author is an admin, which is what the marketplace calls
+   * officially supported. Read off the account rather than stamped on the
+   * listing, so a set stops claiming support when its author stops being able to
+   * give it. */
+  official: boolean
+  // The newest approved version: the one described below, and the one an import
+  // gets. Zero for a set of your own that has never passed review, which is the
+  // only way an unapproved set is listed at all.
   latestVersion: number
+  // Where the newest submission stands. Only ever anything but 'approved' on
+  // your own listing, since nobody else's is shown until it has passed.
+  reviewStatus: ReviewStatus
+  pendingVersion: number | null
+  denialReason: string | null
   cardCount: number
   // What the author said about the newest version, if they said anything.
   note: string | null
@@ -210,6 +274,21 @@ export type PublishedCardSet = {
   updatedAt: string
   // The version your own copy is on, if you have one that still follows this.
   subscribedVersion: number | null
+  /* Every version of your own listing, newest first. Empty on anybody else's:
+   * what someone submitted and what was turned down is theirs to see. */
+  versions: PublishedCardSetVersionSummary[]
+}
+
+/* One version in an author's history of their own listing: what they said about
+ * it and what came of it. No cards -- those are a request of their own. */
+export type PublishedCardSetVersionSummary = {
+  version: number
+  note: string | null
+  status: ReviewStatus
+  reason: string | null
+  // Whether this is the version the marketplace is handing out.
+  live: boolean
+  createdAt: string
 }
 
 /* One set in full: its listing plus every card in the version. The listing comes
@@ -223,8 +302,28 @@ export type PublishedCardSetVersion = {
   createdAt: string
 }
 
-export const fetchPublishedCardSets = async (): Promise<PublishedCardSet[]> => {
-  const { data } = await api.get('arkham/published-card-sets')
+/* The marketplace. `mine` narrows it to your own listings, which is a page of
+ * its own: a listing outlives the set it was published from, so one whose set
+ * has since been deleted is only reachable that way. */
+export const fetchPublishedCardSets = async (mine = false): Promise<PublishedCardSet[]> => {
+  const { data } = await api.get(`arkham/published-card-sets${mine ? '?mine=true' : ''}`)
+  return data
+}
+
+/* Rewrite what your listing says about itself. Only the description and the
+ * link: the name and the cards belong to the version, and changing those is
+ * publishing a new one. Nothing is re-reviewed, and the server writes the same
+ * text back onto your own copy of the set so the two places you can edit it
+ * agree.
+ *
+ * Both are three-valued here too -- a key left out keeps what is stored -- so
+ * this takes a patch rather than two positional arguments that would have to
+ * be spelled out to change one. */
+export const updatePublishedCardSet = async (
+  id: string,
+  changes: { description?: string | null; url?: string | null },
+): Promise<PublishedCardSet> => {
+  const { data } = await api.put(`arkham/published-card-sets/${id}`, changes)
   return data
 }
 
@@ -237,13 +336,27 @@ export const fetchPublishedCardSet = async (
   return data
 }
 
-/* Publish the set as it stands. Each call is a new version, and the version is
- * kept whole, so a copy of it can be taken again later however the set changes. */
+/* Submit the set as it stands. Each call is a new version, kept whole, so what a
+ * reviewer looked at is what anyone importing it gets. Nothing is listed by this:
+ * the version goes into the review queue, and the marketplace keeps showing
+ * whichever version was last approved.
+ *
+ * Unless the caller is an admin -- then the server records the version as
+ * approved by them and lists it at once, and the listing comes back with
+ * `reviewStatus: 'approved'` and the new `latestVersion`. The server decides
+ * that from the account, not from anything sent here.
+ *
+ * `notify` is whether to email the author the decision, and is ignored for a
+ * publish that is already decided. Submitting again while something is still
+ * waiting replaces it rather than queueing a second thing. */
+/* The listing's blurb and link are not sent: they are the set's, and the server
+ * reads them off it. Only what is about this one submission goes here. */
 export const publishCustomCardSet = async (
   id: string,
   note: string | null,
+  notify: boolean,
 ): Promise<PublishedCardSet> => {
-  const { data } = await api.post(`arkham/custom-card-sets/${id}/publish`, { note })
+  const { data } = await api.post(`arkham/custom-card-sets/${id}/publish`, { note, notify })
   return data
 }
 
@@ -276,9 +389,179 @@ export const unlikeCardSet = async (id: string): Promise<PublishedCardSet> => {
   return data
 }
 
-// Bring a subscribed set up to the newest published version.
+// Bring a subscribed set up to the newest approved version.
 export const syncCustomCardSet = async (id: string): Promise<PublishedCardSet> => {
   const { data } = await api.post(`arkham/custom-card-sets/${id}/sync`, {})
+  return data
+}
+
+/* ------------------------------------------------- reviewing submissions ---
+
+   Admin only, and gated server side: everything under /admin requires the admin
+   flag, so these 403 for anybody else rather than relying on the page being
+   hidden. */
+
+export type CardSetSubmission = {
+  id: string
+  publishedCardSetId: string
+  setName: string
+  // What the author says the set is, so a reviewer reads the same blurb a
+  // browser would.
+  setDescription: string | null
+  // Where they say it lives, which is often the only way to check a set is
+  // theirs to publish.
+  setUrl: string | null
+  author: string
+  // So a reviewer can reach the author about something the form cannot say.
+  authorEmail: string
+  version: number
+  status: ReviewStatus
+  // What the author said about this version when they submitted it.
+  note: string | null
+  // Whether they asked to be emailed the decision.
+  notify: boolean
+  reason: string | null
+  reviewedBy: string | null
+  reviewedAt: string | null
+  submittedAt: string
+  cardCount: number
+  preview: { def: any; art: string | null }[]
+  // What is in the marketplace now, so an update reads as an update.
+  approvedVersion: number | null
+}
+
+export type CardSetSubmissionDetail = {
+  submission: CardSetSubmission
+  cards: { def: any; art: string | null }[]
+}
+
+/* The review queue. No status means the pending ones, oldest first, which is what
+ * there is to do. */
+export const fetchCardSetSubmissions = async (
+  status?: 'pending' | 'approved' | 'denied' | 'all',
+): Promise<CardSetSubmission[]> => {
+  const query = status === undefined ? '' : `?status=${status}`
+  const { data } = await api.get(`admin/card-set-submissions${query}`)
+  return data
+}
+
+// One submission with every card in it, which is what reviewing it takes.
+export const fetchCardSetSubmission = async (id: string): Promise<CardSetSubmissionDetail> => {
+  const { data } = await api.get(`admin/card-set-submissions/${id}`)
+  return data
+}
+
+export const approveCardSetSubmission = async (id: string): Promise<CardSetSubmission> => {
+  const { data } = await api.post(`admin/card-set-submissions/${id}/approve`, {})
+  return data
+}
+
+/* --------------------------------------------------------------- game stats ---
+
+   Admin only. Read off a materialized view rather than computed per request:
+   every fact here lives inside a 28kB jsonb blob per game, which costs ~0.7ms
+   each to extract, so the panel reads pre-extracted columns and shows how stale
+   they are. `populated` is false until the view has been built for the first
+   time. */
+
+export type StatTotals = {
+  games: number
+  campaignGames: number
+  standaloneGames: number
+  finished: number
+  inProgress: number
+  // Never got past deck selection: games nobody actually sat down to.
+  neverStarted: number
+  players: number
+}
+
+export type CampaignStat = {
+  id: string
+  games: number
+  finished: number
+  inProgress: number
+  neverStarted: number
+  // Summed over every run of the campaign, which is what makes a success rate
+  // mean something for a campaign nobody has finished yet.
+  scenariosPlayed: number
+  scenariosWon: number
+  players1: number
+  players2: number
+  players3: number
+  players4: number
+  easy: number
+  standard: number
+  hard: number
+  expert: number
+}
+
+export type StandaloneStat = {
+  id: string
+  games: number
+  finished: number
+  isSideStory: boolean
+}
+
+export type CountStat = { key: string; count: number }
+
+export type SideStoryInCampaign = {
+  campaignId: string
+  scenarioId: string
+  count: number
+}
+
+export type ScenarioOutcome = { id: string; played: number; won: number }
+
+export type CampaignProgress = {
+  campaignId: string
+  // How many scenarios these runs have completed. The fall from one to the next
+  // is where people stop.
+  scenarios: number
+  games: number
+}
+
+export type AchievementStat = { id: string; earned: number; inProgress: number }
+
+export type GameStats = {
+  populated: boolean
+  refreshedAt: string | null
+  refreshDurationMs: number | null
+  totals: StatTotals
+  campaigns: CampaignStat[]
+  standalones: StandaloneStat[]
+  playerCounts: CountStat[]
+  difficulties: CountStat[]
+  variants: CountStat[]
+  sideStoriesInCampaigns: SideStoryInCampaign[]
+  scenarioOutcomes: ScenarioOutcome[]
+  campaignProgress: CampaignProgress[]
+  achievements: AchievementStat[]
+  // Users who have earned at least one achievement: the denominator that does
+  // not count people who never played as having failed to earn it.
+  achievementUsers: number
+  monthly: CountStat[]
+  // Campaign and scenario code to title, so the panel names things without
+  // loading the card catalogue.
+  names: Record<string, string>
+}
+
+export const fetchGameStats = async (): Promise<GameStats> => {
+  const { data } = await api.get('admin/game-stats')
+  return data
+}
+
+// Rebuilds the view and returns the fresh numbers in the same response.
+export const refreshGameStats = async (): Promise<GameStats> => {
+  const { data } = await api.post('admin/game-stats/refresh', {})
+  return data
+}
+
+// The reason is required: a denial the author cannot act on is worse than silence.
+export const denyCardSetSubmission = async (
+  id: string,
+  reason: string,
+): Promise<CardSetSubmission> => {
+  const { data } = await api.post(`admin/card-set-submissions/${id}/deny`, { reason })
   return data
 }
 
@@ -548,6 +831,30 @@ export const undoPhase = (gameId: string): Promise<void> =>
 
 export const undoRound = (gameId: string): Promise<void> =>
   undoRequest(`arkham/games/${gameId}/undo/round`, UNDO_MULTI_TIMEOUT_MS)
+
+/* Undo back to the game step a log entry was written under: everything from
+ * that entry onwards is reverted. The server refuses a step that is not in the
+ * past, so a stale panel cannot roll a game forwards. */
+export const undoToStep = (gameId: string, step: number): Promise<void> =>
+  undoRequest(`arkham/games/${gameId}/undo/step/${step}`, UNDO_MULTI_TIMEOUT_MS)
+
+/* Say something in the log. A real engine message rather than a side channel,
+ * so it is persisted with a step, reaches the room like any other update, and
+ * the rules that care what you typed -- Carcosa's HASTUR recorder -- can see
+ * it. */
+/* A page of scrollback: the entries immediately older than `beforeSeq`.
+ *
+ * The game payload only ever carries the newest 40, so this is how the rest of
+ * a game's history is reached. */
+export const fetchLogBefore = async (gameId: string, beforeSeq: number): Promise<LogRow[]> => {
+  const { data } = await api.get(`arkham/games/${gameId}/log/before/${beforeSeq}`)
+  return JsonDecoder.array(logRowDecoder, 'LogRow[]').decodePromise(data)
+}
+
+export const sayInLog = (gameId: string, investigatorId: string, text: string): Promise<void> =>
+  /* The null is the speaker's name: the API fills it from the authenticated
+   * session, so sending one here would be ignored anyway. */
+  updateGameRaw(gameId, { tag: 'ChatMessage', contents: [investigatorId, null, text] })
 
 export const importGame = async (formData: FormData, multiplayerVariant: string): Promise<Game> => {
   const { data } = await api.post(`arkham/games/import?multiplayerVariant=${multiplayerVariant}`, formData, { headers: { 'Content-Type': 'multipart/form-data' } })

@@ -36,6 +36,7 @@ import { useDbCardStore } from '@/stores/dbCards'
 
 import DiscoveredRunes from '@/arkham/components/TheDrownedCity/DiscoveredRunes.vue'
 import ArtifactsEarned from '@/arkham/components/TheDrownedCity/ArtifactsEarned.vue'
+import MemoriesRecovered from '@/arkham/components/TheInnsmouthConspiracy/MemoriesRecovered.vue'
 import ResidentNotes from '@/arkham/components/TheFeastOfHemlockVale/ResidentNotes.vue'
 import AreasSurveyed from '@/arkham/components/TheFeastOfHemlockVale/AreasSurveyed.vue'
 import DayTimeTracker from '@/arkham/components/TheFeastOfHemlockVale/DayTimeTracker.vue'
@@ -116,6 +117,13 @@ const homebrewScope = computed(() => homebrewScopeFromCampaignId(props.game.camp
 const additionalLogSections = computed(() => campaignDefinition.value?.additional ?? [])
 const additionalTabId = (index: number): `additional:${number}` => `additional:${index}`
 const isAdditionalTab = (tab: LogTab): tab is `additional:${number}` => tab.startsWith('additional:')
+
+// Memories Recovered gets its own checklist (and its own debug toggle), so it is
+// kept out of the generic recorded-sets list below.
+const MEMORIES_SET_KEY = 'theInnsmouthConspiracy.key.memoriesRecovered'
+const showMemoriesRecovered = computed(() =>
+  props.game.campaign?.id === '07' || props.game.campaign?.id === ':return-to-the-innsmouth-conspiracy'
+)
 
 const hemlockDayTime = computed(() => {
   if (props.game.campaign?.id !== '10') return null
@@ -686,17 +694,6 @@ const recordableType = (value: any): string | undefined => value?.recordType
 const displayRecordValue = (key: string, value: any): string => {
   const contents: string | undefined = value.contents || value.recordVal?.contents
 
-  /* A `SomeRecorded` names its own recordable type, so an entry that is not a card
-   * code says so and must not be looked up as one -- that is what put "unknown" on
-   * screen for every trait a custom card recorded. Checked before the per-key
-   * branches below so it cannot be reached by a key nobody has hardcoded. */
-  const recordType = recordableType(value)
-  if (recordType && recordType !== 'RecordableCardCode') {
-    if (contents === undefined || contents === null) return ''
-    // A trait, a memento, a memory: all written as their constructor name.
-    return typeof contents === 'string' ? splitCamelCase(contents) : String(contents)
-  }
-
   if (key === 'theCircleUndone.key.mementosDiscovered') return contents ? toCapitalizedWords(contents) : ''
 
   if (key === 'theInnsmouthConspiracy.key.memoriesRecovered' && contents) {
@@ -730,6 +727,18 @@ const displayRecordValue = (key: string, value: any): string => {
   }
 
   if (isSeal(key)) return ''
+
+  /* A `SomeRecorded` names its own recordable type, so an entry that is not a card
+   * code says so and must not be looked up as one -- that is what put "unknown" on
+   * screen for every trait a custom card recorded. Below the per-key branches, so a
+   * key with a locale entry keeps it -- a memory is a `RecordableMemory`, and the
+   * generic path printed "AMeeting With Thomas Dawson". */
+  const recordType = recordableType(value)
+  if (recordType && recordType !== 'RecordableCardCode') {
+    if (contents === undefined || contents === null) return ''
+    // A trait, a memento, a memory: all written as their constructor name.
+    return typeof contents === 'string' ? splitCamelCase(contents) : String(contents)
+  }
 
   const code = contents
   return code ? cardCodeToTitle(code) : ''
@@ -1052,11 +1061,19 @@ onUnmounted(() => {
 
           <ArtifactsEarned v-if="game.campaign?.id === '11'" :log="selectedLog" :game-id="game.id" @refresh="emit('refresh')" />
           <DiscoveredRunes v-if="game.campaign?.id === '11'" :log="selectedLog" :game-id="game.id" @refresh="emit('refresh')" />
+          <MemoriesRecovered
+            v-if="showMemoriesRecovered"
+            :log="selectedLog"
+            :campaign-id="game.campaign?.id"
+            :game-id="game.id"
+            :displayRecordValue="displayRecordValue"
+            @refresh="emit('refresh')"
+          />
 
           <!-- Campaign recorded sets + counts -->
           <CampaignLogRecordedSets
             :game="game"
-            :entries="(Object.entries(recordedSets) as [string, any[]][]).filter(([k]) => !k.toLowerCase().includes('discoveredglyph'))"
+            :entries="(Object.entries(recordedSets) as [string, any[]][]).filter(([k]) => !k.toLowerCase().includes('discoveredglyph') && !(showMemoriesRecovered && k === MEMORIES_SET_KEY))"
             :counts="recordedCounts"
             :countHistory="recordCountHistory"
             :displayRecordValue="displayRecordValue"
@@ -1184,6 +1201,8 @@ onUnmounted(() => {
   background: transparent;
   border: 0;
   border-bottom: 2px solid transparent;
+  /* The global button radius would curl the active underline up at both ends. */
+  border-radius: 0;
   margin-bottom: -1px;
   padding: 10px 18px;
   font-family: teutonic, sans-serif;

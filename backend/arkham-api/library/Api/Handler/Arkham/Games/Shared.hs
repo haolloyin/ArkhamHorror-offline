@@ -59,6 +59,8 @@ import Arkham.Id
 import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (Investigator, investigatorPlacement, investigatorPlayerId)
 import Arkham.Location.CardDefs.TheBlobThatAteEverythingELSE qualified as Locations
+import Arkham.Log.Entry
+import Arkham.Log.Narrator (emptyNarrator, flushNarrator)
 import Arkham.Message
 import Arkham.Name
 import Arkham.Phase (Phase)
@@ -72,7 +74,8 @@ import Arkham.Target (Target (InvestigatorTarget))
 import Arkham.Treachery.Types (treacheryPlacement)
 import Conduit
 import Control.Concurrent.MVar
-import Control.Concurrent.STM.TBQueue (readTBQueue)
+import Control.Concurrent.STM (retry)
+import Control.Concurrent.STM.TBQueue (tryReadTBQueue)
 import Control.Lens (view)
 import Control.Monad.Random (mkStdGen)
 import Data.Aeson.Types (parse)
@@ -89,6 +92,9 @@ import Database.Esqueleto.Experimental hiding (update, (=.))
 import Database.Redis (Connection, RedisChannel, publish, runRedis)
 import Entity.Answer
 import Entity.Arkham.GameRaw
+
+import Data.Aeson qualified as Aeson
+import Entity.Arkham.LogEntry
 import Entity.Arkham.Step
 import Import hiding (delete, exists, on, (==.), (>=.))
 import Import qualified as P
@@ -198,7 +204,6 @@ withKeepAlive inner = do
 gameStream :: ArkhamGameId -> WebSocketsT Handler ()
 gameStream gameId = catchingConnectionException $ withKeepAlive do
   userId <- lift getRequestUserId
-  customCards <- lift $ userCustomCards userId
   let cleanup room subId = do
         unsubscribeFromRoom room subId
         lift $ decrRoomMember gameId
@@ -218,33 +223,58 @@ gameStream gameId = catchingConnectionException $ withKeepAlive do
 
   bracket acquire (\(room, subId, _) -> cleanup room subId) \(room, _subId, sub) -> do
     let broadcast = broadcastToRoom room
-    let Subscriber {subQueue, subOverflow} = sub
-    let sender =
-          forever
-            ( do
-                msg <- atomically do
-                  overflowed <- readTVar subOverflow
-                  if overflowed
-                    then throwSTM SlowSubscriber
-                    else readTBQueue subQueue
-                sendTextData msg
-            )
-            `catch` (\(_ :: SlowSubscriber) -> pure ())
-
     race_
-      sender
-      (runConduit $ sourceWS .| mapM_C (handleData customCards room broadcast))
+      (runSubscriberSender sub)
+      (runConduit $ sourceWS .| mapM_C (handleData userId room broadcast))
  where
-  handleData customCards room broadcast dataPacket = lift do
+  handleData userId room broadcast dataPacket = lift do
     case eitherDecodeStrict dataPacket of
       Left err -> $(logWarn) $ tshow err
-      Right answer ->
+      Right answer -> do
+        {- Read per answer, not once per connection. 'registerCustomCards' is
+        left-biased, so a snapshot taken when the socket opened puts itself back
+        over the live library on every action -- a card-builder save was invisible
+        in an open tab until it reconnected, which is the opposite of what the
+        overlay in 'updateGame' is for. -}
+        customCards <- userCustomCards userId
         updateGame customCards answer gameId (Just room) `catch` \(e :: SomeException) -> do
           liftIO $ broadcast $ encode $ GameError $ tshow e
 
-data SlowSubscriber = SlowSubscriber
+{- | Why a subscriber's sender loop ended.
+
+Either way the socket goes with it: the loop is the only thing feeding the
+connection, so returning from it drops out of the 'race_' it is running in and
+runs the bracket's cleanup.
+-}
+data SubscriberStopped
+  = -- | Fell far enough behind that buffering for it was abandoned.
+    SlowSubscriber
+  | -- | The room was deleted out from under it.
+    RoomWasClosed
   deriving stock Show
   deriving anyclass Exception
+
+{- | Feed one websocket from its subscriber queue until it ends.
+
+A closed subscriber drains what is already queued before it stops, so the
+'RoomClosed' notice broadcast just before the room was deleted is the last thing
+the client receives rather than a casualty of the teardown.
+-}
+runSubscriberSender :: Subscriber -> WebSocketsT Handler ()
+runSubscriberSender Subscriber {subQueue, subOverflow, subClosed} =
+  forever
+    ( do
+        msg <- atomically do
+          overflowed <- readTVar subOverflow
+          when overflowed $ throwSTM SlowSubscriber
+          tryReadTBQueue subQueue >>= \case
+            Just m -> pure m
+            Nothing -> do
+              closed <- readTVar subClosed
+              if closed then throwSTM RoomWasClosed else retry
+        sendTextData msg
+    )
+    `catch` (\(_ :: SubscriberStopped) -> pure ())
 
 catchingConnectionException :: WebSocketsT Handler () -> WebSocketsT Handler ()
 catchingConnectionException f =
@@ -268,18 +298,10 @@ streamRoom joinRoom onLeave = catchingConnectionException $ withKeepAlive do
   let cleanup room subId = do
         unsubscribeFromRoom room subId
         lift onLeave
-  bracket (lift joinRoom) (\(room, subId, _) -> cleanup room subId) \(_room, _subId, sub) -> do
-    let Subscriber {subQueue, subOverflow} = sub
-    let sender =
-          forever
-            ( do
-                msg <- atomically do
-                  overflowed <- readTVar subOverflow
-                  if overflowed then throwSTM SlowSubscriber else readTBQueue subQueue
-                sendTextData msg
-            )
-            `catch` (\(_ :: SlowSubscriber) -> pure ())
-    race_ sender (runConduit $ sourceWS .| mapM_C (\(_ :: ByteString) -> pure ()))
+  bracket (lift joinRoom) (\(room, subId, _) -> cleanup room subId) \(_room, _subId, sub) ->
+    race_
+      (runSubscriberSender sub)
+      (runConduit $ sourceWS .| mapM_C (\(_ :: ByteString) -> pure ()))
 
 data GetGameJson = GetGameJson
   { playerId :: Maybe PlayerId
@@ -335,12 +357,14 @@ data GameDetails = GameDetails
   deriving stock (Show, Generic)
   deriving anyclass ToJSON
 
-data GameDetailsEntry = FailedGameDetails Text | SuccessGameDetails GameDetails
+data GameDetailsEntry
+  = FailedGameDetails ArkhamGameId Text Text
+  | SuccessGameDetails GameDetails
   deriving stock (Show, Generic)
 
 instance ToJSON GameDetailsEntry where
   toJSON = \case
-    FailedGameDetails t -> object ["error" .= t]
+    FailedGameDetails gid name t -> object ["id" .= gid, "name" .= name, "error" .= t]
     SuccessGameDetails gd -> toJSON gd
 
 {- | A broadcast callback. Used to fan out log lines and game-state updates
@@ -395,14 +419,21 @@ updateGame customCards response gameId mRoom = do
   let rejectOrganizerGate action =
         action `catch` \EpicOrganizerGateBlocked ->
           permissionDenied "This event is waiting for the organizer's clue allocation"
-  (ArkhamGame {..}, oldLogEntries, updatedLog, mSharedUpdate, actAdvanced, newAchievements, mPhaseChanged) <- rejectOrganizerGate $ runDB $ atomicallyWithGame gameId \g@ArkhamGame {..} -> do
+  ( ArkhamGame {..}
+    , publishLog
+    , mSharedUpdate
+    , actAdvanced
+    , newAchievements
+    , mPhaseChanged
+    ) <- rejectOrganizerGate $ runDB $ atomicallyWithGame gameId \g@ArkhamGame {..} -> do
     -- Read the prior log from the per-room cache when it's in sync with
     -- the just-locked game's step; otherwise fall back to the DB. Avoids
-    -- the 217-row-avg getGameLog read on every action in the common case.
+    -- the 217-row-avg log read on every action in the common case, and the
+    -- fallback is now a bounded tail rather than the whole history.
     oldLogEntries <-
       liftIO (lookupCachedLog mRoom arkhamGameStep) >>= \case
         Just entries -> pure entries
-        Nothing -> gameLogToLogEntries <$> getGameLog gameId Nothing
+        Nothing -> gameLogToLogEntries <$> getGameLogTail gameId gameLogTailSize
 
     mLastStep <- getBy $ UniqueStep gameId arkhamGameStep
     let
@@ -419,10 +450,11 @@ updateGame customCards response gameId mRoom = do
 
     let playerId = fromMaybe activePlayer (answerPlayer response)
 
-    logRef <- newIORef []
+    pendingLogRef <- newIORef []
     reply <- handleAnswer gameJson playerId response
     case reply of
-      Unhandled _ -> pure (g, oldLogEntries, [], Nothing, False, [], [])
+      -- Nothing happened, so the log to publish is the one already there.
+      Unhandled _ -> pure (g, oldLogEntries, Nothing, False, [], [])
       Handled answerMessages -> do
         -- Epic Multiplayer: if this game is a group within an event, build an
         -- EpicEnv so Shared* messages emitted during the action are captured as
@@ -464,6 +496,9 @@ updateGame customCards response gameId mRoom = do
         -- and lets the worker return to the pool.
         -- Above-the-table achievements: collect EarnAchievement messages via
         -- the (otherwise unused) runMessages message logger; persisted below.
+        -- Narrator state for this action only: it accumulates across the
+        -- messages of one multi-message event and is thrown away after.
+        narratorRef <- newIORef emptyNarrator
         achievementsRef <- newIORef []
         achievementsByRef <- newIORef []
         achievementProgressRef <- newIORef []
@@ -479,8 +514,13 @@ updateGame customCards response gameId mRoom = do
             Begin phase -> modifyIORef' enteredPhasesRef (phase :)
             _ -> pure ()
         mResult <- liftIO $ timeout runMessagesTimeoutMicros do
-          runGameApp (GameApp gameRef queueRef genRef (handleMessageLog logRef broadcast) mEpicEnv) do
-            runMessages (gameIdToText gameId) (Just collectFromRun)
+          runGameApp (GameApp gameRef queueRef genRef (handleMessageLog pendingLogRef broadcast) mEpicEnv) do
+            runMessages
+              (gameIdToText gameId)
+              RunObservers {observeMessage = Just collectFromRun, observeNarration = Just narratorRef}
+            -- Anything the narrator was still holding for a following entry that
+            -- never came gets said now, rather than being dropped with the ref.
+            flushNarrator narratorRef
         case mResult of
           Just () -> pure ()
           Nothing -> liftIO $ throwIO $ RunMessagesTimeout gameId runMessagesTimeoutMicros
@@ -497,7 +537,12 @@ updateGame customCards response gameId mRoom = do
 
         updatedQueue <- readIORef $ queueToRef queueRef
         -- handleMessageLog conses for O(1) inserts; reverse here to restore order.
-        updatedLog <- reverse <$> readIORef logRef
+        pendingRows <- reverse <$> readIORef pendingLogRef
+        -- Stamp the structured entries with sequence numbers continuing from
+        -- whatever this game already has, then write them back to the ref so
+        -- the post-commit publish sends the stamped ones.
+        firstSeq <- nextLogSeq gameId
+        let stampedRows = stampPendingRows firstSeq pendingRows
         enteredPhases <- reverse <$> readIORef enteredPhasesRef
 
         now <- liftIO getCurrentTime
@@ -519,7 +564,30 @@ updateGame customCards response gameId mRoom = do
                 arkhamGameCreatedAt
                 now
         replace gameId g'
-        insertMany_ $ map (newLogEntry gameId arkhamGameStep now) updatedLog
+        {- In order, one row at a time, NOT every insert then every retraction.
+
+        A narration may retract its own previous line and immediately write the
+        replacement -- a record count superseding the last one does exactly that
+        -- and batching the inserts ahead of the deletes would delete the new
+        row along with the old, because they share a tag. -}
+        let retractions = [tag | PendingRetract tag <- stampedRows]
+        for_ stampedRows \row -> case row of
+          PendingRetract tag -> retractTaggedRows gameId tag
+          _ -> traverse_ insert_ (pendingRowToEntity gameId arkhamGameStep now row)
+        {- The log to publish, already complete -- NOT "this action's new rows".
+
+        These two branches used to return different things and the caller
+        prepended the previous tail to both, which published everything twice
+        the moment a retraction made this the whole tail. One value, one
+        meaning, is what stops that coming back. -}
+        publishLog <-
+          if null retractions
+            then
+              pure
+                $ lastN gameLogTailSize
+                $ oldLogEntries
+                <> mapMaybe (pendingRowToLogRow arkhamGameStep) stampedRows
+            else gameLogToLogEntries <$> getGameLogTail gameId gameLogTailSize
         void
           $ upsertBy
             (UniqueStep gameId (arkhamGameStep + 1))
@@ -612,8 +680,7 @@ updateGame customCards response gameId mRoom = do
 
         pure
           ( g'
-          , oldLogEntries
-          , updatedLog
+          , publishLog
           , mSharedUpdate
           , actAdvanced
           , newAchievements
@@ -621,9 +688,8 @@ updateGame customCards response gameId mRoom = do
               Game {gamePhase = newPhase} -> phaseTransitions oldPhase newPhase enteredPhases
           )
 
-  -- Update the per-room cache after the DB transaction has committed,
-  -- so the cache is never ahead of durably-stored state.
-  let publishLog = oldLogEntries <> updatedLog
+  -- Update the per-room cache after the DB transaction has committed, so the
+  -- cache is never ahead of durably-stored state.
   liftIO $ writeCachedLog mRoom arkhamGameStep publishLog
 
   -- Publish shared state before the acting game's parked question. In particular,
@@ -711,7 +777,7 @@ applyAchievementProgress uid achievement items gameId now = do
 game's current step. Returns Nothing on a mismatch (so the caller refetches
 from the DB and refreshes the cache).
 -}
-lookupCachedLog :: Maybe Room -> Int -> IO (Maybe [Text])
+lookupCachedLog :: Maybe Room -> Int -> IO (Maybe [LogRow])
 lookupCachedLog Nothing _ = pure Nothing
 lookupCachedLog (Just room) currentStep = atomically do
   cachedVal <- readTVar (roomLogCache room)
@@ -723,7 +789,7 @@ lookupCachedLog (Just room) currentStep = atomically do
 post-update step; the next action will read the game at that step and find
 a consistent cache.
 -}
-writeCachedLog :: Maybe Room -> Int -> [Text] -> IO ()
+writeCachedLog :: Maybe Room -> Int -> [LogRow] -> IO ()
 writeCachedLog Nothing _ _ = pure ()
 writeCachedLog (Just room) newStep entries =
   atomically $ writeTVar (roomLogCache room) $ Just $ RoomLogCache newStep entries
@@ -734,18 +800,116 @@ newtype RawGameJsonPut = RawGameJsonPut
   deriving stock (Show, Generic)
   deriving anyclass FromJSON
 
+{- | One thing the log accumulated during an action, in the order it happened.
+
+Both kinds are collected into a single list rather than two, because during the
+migration an action can produce both and splitting them would reorder the log:
+all the legacy lines, then all the structured ones. Each becomes exactly one
+'ArkhamLogEntry' row.
+-}
+data PendingLogRow
+  = -- | A legacy 'ClientText': the brace-DSL string, with a NULL payload.
+    PendingText Text
+  | {- | A structured entry. Its row carries both the payload and a flat
+    rendering in @body@, so it is one row, not two.
+    -}
+    PendingEntry LogEntry
+  | {- | Take back whatever was written under this tag. Writes no row of its
+    own; see 'retractTaggedRows'.
+    -}
+    PendingRetract Text
+
+{- | The last @n@ elements. ClassyPrelude has no list @takeEnd@, and
+Data.Text's shadows the name.
+-}
+lastN :: Int -> [a] -> [a]
+lastN n xs = drop (length xs - n) xs
+
+{- | Number the structured entries from @start@, leaving legacy text rows alone.
+
+Legacy rows keep a NULL seq: they are strictly older than any structured entry
+in the same game, so the client can order by (step, id) as it does today and use
+seq only as identity for the rows that have one.
+-}
+stampPendingRows :: Int -> [PendingLogRow] -> [PendingLogRow]
+stampPendingRows = go
+ where
+  go _ [] = []
+  go n (PendingText t : rest) = PendingText t : go n rest
+  go n (PendingEntry e : rest) = PendingEntry e {logEntrySeq = n} : go (n + 1) rest
+  go n (PendingRetract t : rest) = PendingRetract t : go n rest
+
+{- | One durable row per pending row.
+
+Plain inserts: the log is append-only again. An entry that belongs to a block
+carries that block's id and is grouped by the renderer, so nothing here has to
+find and rewrite an earlier row -- which is what made the publish path, the
+client's change detection and undo all subtly wrong in turn.
+-}
+pendingRowToEntity :: ArkhamGameId -> Int -> UTCTime -> PendingLogRow -> Maybe ArkhamLogEntry
+pendingRowToEntity gameId step now = \case
+  PendingText t -> Just $ newLogEntry gameId step now t
+  PendingEntry e -> Just $ newStructuredLogEntry gameId step now e
+  PendingRetract _ -> Nothing
+
+{- | Delete the rows carrying this tag.
+
+Scoped to the recent tail rather than the whole history: a retraction follows
+what it retracts within moments -- a card committed and then uncommitted in the
+same test -- so anything older is not a candidate, and this stays one bounded,
+indexed read instead of a scan of the game.
+-}
+retractTaggedRows :: MonadIO m => ArkhamGameId -> Text -> SqlPersistT m ()
+retractTaggedRows gameId tag = do
+  recent <-
+    P.selectList
+      [ArkhamLogEntryArkhamGameId P.==. gameId]
+      [P.Desc ArkhamLogEntryStep, P.Desc ArkhamLogEntryId, P.LimitTo gameLogTailSize]
+  let
+    matches (Entity rowId row) = case arkhamLogEntryPayload row of
+      Just v
+        | Aeson.Success (e :: LogEntry) <- Aeson.fromJSON v
+        , e.logEntryTag == Just tag ->
+            Just rowId
+      _ -> Nothing
+  for_ (mapMaybe matches recent) P.delete
+
+{- | A pending row as the client sees it, without a round trip to the DB. The
+step is the one the row will be written under, so a live entry is as undoable
+as one read back later.
+-}
+pendingRowToLogRow :: Int -> PendingLogRow -> Maybe LogRow
+pendingRowToLogRow step = \case
+  PendingText t -> Just $ LogRowLegacy t (Just step)
+  PendingEntry e -> Just $ LogRowStructured (atLogStep step e)
+  PendingRetract _ -> Nothing
+
 handleMessageLog
-  :: MonadIO m => IORef [Text] -> Broadcast -> ClientMessage -> m ()
-handleMessageLog logRef broadcast msg = liftIO $ do
+  :: MonadIO m => IORef [PendingLogRow] -> Broadcast -> ClientMessage -> m ()
+handleMessageLog pendingLogRef broadcast msg = liftIO $ case msg of
+  {- Accumulated, NOT broadcast. The action's entries reach the client in the
+  'GameUpdate' that follows, inside the game payload's log tail -- one frame
+  for the whole action rather than one per line, which is what made a scenario
+  setup hundreds of separately deflated ~100 byte frames. It also means the
+  log and the board move together instead of the log racing ahead. -}
+  ClientLogEntry e -> cons (PendingEntry e)
+  ClientRetractLog tag -> cons (PendingRetract tag)
+  _ -> do
+    for_ (toClientText msg) $ \txt -> cons (PendingText txt)
+    broadcast (encode $ toGameMessage msg)
+ where
   -- Cons in O(1); the caller reverses once when reading the IORef.
   -- The previous (logs <> [txt]) was O(n) per call -> O(n^2) per action,
   -- which mattered during scenario setup with hundreds of log lines.
-  for_ (toClientText msg) $ \txt ->
-    atomicModifyIORef' logRef (\logs -> (txt : logs, ()))
-  broadcast (encode $ toGameMessage msg)
- where
+  cons row = atomicModifyIORef' pendingLogRef (\rows -> (row : rows, ()))
   toGameMessage = \case
     ClientText txt -> GameMessage txt
+    -- Unreachable: handled above, and deliberately has no wire message of its
+    -- own. Present so the case stays total and a new ClientMessage constructor
+    -- is a compile error rather than a silently dropped log line.
+    ClientLogEntry e -> GameMessage (logEntryToText e)
+    -- Unreachable, as above: accumulated, never broadcast on its own.
+    ClientRetractLog tag -> GameMessage tag
     ClientError txt -> GameError txt
     ClientUI txt -> GameUI txt
     ClientAudio txt -> GameAudio txt
@@ -759,6 +923,10 @@ handleMessageLog logRef broadcast msg = liftIO $ do
     ClientCustomCardIssue cc detail payload -> GameCustomCardIssue cc detail payload
   toClientText = \case
     ClientText txt -> Just txt
+    -- Never reached (see above), and would be wrong anyway: a structured entry
+    -- already becomes its own row via PendingEntry.
+    ClientLogEntry {} -> Nothing
+    ClientRetractLog {} -> Nothing
     ClientError {} -> Nothing
     ClientUI {} -> Nothing
     ClientAudio {} -> Nothing
@@ -942,7 +1110,7 @@ runMessagesInGroupCore p msgs gid = do
         genRef <- liftIO $ newIORef (mkStdGen (gameSeed arkhamGameCurrentData))
         liftIO
           $ runGameApp (GameApp gameRef queueRef genRef (pure . const ()) Nothing)
-          $ runMessages (gameIdToText gid) Nothing
+          $ runMessages (gameIdToText gid) noRunObservers
         updatedGame <- liftIO $ readIORef gameRef
         -- The queue left after the run: empty for a pure board sync (it drains to
         -- empty), or the continuation of a question the run parked (e.g. the
@@ -1353,6 +1521,20 @@ settleOrganizerAdvance eid stage spendByOrdinal = do
     -- (3) broadcast LAST: clears AwaitingOrganizer -> lifts the overlay
     broadcastSharedToEvent eid newState
 
+{- | 'toGameDetailsEntry' is lazy, and an unknown card code is a pure 'error'
+rather than an aeson failure, so one unloadable game used to 500 the whole
+list. Force the encoding here and report the throw as the same failed entry a
+decode failure produces, so the rest of the list still renders and the broken
+game can be deleted.
+-}
+tryGameDetailsEntry :: MonadIO m => Entity ArkhamGameRaw -> Int -> m GameDetailsEntry
+tryGameDetailsEntry e@(Entity gameId game) playerCount = liftIO do
+  let entry = toGameDetailsEntry e playerCount
+  result <- try @_ @SomeException $ evaluate $ BSL.length $ Aeson.encode entry
+  pure $ case result of
+    Right _ -> entry
+    Left err -> FailedGameDetails (coerce gameId) (arkhamGameRawName game) (tshow err)
+
 toGameDetailsEntry :: Entity ArkhamGameRaw -> Int -> GameDetailsEntry
 toGameDetailsEntry (Entity gameId game) playerCount =
   case fromJSON @Game (arkhamGameRawCurrentData game) of
@@ -1400,7 +1582,7 @@ toGameDetailsEntry (Entity gameId game) playerCount =
             , multiplayerVariant = variant
             , hasOpenSeats = variant == WithFriends && playerCount < length investigators
             }
-    Error e -> FailedGameDetails ("Failed to load " <> tshow gameId <> ": " <> T.pack e)
+    Error e -> FailedGameDetails (coerce gameId) (arkhamGameRawName game) (T.pack e)
  where
   campaignOtherInvestigators j = case parse (withObject "" (.: "otherCampaignAttrs")) j of
     Error _ -> mempty
@@ -1417,9 +1599,23 @@ deleteRoom = forceDeleteRoom appGameRooms
 deleteEventRoom :: ArkhamEpicEventId -> Handler ()
 deleteEventRoom = forceDeleteRoom appEventRooms
 
+{- | Delete a room and evict everyone on it.
+
+Dropping the map entry alone does not get rid of a room: every websocket joins
+through 'joinRoomIn', which recreates one on demand, so a client still holding
+the socket -- or reconnecting, which the client does automatically -- puts it
+straight back, now with no game behind it. The sockets have to go too.
+
+Order matters. The notice is broadcast while the subscribers are still reading,
+then they are closed; each drains its queue before stopping, so the notice is
+the last thing delivered rather than something racing the teardown.
+-}
 forceDeleteRoom :: Ord k => (App -> MVar (Map k Room)) -> k -> Handler ()
 forceDeleteRoom roomsOf key = do
   roomsVar <- getsYesod roomsOf
   liftIO $ modifyMVar_ roomsVar \rooms -> do
-    for_ (Map.lookup key rooms) $ tryRedis_ . join . readTVarIO . roomUnsubscribe
+    for_ (Map.lookup key rooms) \room -> do
+      broadcastToRoom room $ encode $ RoomClosed "deleted"
+      closeRoomSubscribers room
+      tryRedis_ . join . readTVarIO $ roomUnsubscribe room
     pure $ Map.delete key rooms

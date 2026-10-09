@@ -5,6 +5,7 @@ module Arkham.ModifierData (
 import Arkham.Prelude
 
 import Arkham.Campaigns.TheScarletKeys.Key.Id
+import Arkham.ChaosBag.RevealStrategy (RevealStrategy)
 import Arkham.ChaosToken.Types (ChaosTokenFace)
 import Arkham.Id
 import Arkham.Json
@@ -20,6 +21,9 @@ instance ToJSON ModifierData where
 
 data LocationMetadata = LocationMetadata
   { lmConnectedLocations :: [LocationId]
+  , -- The subset of the above a modifier granted rather than the card printing, which
+    -- the map draws from the single location instead of from its group's box.
+    lmGrantedConnections :: [LocationId]
   , lmInvestigators :: [InvestigatorId]
   , lmEnemies :: [EnemyId]
   , lmTreacheries :: [TreacheryId]
@@ -123,6 +127,8 @@ data SkillTestMetadata = SkillTestMetadata
   , stmSkills :: [SkillType]
   , stmModifiers :: [Modifier]
   , stmValueBreakdown :: Maybe SkillTestValueBreakdown
+  , -- The reveal strategy as it stands; see 'getSkillTestRevealStrategy'.
+    stmRevealStrategy :: RevealStrategy
   }
   deriving stock (Show, Eq, Generic)
 

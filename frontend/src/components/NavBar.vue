@@ -6,7 +6,6 @@ import type { User } from '@/types'
 import { OnClickOutside } from '@vueuse/components'
 import { storeToRefs } from 'pinia'
 import { useSettings } from '@/stores/settings'
-import { isDevBuild } from '@/arkham/displayRules'
 
 const expanded = ref(false);
 const mobileOpen = ref(false);
@@ -30,6 +29,12 @@ const CUSTOM_CARDS_SUBMENU = [
     icon: 'store',
     covers: ['CardMarketplace', 'CardMarketplaceSet'],
   },
+  {
+    name: 'MyListings',
+    label: 'customCardSets.myListings',
+    icon: 'rectangle-list',
+    covers: ['MyListings'],
+  },
 ]
 
 /* The marketplace is its own top-level route rather than a child of the builder's,
@@ -42,10 +47,8 @@ const inCustomCards = computed(() =>
   CUSTOM_CARDS_SUBMENU.some((entry) => entry.covers.includes(routeName.value)),
 )
 
-/* `customCardsEnabled` is a setting anyone can turn on, but the marketplace is
- * dev-only for now, so the bar needs both. */
 const submenu = computed(() =>
-  inCustomCards.value && customCardsEnabled.value && isDevBuild() ? CUSTOM_CARDS_SUBMENU : null,
+  inCustomCards.value && customCardsEnabled.value ? CUSTOM_CARDS_SUBMENU : null,
 )
 
 async function logout() {

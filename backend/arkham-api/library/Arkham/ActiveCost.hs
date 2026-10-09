@@ -55,6 +55,10 @@ import Arkham.Helpers.Location (getLocationOf)
 import Arkham.Helpers.Log
 import Arkham.Helpers.Message
 import Arkham.Helpers.Modifiers
+
+-- Helpers.Modifiers re-exports ModifierType but not Modifier, and the surcharge
+-- attribution needs the wrapper's fields.
+
 import Arkham.Helpers.Query
 import Arkham.Helpers.Ref
 import Arkham.Helpers.Scenario
@@ -75,6 +79,7 @@ import Arkham.Matcher hiding (
   SkillCard,
  )
 import Arkham.Message.Lifted qualified as Lifted
+import Arkham.Modifier (Modifier (..))
 import Arkham.Name
 import Arkham.Prelude
 import Arkham.Projection
@@ -119,20 +124,38 @@ costSealedChaosTokensL :: Lens' ActiveCost [ChaosToken]
 costSealedChaosTokensL = lens activeCostSealedChaosTokens $ \m x -> m {activeCostSealedChaosTokens = x}
 
 getActionCostModifier :: HasGame m => ActiveCost -> m Int
-getActionCostModifier ac = do
+getActionCostModifier = fmap (sum . map snd) . getActionCostSurcharges
+
+{- | The same additional action costs 'getActionCostModifier' sums, but each
+still paired with the card that imposed it.
+
+Attribution has to happen here, at payment, and cannot be recovered afterwards:
+'FirstOneOfPerformed' -- Frozen in Fear, Frenzied Hunger, Prismatic Phenomenon
+-- asks that none of its actions has been performed yet, which stops being true
+the instant the action this cost is being paid for is recorded. Ask later and
+every one of them reports nothing.
+-}
+getActionCostSurcharges :: HasGame m => ActiveCost -> m [(Source, Int)]
+getActionCostSurcharges ac = do
   let iid = ac.investigator
   takenActions <- field InvestigatorActionsTaken iid
   performedActions <- field InvestigatorActionsPerformed iid
-  modifiers <- getModifiers iid
-  pure $ foldr (applyModifier takenActions performedActions) 0 modifiers
+  -- getModifiers', not getModifiers: the unprimed one hands back bare
+  -- ModifierTypes, and the source is the whole point here.
+  modifiers <- getModifiers' iid
+  pure $ mapMaybe (surcharge takenActions performedActions) modifiers
  where
-  applyModifier takenActions performedActions (AdditionalActionCostOf match m) n =
+  surcharge takenActions performedActions m = case modifierType m of
     -- For cards we've already calculated the cost as an additional cost for
     -- the action specifically
-    case ac.target of
-      ForCard {} -> n
-      _ -> if any (matchTarget takenActions performedActions match) ac.actions then n + m else n
-  applyModifier _ _ _ n = n
+    AdditionalActionCostOf match n | not (isForCard ac.target) -> do
+      guard $ n /= 0
+      guard $ any (matchTarget takenActions performedActions match) ac.actions
+      pure (modifierSource m, n)
+    _ -> Nothing
+  isForCard = \case
+    ForCard {} -> True
+    _ -> False
 
 countAdditionalActionPayments :: Payment -> Int
 countAdditionalActionPayments AdditionalActionPayment = 1
@@ -403,6 +426,9 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
     CostOnlyWhen cr cost' -> do
       ok <- passesCriteria iid Nothing c.source c.source c.windows cr
       if ok then payCost msg c iid skipAdditionalCosts cost' else pure c
+    CostWhen cr cost' -> do
+      ok <- passesCriteria iid Nothing c.source c.source c.windows cr
+      if ok then payCost msg c iid skipAdditionalCosts cost' else pure c
     CostWhenTreachery mtchr cost' -> do
       hasTreachery <- selectAny mtchr
       if hasTreachery
@@ -428,6 +454,9 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
         else payCost msg c iid skipAdditionalCosts cost'
     DiscardEncounterUntilFirstCost requester matcher -> do
       push $ DiscardUntilFirst iid requester Deck.EncounterDeck matcher
+      pure c
+    CrossOffRecordCost key n -> do
+      push $ IncrementRecordCountForInvestigator iid key (negate n)
       pure c
     GloriaCost -> do
       mtarget <- getSkillTestTarget
@@ -573,11 +602,13 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
       push $ Exhaust (mkExhaustion c.source target)
       withPayment $ ExhaustPayment [target]
     ExhaustAssetCost matcher -> do
-      assets <- select $ matcher <> AssetReady
+      -- `getCanAffordCost` resolves `You` against the paying investigator, so the
+      -- payment step has to as well or an affordable cost offers nothing to click.
+      assets <- select $ replaceYouMatcher iid matcher <> AssetReady
       push $ chooseOne player $ targetLabels assets $ only . pay . exhaust
       pure c
     ExhaustXAssetCost matcher -> do
-      assets <- select $ matcher <> AssetReady
+      assets <- select $ replaceYouMatcher iid matcher <> AssetReady
       push
         $ chooseSome1 player "Done exhausting"
         $ targetLabels assets
@@ -693,7 +724,7 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
       pushAll [DiscardedCost target, toDiscardBy iid source target]
       withPayment $ DiscardPayment [(zone, card)]
     DiscardAssetCost matcher -> do
-      assets <- select (matcher <> DiscardableAsset)
+      assets <- select (replaceYouMatcher iid matcher <> DiscardableAsset)
       push $ chooseOneSourced $ targetLabels assets $ only . pay . discardCost
       pure c
     DiscardRandomCardCost -> do
@@ -1128,9 +1159,9 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
         _ -> error "Unhandled active cost target for AdditionalActionsCostThatReducesResourceCostBy"
       pure c
     ActionCost x -> do
-      costModifier' <- if skipAdditionalCosts then pure 0 else getActionCostModifier c
+      surcharges <- if skipAdditionalCosts then pure [] else getActionCostSurcharges c
       let
-        modifiedActionCost = max 0 (x + costModifier')
+        modifiedActionCost = max 0 (x + sum (map snd surcharges))
         actions' = case c.target of
           ForAbility a -> a.actions
           ForCard {} -> c.actions
@@ -1138,6 +1169,8 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
         source' = case activeCostTarget c of
           ForAbility a -> toSource a
           _ -> c.source
+      -- Announced before the spend, while the surcharge is still attributable.
+      pushAll [AdditionalCostPaid iid src (ActionCost n) | (src, n) <- surcharges]
       push $ SpendActions iid source' actions' modifiedActionCost
       withPayment $ ActionPayment x
     AdditionalActionCost -> do
@@ -1744,6 +1777,12 @@ instance RunMessage ActiveCost where
                        <> [PayCostFinished acId]
                    ]
               pure c
+        -- Cancelled at the #cancel window, which runs ahead of this: skip the payment
+        -- outright so nothing is spent. `PayCostFinished` still runs, and still drops the
+        -- `UseCardAbility` for a cancelled cost.
+        ForAbility _ | c.cancelled -> do
+          push $ PayCostFinished acId
+          pure c
         ForAbility a@(Ability {..}) -> do
           modifiers' <- getCombinedModifiers [toTarget iid, AbilityTarget iid $ abilityToRef a]
           let

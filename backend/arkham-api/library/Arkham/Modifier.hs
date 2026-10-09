@@ -51,6 +51,14 @@ data ModifierType
   | ActionCostOf ActionTarget Int -- TODO: Don't use this for anything than decreasing
   | ActionCostSetToModifier Int
   | ActionDoesNotCauseAttacksOfOpportunity Action
+  | {- | An action taken while this is on the investigator still counts as an
+    action they performed, but is invisible to the "same type of action" checks:
+    it opens no 'PerformedSameTypeOfAction' window of its own, and the next
+    action compares itself against the action before it instead. For "that
+    action ignores this card's forced effect", where the granted action would
+    otherwise become the thing the real action is measured against.
+    -}
+    ActionDoesNotCountAsRepeatedAction
   | ActionSkillModifier {action :: Action, skillType :: SkillType, value :: Int}
   | ActionsAreFree
   | AddChaosTokenValue ChaosTokenValue
@@ -255,6 +263,7 @@ data ModifierType
   | CannotReady
   | CannotReplaceWeaknesses
   | CannotRevealCards
+  | CannotSealChaosToken ChaosTokenFace
   | CannotSpawnIn LocationMatcher
   | CannotSpendClues
   | CannotSpendKeys
@@ -269,7 +278,7 @@ data ModifierType
   | CardsCannotLeaveYourDiscardPile
   | ChangeChaosTokenModifier ChaosTokenModifier
   | ChangeRevealStrategy RevealStrategy
-  | DrawAdditionalChaosTokens Int
+  | DrawAdditionalChaosTokens Int AdditionalReveals
   | ChangeSpawnLocation LocationMatcher LocationMatcher
   | ChangeSpawnWith InvestigatorId SpawnAt
   | ChaosTokenFaceModifier [ChaosTokenFace]
@@ -279,6 +288,14 @@ data ModifierType
   | CommitCost Cost
   | ConnectedToWhen LocationMatcher LocationMatcher
   | ForMovementConnectedToWhen LocationMatcher LocationMatcher
+  | {- | On the MOVER (investigator or enemy), not on a location: "while moving, treat
+    your location as if it were connected to ...". Connection queries read the start
+    location's modifiers, so a mover-scoped connection cannot be expressed as a
+    location modifier; the movement helpers inject this onto the mover's location for
+    the duration of the query, the way hunter movement already does for
+    'HunterConnectedTo'.
+    -}
+    MovesAsIfConnectedTo LocationMatcher
   | ControlledAssetsCannotReady
   | CountAllDoomInPlay
   | CountsAsInvestigatorForHunterEnemies
@@ -533,6 +550,16 @@ data ModifierType
   | WillCancelHorror Int
   | XPModifier Text Int
   | TreatFullyFloodedAsPartiallyFlooded
+  | {- | On an INVESTIGATOR: their location counts as unflooded however flooded it is.
+    What carries a boat's occupants over open water; the sibling of
+    'TreatFullyFloodedAsPartiallyFlooded', which a diving suit grants.
+    -}
+    TreatLocationAsUnflooded
+  | {- | On an INVESTIGATOR: where a card would have them "choose one", they resolve
+    every option instead (via 'chooseOneAtATimeM'). Only read by the cards whose
+    wording calls for it, so it does not leak into unrelated choices.
+    -}
+    MustResolveAllOptions
   | UIModifier UIModifier
   | BecomeHomunculusWhenDefeated
   | BecomeInvestigator InvestigatorId
@@ -600,6 +627,10 @@ data Modifier = Modifier
   , modifierType :: ModifierType
   , modifierActiveDuringSetup :: Bool
   , modifierCard :: Maybe Card
+  , modifierEffect :: Maybe EffectId
+  {- ^ Stamped on by 'HasModifiersFor Effect', so the client can tell which
+  modifiers a 'DisableEffect' can take back off.
+  -}
   }
   deriving stock (Show, Eq, Ord, Data)
 
@@ -614,6 +645,9 @@ instance HasField "activeDuringSetup" Modifier Bool where
 
 instance HasField "card" Modifier (Maybe Card) where
   getField = modifierCard
+
+instance HasField "effect" Modifier (Maybe EffectId) where
+  getField = modifierEffect
 
 overModifierTypeM :: Monad m => (ModifierType -> m ModifierType) -> Modifier -> m Modifier
 overModifierTypeM f m = f (modifierType m) <&> \mt -> m {modifierType = mt}
@@ -640,6 +674,11 @@ mconcat
                     <|> withObject "CanPlayUnderControlOf" parseRecord contents
                     <|> (flip CanPlayUnderControlOf Anyone <$> parseJSON contents)
                 Nothing -> parseRecord v
+            "DrawAdditionalChaosTokens" -> do
+              contents <- (Right <$> v .: "contents") <|> (Left <$> v .: "contents")
+              case contents of
+                Left n -> pure $ DrawAdditionalChaosTokens n ResolveOne
+                Right (n, reveals) -> pure $ DrawAdditionalChaosTokens n reveals
             "MaxDamageTaken" -> do
               contents <- (Right <$> v .: "contents") <|> (Left <$> v .: "contents")
               case contents of
@@ -680,7 +719,18 @@ mconcat
                 Right (s, n) -> pure $ XPModifier s n
             _ -> $(mkParseJSON defaultOptions ''ModifierType) (Object v)
       |]
-  , deriveJSON (aesonOptions $ Just "modifier") ''Modifier
+  , deriveToJSON (aesonOptions $ Just "modifier") ''Modifier
   , deriveJSON defaultOptions ''UIModifier
   , makePrisms ''ModifierType
   ]
+
+-- Hand-written so a payload from before `effect` existed -- a recorded game, or
+-- the debug client's `EffectModifiers` -- still parses.
+instance FromJSON Modifier where
+  parseJSON = withObject "Modifier" \o -> do
+    modifierSource <- o .: "source"
+    modifierType <- o .: "type"
+    modifierActiveDuringSetup <- o .: "activeDuringSetup"
+    modifierCard <- o .:? "card"
+    modifierEffect <- o .:? "effect"
+    pure Modifier {..}

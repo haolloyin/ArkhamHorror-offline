@@ -4,24 +4,29 @@
  * Importing one takes it into your collection and keeps it subscribed, so the
  * author's later versions can be pulled in. Editing your copy ends that -- what
  * is in it is then not what was published -- and importing again is how you get
- * back to the published version.
- *
- * Behind the dev flag, like everything else about publishing so far. */
-import { computed, onMounted, ref } from 'vue'
+ * back to the published version. */
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import * as Api from '@/arkham/api'
-import { isDevBuild } from '@/arkham/displayRules'
 import { subscribeToSet } from '@/arkham/customCardLibrary'
+import { isBadLink, setLinkLabel } from '@/arkham/setLink'
 import type { CustomCard } from '@/arkham/customCards'
 import { useRoute } from 'vue-router'
 import CardOverlay from '@/arkham/components/CardOverlay.vue'
-import CardSetStrip from '@/arkham/components/CardSetStrip.vue'
+import CustomCardsPage from '@/arkham/components/CustomCardsPage.vue'
+import FilterBar from '@/arkham/components/FilterBar.vue'
+import MetaChip from '@/arkham/components/MetaChip.vue'
+import SetPreview from '@/arkham/components/SetPreview.vue'
 import SegmentedToggle from '@/components/SegmentedToggle.vue'
+import { useRouter } from 'vue-router'
 
 const { t } = useI18n()
 const K = 'customCardSets.'
+const router = useRouter()
 
-const dev = isDevBuild()
+const openSet = (set: Api.PublishedCardSet) =>
+  router.push({ name: 'CardMarketplaceSet', params: { publishedId: set.id } })
+
 const sets = ref<Api.PublishedCardSet[]>([])
 const loaded = ref(false)
 const busy = ref<string | null>(null)
@@ -40,14 +45,21 @@ async function load() {
   }
 }
 
-onMounted(() => {
-  if (dev) load()
-})
+load()
 
 // ------------------------------------------------------- searching & order ---
 
 const query = ref('')
 const order = ref<'newest' | 'liked' | 'name'>('newest')
+
+/* Everything, or only what you have put up. Your own listings are mixed into
+ * the marketplace -- they have to be, since this is where you find out what
+ * happened to them -- and this is how you look at just them without leaving. */
+const scope = ref<'all' | 'mine'>('all')
+const scopeOptions = computed(() => [
+  { value: 'all' as const, label: t(`${K}scopeAll`) },
+  { value: 'mine' as const, label: t(`${K}scopeMine`) },
+])
 const orderOptions = computed(() => [
   { value: 'newest' as const, label: t(`${K}orderNewest`) },
   { value: 'liked' as const, label: t(`${K}orderLiked`) },
@@ -79,6 +91,7 @@ const inOrder = (cards: { def: any; art: string | null }[]) =>
  * than claiming to search the whole set. */
 function hits(set: Api.PublishedCardSet, needle: string) {
   if (matches(set.name, needle) || matches(set.author, needle)) return true
+  if (matches(set.description, needle)) return true
   return set.preview.some(
     (c) => matches(c.def?.name?.title, needle) || matches(c.def?.name?.subtitle, needle),
   )
@@ -87,6 +100,7 @@ function hits(set: Api.PublishedCardSet, needle: string) {
 const listed = computed(() => {
   const needle = query.value.trim().toLowerCase()
   let rows = [...sets.value]
+  if (scope.value === 'mine') rows = rows.filter((s) => s.mine)
   if (author.value) rows = rows.filter((s) => s.author === author.value)
   if (needle) rows = rows.filter((s) => hits(s, needle))
   switch (order.value) {
@@ -110,6 +124,27 @@ const isSubscribed = (set: Api.PublishedCardSet) => set.subscribedVersion !== nu
 
 const behind = (set: Api.PublishedCardSet) =>
   set.subscribedVersion !== null && set.subscribedVersion < set.latestVersion
+
+/* A listing is in the marketplace once a version of it has been approved. Your
+ * own appear here before that so you can see where they stand, and they are the
+ * only ones that can be unapproved -- so these only ever read true on your own. */
+const isListed = (set: Api.PublishedCardSet) => set.latestVersion > 0
+
+const awaitingReview = (set: Api.PublishedCardSet) => set.pendingVersion !== null
+
+const denied = (set: Api.PublishedCardSet) => set.reviewStatus === 'denied'
+
+/* Where your own listing stands, in a line. Null for anything already approved
+ * and with nothing waiting, which is every listing anyone else sees. */
+function reviewLine(set: Api.PublishedCardSet): string | null {
+  if (awaitingReview(set)) {
+    return isListed(set)
+      ? t(`${K}reviewPendingUpdate`, { version: set.pendingVersion, live: set.latestVersion })
+      : t(`${K}reviewPending`, { version: set.pendingVersion })
+  }
+  if (denied(set)) return t(`${K}reviewDeniedShort`)
+  return null
+}
 
 /* The listing comes back with its new count, so the row is replaced rather than
  * the whole list reloaded: nothing else about it has changed. */
@@ -143,6 +178,46 @@ async function take(set: Api.PublishedCardSet) {
   }
 }
 
+/* Rewriting a listing's blurb. Not a republish: the cards are untouched, so
+ * nothing goes back for review and the version people are subscribed to does
+ * not move. The server writes the same text onto your own copy of the set, so
+ * the next publish does not quietly undo what was typed here. */
+const editingId = ref<string | null>(null)
+const descriptionDraft = ref('')
+const urlDraft = ref('')
+
+function startEdit(set: Api.PublishedCardSet) {
+  editingId.value = set.id
+  descriptionDraft.value = set.description ?? ''
+  urlDraft.value = set.url ?? ''
+  status.value = null
+  error.value = null
+}
+
+/* Only what changed is sent: a key left out keeps what is stored, so saving a
+ * blurb cannot blank a link and the other way round. */
+async function commitEdit(set: Api.PublishedCardSet) {
+  const description = descriptionDraft.value.trim()
+  const url = urlDraft.value.trim()
+  editingId.value = null
+  const redescribed = description !== (set.description ?? '')
+  const relinked = url !== (set.url ?? '')
+  if (!redescribed && !relinked) return
+  error.value = null
+  try {
+    replace(
+      await Api.updatePublishedCardSet(set.id, {
+        ...(redescribed ? { description: description || null } : {}),
+        ...(relinked ? { url: url || null } : {}),
+      }),
+    )
+    status.value = t(`${K}descriptionSaved`, { name: set.name })
+  } catch (e) {
+    console.error(e)
+    error.value = t(`${K}${isBadLink(e) ? 'setLinkInvalid' : 'descriptionSaveFailed'}`)
+  }
+}
+
 async function unlist(set: Api.PublishedCardSet) {
   if (!confirm(t(`${K}confirmUnpublish`, { name: set.name }))) return
   busy.value = set.id
@@ -162,73 +237,63 @@ async function unlist(set: Api.PublishedCardSet) {
 </script>
 
 <template>
-  <div class="page-container">
-    <section class="marketplace">
-      <header class="head">
-        <div class="titles">
-          <h1>{{ t(`${K}marketplace`) }}</h1>
-          <p class="lede">{{ t(`${K}marketplaceLede`) }}</p>
-        </div>
-      </header>
+  <CustomCardsPage
+    :title="t(`${K}marketplace`)"
+    :lede="t(`${K}marketplaceLede`)"
+    :status="status"
+    :error="error"
+  >
+    <p v-if="!loaded" class="muted">{{ t(`${K}loading`) }}</p>
+    <p v-else-if="!sets.length" class="empty-state">
+      <font-awesome-icon icon="store" />
+      <span>{{ t(`${K}marketplaceEmpty`) }}</span>
+    </p>
 
-      <p class="experimental">
-        <font-awesome-icon icon="flask" />
-        {{ t(`${K}experimental`) }}
+    <template v-else>
+      <FilterBar
+        v-model="query"
+        :placeholder="t(`${K}marketplaceFilterPlaceholder`)"
+        :clear-label="t(`${K}clearFilter`)"
+      >
+        <SegmentedToggle
+          v-model="scope"
+          :options="scopeOptions"
+          :label="t(`${K}scopeLabel`)"
+        />
+        <SegmentedToggle
+          v-model="order"
+          :options="orderOptions"
+          :label="t(`${K}marketplaceOrderLabel`)"
+        />
+      </FilterBar>
+
+      <p v-if="author" class="author-filter">
+        <span class="chip">
+          {{ t(`${K}byThisAuthor`, { author }) }}
+          <button
+            type="button"
+            class="chip-clear"
+            :aria-label="t(`${K}clearAuthor`)"
+            @click="author = null"
+          >
+            <font-awesome-icon icon="times" />
+          </button>
+        </span>
       </p>
 
-      <p v-if="status" class="status">{{ status }}</p>
-      <p v-if="error" class="error">{{ error }}</p>
+      <p v-if="!listed.length" class="empty-state">
+        <font-awesome-icon icon="search" />
+        <span>{{ t(`${K}marketplaceNoMatches`, { query: query.trim() }) }}</span>
+      </p>
 
-      <p v-if="!loaded" class="muted">{{ t(`${K}loading`) }}</p>
-      <p v-else-if="!sets.length" class="muted empty">{{ t(`${K}marketplaceEmpty`) }}</p>
-
-      <template v-else>
-        <div class="browse">
-          <div class="set-filter">
-            <font-awesome-icon icon="search" />
-            <input
-              v-model="query"
-              type="search"
-              :placeholder="t(`${K}marketplaceFilterPlaceholder`)"
-              :aria-label="t(`${K}marketplaceFilterPlaceholder`)"
-              @keydown.stop
-            />
-            <button
-              v-if="query"
-              type="button"
-              class="clear"
-              v-tooltip="t(`${K}clearFilter`)" :aria-label="t(`${K}clearFilter`)"
-              @click="query = ''"
-            >
-              <font-awesome-icon icon="times" />
-            </button>
-          </div>
-          <SegmentedToggle
-            v-model="order"
-            class="order"
-            :options="orderOptions"
-            :label="t(`${K}marketplaceOrderLabel`)"
-          />
-        </div>
-
-        <p v-if="author" class="author-filter">
-          <span class="chip">
-            {{ t(`${K}byThisAuthor`, { author }) }}
-            <button type="button" class="chip-clear" @click="author = null">×</button>
-          </span>
-          <button type="button" class="link" @click="author = null">
-            {{ t(`${K}clearAuthor`) }}
-          </button>
-        </p>
-
-        <p v-if="!listed.length" class="muted empty">
-          {{ t(`${K}marketplaceNoMatches`, { query: query.trim() }) }}
-        </p>
-
-        <ul v-else class="listings">
-          <li v-for="set in listed" :key="set.id">
-            <div class="listing-head">
-              <div class="about">
+      <ul v-else class="listings">
+        <li v-for="set in listed" :key="set.id" class="panel">
+          <div class="panel-head">
+            <div class="about">
+              <!-- What the set IS rides with its name: whether the project
+                   stands behind it, and which version this is. The rest are
+                   facts about it and stay on the line below. -->
+              <div class="title-row">
                 <h2>
                   <router-link
                     class="set-link"
@@ -236,204 +301,213 @@ async function unlist(set: Api.PublishedCardSet) {
                   >
                     {{ set.name }}
                   </router-link>
-                  <small v-if="set.mine" class="mine">{{ t(`${K}yours`) }}</small>
                 </h2>
-                <p class="meta">
-                  <button type="button" class="author" @click="author = set.author">
-                    {{ t(`${K}byAuthor`, { author: set.author }) }}
-                  </button>
-                  ·
-                  {{ t(`${K}versionCount`, {
-                    version: set.latestVersion,
-                    count: t(`${K}cardCount`, set.cardCount),
-                  }) }}
-                </p>
-                <p v-if="set.note" class="note">{{ set.note }}</p>
+                <MetaChip
+                  v-if="set.official"
+                  tone="gold"
+                  icon="circle-check"
+                  v-tooltip="t(`${K}officialHelp`)"
+                >
+                  {{ t(`${K}official`) }}
+                </MetaChip>
+                <MetaChip v-if="isListed(set)">v{{ set.latestVersion }}</MetaChip>
               </div>
 
-              <div class="actions">
-                <button
-                  type="button"
-                  class="like"
-                  :class="{ on: set.liked }"
-                  v-tooltip="set.liked ? t(`${K}unlike`) : t(`${K}like`)"
-                  :aria-pressed="set.liked"
-                  @click="toggleLike(set)"
-                >
-                  <font-awesome-icon icon="thumbs-up" />
-                  <span v-if="set.likes">{{ set.likes }}</span>
+              <!-- One line of facts, each its own shape. The author is a button
+                   because clicking it filters the page to them. -->
+              <div class="facts">
+                <button type="button" class="author" @click="author = set.author">
+                  {{ t(`${K}byAuthor`, { author: set.author }) }}
                 </button>
-                <span v-if="isSubscribed(set)" class="subscribed">
+                <MetaChip>{{ t(`${K}cardCount`, set.cardCount) }}</MetaChip>
+                <MetaChip v-if="set.likes" icon="thumbs-up">{{ set.likes }}</MetaChip>
+                <MetaChip v-if="isSubscribed(set)" tone="good" icon="circle-check">
                   {{ t(`${K}subscribedBadge`, { version: set.subscribedVersion }) }}
-                </span>
-                <button type="button" :disabled="busy === set.id" @click="take(set)">
-                  {{
-                    behind(set)
-                      ? t(`${K}updateTo`, { version: set.latestVersion })
-                      : isSubscribed(set)
-                        ? t(`${K}reimport`)
-                        : t(`${K}importToCollection`)
-                  }}
-                </button>
+                </MetaChip>
+              </div>
+
+              <!-- What the set is. The author's blurb, editable in place by
+                   them: it is not part of what was reviewed, so fixing a typo
+                   in it should not cost a round through the queue. -->
+              <form
+                v-if="editingId === set.id"
+                class="describe-form"
+                @submit.prevent="commitEdit(set)"
+              >
+                <textarea
+                  v-model="descriptionDraft"
+                  rows="3"
+                  :aria-label="t(`${K}setDescriptionLabel`)"
+                  :placeholder="t(`${K}publishDescriptionPlaceholder`)"
+                  @keydown.stop
+                  @keydown.esc="editingId = null"
+                ></textarea>
+                <input
+                  v-model="urlDraft"
+                  type="url"
+                  inputmode="url"
+                  :aria-label="t(`${K}setUrlLabel`)"
+                  :placeholder="t(`${K}setUrlPlaceholder`)"
+                  @keydown.stop
+                  @keydown.esc="editingId = null"
+                />
+                <div class="describe-actions">
+                  <button type="submit" class="go">{{ t(`${K}saveDescription`) }}</button>
+                  <button type="button" class="quiet" @click="editingId = null">
+                    {{ t(`${K}publishCancel`) }}
+                  </button>
+                </div>
+              </form>
+              <template v-else>
+                <p v-if="set.description" class="description">{{ set.description }}</p>
+                <p v-else-if="set.mine" class="description none">
+                  {{ t(`${K}noDescriptionYet`) }}
+                </p>
+                <!-- Where to read more. The host rather than the whole
+                     address: the slugs and dates are nobody's business, and the
+                     anchor carries them for anyone who hovers. -->
+                <a
+                  v-if="set.url"
+                  class="site-link"
+                  :href="set.url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <font-awesome-icon icon="external-link" />
+                  {{ setLinkLabel(set.url) }}
+                </a>
                 <button
                   v-if="set.mine"
                   type="button"
-                  class="unlist"
-                  :disabled="busy === set.id"
-                  @click="unlist(set)"
+                  class="link"
+                  @click="startEdit(set)"
                 >
-                  {{ t(`${K}unpublish`) }}
+                  <font-awesome-icon icon="pen" />
+                  {{ t(set.description ? `${K}editDescription` : `${K}addDescription`) }}
                 </button>
-              </div>
+              </template>
+
+              <!-- Only ever on your own listing: nobody else's is shown here
+                   until it has passed review. -->
+              <p v-if="reviewLine(set)" class="review" :class="{ denied: denied(set) }">
+                <font-awesome-icon :icon="denied(set) ? 'circle-xmark' : 'hourglass-half'" />
+                <span>
+                  {{ reviewLine(set) }}
+                  <em v-if="denied(set) && set.denialReason">{{ set.denialReason }}</em>
+                </span>
+              </p>
             </div>
 
-            <div v-if="set.cardCount" class="listing-cards">
-              <CardSetStrip class="preview" :cards="inOrder(set.preview)" />
-              <router-link
-                class="view-all"
-                :to="{ name: 'CardMarketplaceSet', params: { publishedId: set.id } }"
+            <div class="actions">
+              <button
+                type="button"
+                class="like"
+                :class="{ on: set.liked }"
+                v-tooltip="set.liked ? t(`${K}unlike`) : t(`${K}like`)"
+                :aria-label="set.liked ? t(`${K}unlike`) : t(`${K}like`)"
+                :aria-pressed="set.liked"
+                @click="toggleLike(set)"
               >
-                {{ t(`${K}viewSet`, { count: set.cardCount }) }}
-              </router-link>
+                <font-awesome-icon icon="thumbs-up" />
+                <span v-if="set.likes">{{ set.likes }}</span>
+              </button>
+              <!-- There is nothing to import until a version has been approved,
+                   which only your own listing can fail to have. -->
+              <button
+                v-if="isListed(set)"
+                type="button"
+                class="go"
+                :disabled="busy === set.id"
+                @click="take(set)"
+              >
+                {{
+                  behind(set)
+                    ? t(`${K}updateTo`, { version: set.latestVersion })
+                    : isSubscribed(set)
+                      ? t(`${K}reimport`)
+                      : t(`${K}importToCollection`)
+                }}
+              </button>
+              <button
+                v-if="set.mine"
+                type="button"
+                class="danger"
+                :disabled="busy === set.id"
+                @click="unlist(set)"
+              >
+                {{ t(`${K}unpublish`) }}
+              </button>
             </div>
-          </li>
-        </ul>
-      </template>
-    </section>
+          </div>
+
+          <SetPreview
+            :cards="inOrder(set.preview)"
+            :total="set.cardCount"
+            @view-all="openSet(set)"
+          />
+        </li>
+      </ul>
+    </template>
 
     <!-- Document-level: anything carrying `data-image` gets a hover preview. -->
-    <CardOverlay />
-  </div>
+    <template #outside><CardOverlay /></template>
+  </CustomCardsPage>
 </template>
 
 <style scoped lang="scss">
-.page-container {
-  height: 100%;
-  overflow-x: hidden;
-  overflow-y: auto;
-  width: 100%;
-}
-
-.marketplace {
-  color: var(--title);
-  margin: 0 auto;
-  max-width: 1100px;
-  padding: 1.5rem;
-}
-
-.head {
-  margin-bottom: 0.9rem;
-
-  h1 {
-    font-family: teutonic, sans-serif;
-    font-size: 1.7em;
-    margin: 0 0 0.3rem;
-  }
-}
-
-.titles {
-  min-width: 0;
-}
-
-.lede {
-  margin: 0;
-  max-width: 62ch;
-  opacity: 0.8;
-}
-
-.experimental {
-  align-items: center;
-  background: rgba(200, 60, 60, 0.1);
-  border: 1px solid var(--delete);
-  border-radius: 6px;
-  color: var(--delete);
-  display: flex;
-  font-size: 0.8rem;
-  gap: 0.5rem;
-  margin: 0 0 0.9rem;
-  padding: 0.45rem 0.65rem;
-}
-
 .muted {
-  font-size: 0.85rem;
-  margin: 0 0 0.75rem;
-  opacity: 0.75;
+  opacity: 0.65;
 }
 
-.empty {
-  border: 1px dashed var(--box-border);
-  border-radius: 8px;
-  max-width: 46rem;
-  padding: 1.25rem 1.5rem;
-}
-
-p.status {
-  color: var(--spooky-green);
-  font-size: 0.85rem;
-  margin: 0 0 0.75rem;
-}
-
-p.error {
-  color: var(--delete);
-  font-size: 0.85rem;
-  margin: 0 0 0.75rem;
-}
-
-.browse {
+/* An empty page should say what it is empty of, not just be blank. */
+.empty-state {
   align-items: center;
+  color: color-mix(in srgb, var(--title) 60%, transparent);
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  justify-content: flex-end;
-  margin-bottom: 0.75rem;
-}
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 3rem 1rem;
+  text-align: center;
 
-.set-filter {
-  align-items: center;
-  background: var(--background-dark);
-  border: 1px solid var(--box-border);
-  border-radius: 5px;
-  color: var(--title);
-  display: flex;
-  flex: 0 1 22rem;
-  gap: 0.45rem;
-  padding: 0.35rem 0.55rem;
-  transition: border-color 0.15s ease;
-
-  &:focus-within {
-    border-color: var(--spooky-green);
+  svg {
+    font-size: 1.6rem;
+    opacity: 0.4;
   }
 
-  > svg {
-    flex: none;
-    font-size: 0.8rem;
-    opacity: 0.5;
+  span {
+    max-width: 44ch;
+  }
+}
+
+.author-filter {
+  margin: -0.3rem 0 0.8rem;
+
+  .chip {
+    align-items: center;
+    background: color-mix(in srgb, var(--guardian) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--guardian) 45%, transparent);
+    border-radius: 999px;
+    display: inline-flex;
+    font-size: 0.78rem;
+    gap: 0.2rem;
+    padding: 0.1rem 0.25rem 0.1rem 0.7rem;
   }
 
-  input {
+  /* `padding: 0` is load-bearing: the global button rule's 11px of side padding
+     leaves this 22px border-box square no content box at all, so the icon has
+     nowhere to draw. */
+  .chip-clear {
     background: none;
     border: none;
-    color: var(--title);
-    flex: 1 1 auto;
-    font-size: 0.85rem;
-    min-width: 0;
-    outline: none;
-
-    /* The platform's own clear button, which matches nothing else here. */
-    &::-webkit-search-cancel-button {
-      display: none;
-    }
-  }
-
-  .clear {
-    background: none;
-    border: none;
-    color: var(--title);
+    color: inherit;
     cursor: pointer;
-    flex: none;
-    font-size: 0.7rem;
-    opacity: 0.5;
+    display: grid;
+    font-size: 0.8rem;
+    height: 22px;
+    opacity: 0.7;
     padding: 0;
+    place-items: center;
+    width: 22px;
 
     &:hover {
       opacity: 1;
@@ -441,223 +515,288 @@ p.error {
   }
 }
 
-.order {
-  flex: none;
-  width: 15rem;
-}
-
-.author-filter {
-  align-items: center;
-  display: flex;
-  gap: 0.6rem;
-  margin: 0 0 0.75rem;
-}
-
-.chip {
-  align-items: center;
-  background: rgba(196, 181, 253, 0.14);
-  border: 1px solid #c4b5fd;
-  border-radius: 999px;
-  color: #c4b5fd;
-  display: flex;
-  font-size: 0.78rem;
-  gap: 0.35rem;
-  padding: 0.15rem 0.4rem 0.15rem 0.65rem;
-}
-
-.chip-clear {
-  background: none;
-  border: none;
-  color: inherit;
-  cursor: pointer;
-  font-size: 0.9rem;
-  line-height: 1;
-  padding: 0 0.2rem;
-}
-
-.link {
-  background: none;
-  border: none;
-  color: var(--title);
-  cursor: pointer;
-  font-size: 0.78rem;
-  opacity: 0.6;
-  padding: 0;
-  text-decoration: underline;
-
-  &:hover {
-    opacity: 1;
-  }
-}
-
 .listings {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 1rem;
   list-style: none;
   margin: 0;
   padding: 0;
+}
 
-  > li {
-    background: var(--background-dark);
-    border: 1px solid var(--box-border);
-    border-radius: 8px;
+/* One panel per listing: a head that says what it is and what you can do with
+   it, and the cards underneath. The border lifts on hover so a long page of
+   them still reads as a list of separate things. */
+.panel {
+  background: var(--background-dark);
+  border: 1px solid var(--box-border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 150ms ease;
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--box-border) 40%, var(--background-mid));
   }
 }
 
-.listing-head {
-  align-items: flex-start;
+.panel-head {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem;
+  gap: 0.75rem 1rem;
   justify-content: space-between;
-  padding: 0.75rem;
+  padding: 0.85rem 0.9rem 0.6rem;
+}
+
+.about {
+  flex: 1 1 22rem;
+  min-width: 0;
 
   h2 {
-    align-items: baseline;
-    display: flex;
     font-family: teutonic, sans-serif;
-    font-size: 1.15em;
-    gap: 0.5rem;
+    font-size: 1.3em;
+    line-height: 1.15;
     margin: 0;
   }
 }
 
-.about {
-  min-width: 0;
-}
-
-.mine {
-  font-family: sans-serif;
-  font-size: 0.6em;
-  opacity: 0.6;
-}
-
-.meta {
+/* The chips sit on the title's baseline rather than centred on it: the display
+   face is tall, and centring left them floating above its x-height. */
+.title-row {
   align-items: baseline;
+  column-gap: 0.4rem;
   display: flex;
   flex-wrap: wrap;
-  font-size: 0.78rem;
-  gap: 0.35rem;
-  margin: 0.15rem 0 0;
-  opacity: 0.65;
+  row-gap: 0.25rem;
 }
 
-/* The author is a way into their other sets, so it looks like one. */
+.set-link {
+  color: var(--title);
+  text-decoration: none;
+
+  &:hover {
+    color: white;
+    text-decoration: underline;
+  }
+}
+
+.facts {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+}
+
 .author {
   background: none;
   border: none;
-  color: #c4b5fd;
+  color: color-mix(in srgb, var(--title) 75%, transparent);
   cursor: pointer;
-  font: inherit;
+  font-size: 0.78rem;
   padding: 0;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+
+  &:hover {
+    color: var(--title);
+  }
+}
+
+/* What the set is, as against the version note, which is what changed in it.
+   Keeps the author's line breaks: a blurb is often a sentence and a list. */
+.description {
+  font-size: 0.88rem;
+  line-height: 1.45;
+  margin: 0.55rem 0 0;
+  max-width: 64ch;
+  white-space: pre-wrap;
+
+  &.none {
+    font-style: italic;
+    opacity: 0.5;
+  }
+}
+
+.link {
+  align-items: center;
+  background: none;
+  border: none;
+  color: color-mix(in srgb, var(--title) 65%, transparent);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.76rem;
+  gap: 0.35rem;
+  margin-top: 0.3rem;
+  min-height: 28px;
+  padding: 0;
+
+  svg {
+    font-size: 0.8em;
+  }
+
+  &:hover {
+    color: var(--title);
+    text-decoration: underline;
+  }
+}
+
+/* The set's own page, which is the one thing a listing cannot say for itself. */
+.site-link {
+  align-items: center;
+  color: var(--spooky-green);
+  display: inline-flex;
+  font-size: 0.8rem;
+  gap: 0.35rem;
+  margin: 0.4rem 0.6rem 0 0;
+  text-decoration: none;
+  word-break: break-all;
 
   &:hover {
     text-decoration: underline;
   }
 }
 
-.note {
-  font-size: 0.82rem;
-  margin: 0.35rem 0 0;
-  max-width: 60ch;
-  opacity: 0.85;
+.describe-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+  max-width: 64ch;
+
+  textarea,
+  input {
+    background: var(--background);
+    border: 1px solid var(--box-border);
+    border-radius: 5px;
+    color: var(--title);
+    font-family: inherit;
+    font-size: 0.88rem;
+    line-height: 1.45;
+    padding: 0.45rem 0.55rem;
+    resize: vertical;
+    width: 100%;
+
+    &:focus {
+      border-color: var(--spooky-green);
+      outline: none;
+    }
+  }
+
+  .describe-actions {
+    display: flex;
+    gap: 0.4rem;
+  }
+}
+
+/* Only ever on your own listing. A denial carries the reason underneath, which
+   is the only part of this a reader has to act on. */
+.review {
+  align-items: flex-start;
+  color: color-mix(in srgb, var(--title) 72%, transparent);
+  display: flex;
+  font-size: 0.8rem;
+  gap: 0.45rem;
+  margin: 0.55rem 0 0;
+
+  svg {
+    margin-top: 0.2rem;
+    opacity: 0.8;
+  }
+
+  em {
+    display: block;
+    font-style: italic;
+    opacity: 0.9;
+  }
+
+  &.denied {
+    color: color-mix(in srgb, var(--survivor) 65%, white);
+  }
 }
 
 .actions {
-  align-items: center;
+  align-items: flex-start;
   display: flex;
-  flex: none;
-  gap: 0.5rem;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+
+  /* Full width below the blurb on a phone, where squeezing three buttons into
+     the corner of a wrapped row put them on top of the text. */
+  @media (max-width: 640px) {
+    flex: 1 1 100%;
+  }
 }
 
+/* One button shape for the section, in three weights: `go` is the thing the
+   panel is for, `quiet` backs out of it, `danger` undoes it. */
+:deep(button.go),
+button.go,
+button.quiet,
+button.danger,
 .like {
   align-items: center;
-  display: flex;
-  font-variant-numeric: tabular-nums;
-  gap: 0.35rem;
-
-  &.on {
-    background: rgba(190, 242, 100, 0.14);
-    border-color: var(--spooky-green);
-    color: var(--spooky-green);
-  }
-}
-
-/* The green a resolved card code wears: this is the copy you have, confirmed. */
-.subscribed {
-  border: 1px solid var(--spooky-green);
-  border-radius: 999px;
-  color: var(--spooky-green);
-  font-size: 0.72rem;
-  padding: 0.15rem 0.55rem;
-  white-space: nowrap;
-}
-
-.listing-cards {
-  align-items: flex-start;
-  border-top: 1px solid var(--box-border);
-  display: flex;
-  gap: 0.75rem;
-  padding: 0.75rem;
-}
-
-/* The strip is a grid of `auto-fill` tracks, so as a flex item it has to be told
-   to take the room: sized to its content it collapses to a single column. */
-.preview {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-/* A link rather than a button: it goes somewhere, and the set's own page is
-   where the rest of the cards are. */
-.view-all {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid var(--box-border);
-  border-radius: 4px;
-  color: var(--title);
-  flex: none;
-  font-size: 0.8rem;
-  padding: 0.35rem 0.7rem;
-  text-decoration: none;
-  white-space: nowrap;
-
-  &:hover {
-    background: rgba(255, 255, 255, 0.14);
-  }
-}
-
-.set-link {
-  color: inherit;
-  text-decoration: none;
-
-  &:hover {
-    color: #c4b5fd;
-  }
-}
-
-button {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid var(--box-border);
-  border-radius: 4px;
-  color: var(--title);
+  border-radius: 5px;
   cursor: pointer;
-  font-size: 0.8rem;
-  padding: 0.35rem 0.7rem;
-  white-space: nowrap;
-
-  &:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.14);
-  }
+  display: inline-flex;
+  font-size: 0.82rem;
+  gap: 0.35rem;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 0.8rem;
+  transition: background 120ms ease, border-color 120ms ease;
 
   &:disabled {
-    cursor: default;
+    cursor: not-allowed;
     opacity: 0.5;
   }
 }
 
-.unlist {
-  border-color: transparent;
-  color: var(--delete);
+button.go {
+  background: var(--button-1);
+  border: 1px solid transparent;
+  color: white;
+
+  &:hover:not(:disabled) {
+    background: var(--button-1-highlight);
+  }
+}
+
+button.quiet {
+  background: none;
+  border: 1px solid var(--box-border);
+  color: var(--title);
+
+  &:hover:not(:disabled) {
+    border-color: var(--background-mid);
+  }
+}
+
+button.danger {
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--delete) 55%, transparent);
+  color: color-mix(in srgb, var(--delete) 40%, white);
+
+  &:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--delete) 18%, transparent);
+    border-color: var(--delete);
+  }
+}
+
+.like {
+  background: none;
+  border: 1px solid var(--box-border);
+  color: var(--title);
+  font-variant-numeric: tabular-nums;
+
+  &:hover {
+    border-color: var(--background-mid);
+  }
+
+  &.on {
+    border-color: color-mix(in srgb, var(--spooky-green) 70%, transparent);
+    color: var(--spooky-green);
+  }
 }
 </style>
