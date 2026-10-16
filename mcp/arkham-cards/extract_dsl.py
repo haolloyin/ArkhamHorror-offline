@@ -367,8 +367,16 @@ def meta_keys() -> dict[str, dict[str, str]]:
         text = path.read_text(errors="replace")
         where = str(path.relative_to(ARKHAM.parent.parent.parent))
         for key in dedup(re.findall(r'"(_[a-zA-Z]+)"', text)):
+            # Any of the runners that take a meta key and run what is under it
+            # as steps. Named one by one rather than matched loosely, because a
+            # runner left off this list quietly stops the checker looking at
+            # that key at all -- which is how `_onPlay` went unchecked the
+            # moment its call site gained a variant that passes extra bindings.
             runs_steps = bool(
-                re.search(rf'(?:runCustomSteps|customSteps)\b[^\n]*"{re.escape(key)}"', text)
+                re.search(
+                    rf'(?:runCustomSteps|runCustomStepsIn|customSteps)\b[^\n]*"{re.escape(key)}"',
+                    text,
+                )
             )
             entry = found.setdefault(key, {"holds": "", "readIn": where})
             if runs_steps:
@@ -427,6 +435,30 @@ def hand_written_decoders() -> dict[str, dict[str, list[str]]]:
                 "optional": [k for k in optional if k not in required],
             }
     return decoders
+
+
+#: Where the editor keeps its own list of the steps it can show.
+EDITOR = ROOT / "frontend/src/arkham/components/debug/StepsEditor.vue"
+
+
+def editor_gap(steps: list[dict]) -> list[str]:
+    """Steps the engine runs that the card builder has no editor for.
+
+    The editor keeps its own `StepKind` union and falls back to the Push editor
+    for anything not in it -- so a step it has not learned shows as an empty
+    message, and saving that card writes the emptiness back. Four steps had
+    drifted out of it before this check existed.
+    """
+    if not EDITOR.exists():
+        return []
+    src = EDITOR.read_text()
+    shown = set(re.findall(r"kindOf\(step\) === '([a-zA-Z]+)'", src))
+    shown |= {
+        kind
+        for group in re.findall(r"\[([^\]]*)\]\.includes\(kindOf\(step\)\)", src)
+        for kind in re.findall(r"'([a-zA-Z]+)'", group)
+    }
+    return [s["step"] for s in steps if s["step"] not in shown]
 
 
 def main() -> int:
@@ -499,6 +531,15 @@ def main() -> int:
         # `runRequest`, which only sends the message.
         if key == "request":
             payload_keys = dedup(payload_keys + ["on", "steps"])
+        # As `request`: a deferred search's branches are read by `resumeSearch`
+        # when the found cards come back, not by `runSearch` which asks.
+        if key == "search":
+            payload_keys = dedup(payload_keys + ["bind"])
+        # An outcome's margin. `runOutcomes` only chooses between one rider and
+        # a list of them; `by` is read a level deeper, in `runOutcome`, which is
+        # past where the chain is followed.
+        if key in ("fight", "investigate", "evade", "parley", "test", "withSkillTest"):
+            payload_keys = dedup(payload_keys + ["by"])
 
         read = lookups("\n".join([step_block, payload_block]))
         steps.append(
@@ -582,11 +623,21 @@ def main() -> int:
         "arrayTolerantDecoders": array_tolerant_decoders(),
         "entityBindings": entity_bindings(),
         "specs": {
-            "_abilities": ["type", "criteria", "limit", "tooltip", "zone", "steps", "effect"],
+            "_abilities": [
+                "type", "criteria", "limit", "tooltip", "zone", "steps", "effect",
+                "noAttacksOfOpportunity",
+            ],
             "_handlers": ["on", "requires", "global", "steps"],
             "_modifiers": [
                 "kind", "matcher", "modifiers", "if", "each", "eachBind", "let", "requires",
             ],
+            # A keyword the card's set declares, and what this card fills its
+            # slots with. Only the four keys below are fixed: the rest are whatever
+            # slots that keyword declared, so what a card is asked for is the
+            # keyword's business and cannot be listed here. `modifiers` and
+            # `abilities` are the card's own half of the result, gated by the
+            # keyword's `activeWhen` rather than substituted into its templates.
+            "_keywords": ["keyword", "token", "modifiers", "abilities", "…the keyword's slots"],
             "_revelationPlacementValues": vocabulary["revelationPlacements"],
         },
     }
@@ -597,6 +648,13 @@ def main() -> int:
         f"{target.name}: {len(steps)} steps, {len(operators)} expression operators, "
         f"{sum(len(v) for v in vocabulary.values())} vocabulary entries"
     )
+    missing = editor_gap(steps)
+    if missing:
+        print(
+            f"warning: no editor in the card builder for {', '.join(missing)} -- "
+            "they will render as an empty Push and saving will drop them",
+            file=sys.stderr,
+        )
     return 0
 
 

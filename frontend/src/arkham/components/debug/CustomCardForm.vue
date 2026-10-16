@@ -8,6 +8,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import * as Api from '@/arkham/api'
 import {
   ARKHAM_BUILD_ID_KEY,
+  CARD_TYPES,
   PLAYER_CARD_TYPES,
   cardArtReference,
   isArkhamBuildCardId,
@@ -16,14 +17,28 @@ import {
   type CustomCard,
 } from '@/arkham/customCards'
 import { cardImg, imgsrc } from '@/arkham/helpers'
+import { readImage } from '@/arkham/customCardArt'
 import { libraryCards } from '@/arkham/customCardLibrary'
 import AbilityEditor from '@/arkham/components/debug/AbilityEditor.vue'
 import StepsEditor from '@/arkham/components/debug/StepsEditor.vue'
-import { cardBindings, defBindings } from '@/arkham/customCardBindings'
+import { cardBindings, defBindings, rememberedBindings } from '@/arkham/customCardBindings'
 import BoolField from '@/arkham/components/debug/BoolField.vue'
 import CardCodeField from '@/arkham/components/debug/CardCodeField.vue'
 import ValueEditor from '@/arkham/components/debug/ValueEditor.vue'
 import { loadSchema } from '@/arkham/schema'
+import KeywordEffectEditor from '@/arkham/components/debug/KeywordEffectEditor.vue'
+import type { CustomSetKeyword, CustomSetToken } from '@/arkham/api'
+
+/* What the set this card belongs to declares. A card prints one of its set's
+ * keywords, so the list of them has to come from outside the card: the set is
+ * what holds them, and this form only ever sees one card. */
+const props = withDefaults(
+  defineProps<{
+    setKeywords?: CustomSetKeyword[]
+    setTokens?: CustomSetToken[]
+  }>(),
+  { setKeywords: () => [], setTokens: () => [] },
+)
 
 /* The matcher kinds a step can query, shared with the ability editor. */
 const QUERY_KINDS: Record<string, string> = {
@@ -39,20 +54,6 @@ const QUERY_KINDS: Record<string, string> = {
   agenda: 'AgendaMatcher',
   card: 'ExtendedCardMatcher',
 }
-
-const CARD_TYPES = [
-  { value: 'AssetType', label: 'Asset (player back)' },
-  { value: 'EventType', label: 'Event' },
-  { value: 'SkillType', label: 'Skill' },
-  { value: 'PlayerTreacheryType', label: 'Treachery (weakness)' },
-  { value: 'PlayerEnemyType', label: 'Enemy (weakness)' },
-  { value: 'EnemyType', label: 'Enemy (encounter)' },
-  { value: 'TreacheryType', label: 'Treachery (encounter)' },
-  { value: 'EncounterAssetType', label: 'Asset (encounter back)' },
-  { value: 'LocationType', label: 'Location' },
-  { value: 'StoryType', label: 'Story' },
-  { value: 'InvestigatorType', label: 'Investigator' },
-] as const
 
 // The types that are a weakness by their nature, rather than by choice.
 const ALWAYS_WEAKNESS = ['PlayerTreacheryType', 'PlayerEnemyType']
@@ -142,6 +143,8 @@ const blankForm = () => ({
   abilities: [] as any[],
   handlers: [] as any[],
   modifiers: [] as any[],
+  // Keywords this card prints, out of the ones its set declares.
+  keywordEffects: [] as any[],
   weaknessKind: '',
   // revelation
   revelation: false,
@@ -200,7 +203,6 @@ onUnmounted(clearArtPreviews)
 
 /* An investigator carries four images; everything else just its face. The extra
  * ones ride in meta so the card model stays one def plus one piece of art. */
-const MAX_ART_BYTES = 1024 * 1024
 
 type ArtSlot = { key: string; label: string; shape: 'card' | 'sideways' | 'portrait' }
 
@@ -245,8 +247,42 @@ const hasCost = computed(() => ['AssetType', 'EventType'].includes(form.cardType
 const art = computed(() => artFor('art'))
 const isInvestigator = computed(() => form.cardType === 'InvestigatorType')
 
-const keywordChoices = computed(() =>
-  KEYWORDS.filter((k) => canPrintKeyword(k, form.cardType)),
+/* Every keyword this card could print: the engine's own, and whatever its set
+ * declares. They read the same way on the card -- a word in bold above the text
+ * -- so they are chosen the same way, from one row of chips.
+ *
+ * Where they differ is underneath. An engine keyword is a flag on the def; a
+ * set's is an entry in `_keywords` that may have slots to fill, and a block for
+ * those appears below once it is on. */
+const keywordChoices = computed(() => [
+  // An investigator prints none of the engine's keywords; a set's it might.
+  ...(isInvestigator.value
+    ? []
+    : KEYWORDS.filter((k) => canPrintKeyword(k, form.cardType)).map((name) => ({
+        name,
+        fromSet: false,
+      }))),
+  ...props.setKeywords.map((keyword) => ({ name: keyword.name, fromSet: true })),
+])
+
+const setKeywordNames = computed(() => props.setKeywords.map((k) => k.name))
+
+const hasKeyword = (keyword: { name: string; fromSet: boolean }) =>
+  keyword.fromSet
+    ? form.keywordEffects.some((e: any) => e.keyword === keyword.name)
+    : form.keywords.includes(keyword.name)
+
+/* The keywords on this card that ask it for something. A keyword with no slots
+ * and no result of its own is said by the chip alone, and a block holding only
+ * its own name would be noise. */
+const keywordsNeedingInput = computed(() =>
+  form.keywordEffects.filter((entry: any) => {
+    const declared = props.setKeywords.find((k) => k.name === entry.keyword)
+    // One this set no longer declares still gets a block: it is on the card, and
+    // hiding it would leave no way to take it off.
+    if (!declared) return true
+    return (declared.slots ?? []).length > 0 || !!declared.behavior?.activeWhen
+  }),
 )
 /* Read the same way the engine reads it: on a card type that cannot be hidden the
  * keyword is printed text and changes nothing. */
@@ -344,6 +380,13 @@ const signatureChoices = computed(() =>
  * card learns whose it is by being listed there. Shown here because it is a
  * real deck restriction — only they can take it — and because it binds their id
  * as $investigator for this card's own abilities. */
+/* Names this card has written into its own metaMap with a Set Global, which
+ * the engine binds back for everything else the card does. Read off the card
+ * rather than declared, so the binding exists exactly where the write does. */
+const remembered = computed(() =>
+  rememberedBindings([form.onPlaySteps, form.abilities, form.handlers, form.modifiers]),
+)
+
 const loadedCode = ref<string | null>(null)
 
 const signatureOwner = computed(() => {
@@ -577,6 +620,7 @@ function buildDef(cardCode: string): Record<string, any> {
   if (form.abilities.length) def.meta._abilities = form.abilities
   if (form.handlers.length) def.meta._handlers = form.handlers
   if (form.modifiers.length) def.meta._modifiers = form.modifiers
+  if (form.keywordEffects.length) def.meta._keywords = form.keywordEffects
 
   return def
 }
@@ -600,40 +644,6 @@ const previewDef = computed(() => {
 
 
 // ------------------------------------------------------------------- art ---
-
-/* Downscaled before upload: the art is served to every player who sees the
- * card, and a full-resolution scan has no business going up. */
-async function readImage(file: File): Promise<Blob> {
-  const dataUrl: string = await new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(file)
-  })
-
-  const image = new Image()
-  await new Promise((resolve, reject) => {
-    image.onload = resolve
-    image.onerror = reject
-    image.src = dataUrl
-  })
-
-  const maxWidth = 500
-  const scale = Math.min(1, maxWidth / image.width)
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.round(image.width * scale)
-  canvas.height = Math.round(image.height * scale)
-  canvas.getContext('2d')?.drawImage(image, 0, 0, canvas.width, canvas.height)
-
-  /* The server caps art at 1MB. 500px of WEBP is well under that, but step the
-   * quality down rather than fail on an image that happens not to be. */
-  for (const quality of [0.85, 0.7, 0.55, 0.4]) {
-    const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', quality))
-    if (blob && blob.size <= MAX_ART_BYTES) return blob
-  }
-
-  throw new Error('Image is too large')
-}
 
 async function takeImage(slot: string, file: File | undefined) {
   if (!file || !file.type.startsWith('image/')) return
@@ -700,7 +710,11 @@ const FORM_KEYS = [
 const FORM_META_KEYS = [
   'shroud', 'revealClues', 'health', 'sanity', 'willpower', 'intellect', 'combat', 'agility',
   'backArt', 'portrait', 'portraitBack', 'number', 'set', 'prey', 'spawnAt',
-  '_abilities', '_handlers', '_modifiers', '_signatures', '_onRevelation', '_revelationPlacement',
+  /* Stamped on by the set, not the form's to edit -- but listed here so the form
+     does not put them in the raw block either, which would freeze a stale copy
+     onto the card that the set could no longer correct. */
+  'setTokens', 'setKeywords',
+  '_abilities', '_handlers', '_modifiers', '_keywords', '_signatures', '_onRevelation', '_revelationPlacement',
   '_elderSign', '_elderSignRevealSteps', '_elderSignSteps', '_elderSignSuccessSteps', '_onPlay',
 ]
 
@@ -780,6 +794,7 @@ async function loadCard(card: CustomCard) {
   form.abilities = meta._abilities ?? []
   form.handlers = meta._handlers ?? []
   form.modifiers = meta._modifiers ?? []
+  form.keywordEffects = meta._keywords ?? []
   form.additionalCost = def.additionalCost ?? null
   form.deckRestrictions = def.deckRestrictions ?? []
   form.bonded = (def.bondedWith ?? []).map((b: any) => ({
@@ -822,9 +837,35 @@ function setPermanent(on: boolean) {
   if (!on && has) form.keywords = form.keywords.filter((k) => k !== 'Permanent')
 }
 
-function toggleKeyword(keyword: string) {
-  if (keyword === 'Permanent') return setPermanent(!form.keywords.includes(keyword))
-  toggle(form.keywords, keyword)
+function toggleKeyword(keyword: { name: string; fromSet: boolean }) {
+  if (keyword.fromSet) return toggleSetKeyword(keyword.name)
+  if (keyword.name === 'Permanent') return setPermanent(!form.keywords.includes(keyword.name))
+  toggle(form.keywords, keyword.name)
+}
+
+/* A set keyword is on when the card has an entry for it. Turning it off drops
+ * the entry and whatever was filled in; nothing else holds that, so there is no
+ * half-on state to keep. */
+function toggleSetKeyword(name: string) {
+  const index = form.keywordEffects.findIndex((e: any) => e.keyword === name)
+  if (index === -1) form.keywordEffects = [...form.keywordEffects, { keyword: name }]
+  else form.keywordEffects = form.keywordEffects.filter((_: any, i: number) => i !== index)
+}
+
+/* How many of this slot the card takes. A list rather than a set, because
+ * "Hand x2" is the hand slot twice -- there is no two-handed slot type. */
+const slotCount = (slot: string) => form.slots.filter((s) => s === slot).length
+
+function toggleSlot(slot: string) {
+  form.slots = slotCount(slot) > 0 ? form.slots.filter((s) => s !== slot) : [...form.slots, slot]
+}
+
+/* The second copy, added and removed on its own so turning the slot off does not
+ * have to remember whether it was doubled. */
+function toggleDoubleSlot(slot: string) {
+  const rest = form.slots.filter((s) => s !== slot)
+  const next = slotCount(slot) > 1 ? 1 : 2
+  form.slots = [...rest, ...Array(next).fill(slot)]
 }
 
 function toggle(list: string[], value: string) {
@@ -1022,18 +1063,19 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
             </div>
           </fieldset>
 
-          <fieldset v-if="!isInvestigator">
+          <fieldset v-if="keywordChoices.length">
             <legend>Keywords</legend>
             <div class="chips">
               <button
                 v-for="keyword in keywordChoices"
-                :key="keyword"
+                :key="keyword.name"
                 type="button"
                 class="chip"
-                :class="{ on: form.keywords.includes(keyword) }"
+                :class="{ on: hasKeyword(keyword), 'from-set': keyword.fromSet }"
+                :title="keyword.fromSet ? 'Declared by this card set' : undefined"
                 @click="toggleKeyword(keyword)"
               >
-                {{ keyword }}
+                {{ keyword.name }}
               </button>
             </div>
             <p v-if="isHidden" class="hint">
@@ -1041,6 +1083,20 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
               ability used "In your hand" can get it out again — nothing discards a hidden card.
               An enemy's draw is still announced to the table unless it also prints Peril.
             </p>
+          </fieldset>
+
+          <!-- Only the keywords that ask this card for something, and only once
+               one is on: the chip above says it is printed, this says what it
+               says on this card. -->
+          <fieldset v-if="keywordsNeedingInput.length">
+            <legend>Keyword details</legend>
+            <KeywordEffectEditor
+              :setKeywords="props.setKeywords"
+              :setTokens="props.setTokens"
+              :cardType="form.cardType"
+              :queryKinds="QUERY_KINDS"
+              v-model="form.keywordEffects"
+            />
           </fieldset>
 
           <fieldset v-if="isInvestigator">
@@ -1076,7 +1132,7 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
             <p class="hint">What happens when it is played:</p>
             <StepsEditor
               :queryKinds="QUERY_KINDS"
-              :bindings="cardBindings(form.cardType)"
+              :bindings="[...cardBindings(form.cardType), ...remembered]"
               :path="'onPlay'"
               :modelValue="form.onPlaySteps"
               @update:modelValue="form.onPlaySteps = $event"
@@ -1129,14 +1185,14 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
             </div>
             <ValueEditor
               type="PreyMatcher"
-              :bindings="defBindings()"
+              :bindings="defBindings(!!signatureOwner)"
               label="Prey (defaults to anyone)"
               :modelValue="form.prey"
               @update:modelValue="form.prey = $event"
             />
             <ValueEditor
               type="SpawnAt"
-              :bindings="defBindings()"
+              :bindings="defBindings(!!signatureOwner)"
               label="Spawn (defaults to the usual rules)"
               :modelValue="form.spawnAt"
               @update:modelValue="form.spawnAt = $event"
@@ -1162,16 +1218,29 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
           <fieldset v-if="isAsset">
             <legend>Asset</legend>
             <div class="chips">
-              <button
+              <!-- A slot is a list, not a flag: a two-handed weapon takes the
+                   hand slot twice. So the pill is in two parts -- the slot, and
+                   a second copy of it. -->
+              <span
                 v-for="slot in SLOTS"
                 :key="slot"
-                type="button"
-                class="chip"
-                :class="{ on: form.slots.includes(slot) }"
-                @click="toggle(form.slots, slot)"
+                class="chip segmented"
+                :class="{ on: slotCount(slot) > 0 }"
               >
-                {{ slot.replace('Slot', '') }}
-              </button>
+                <button type="button" class="seg" @click="toggleSlot(slot)">
+                  {{ slot.replace('Slot', '') }}
+                </button>
+                <button
+                  v-if="slotCount(slot) > 0"
+                  type="button"
+                  class="seg double"
+                  :class="{ on: slotCount(slot) > 1 }"
+                  :title="slotCount(slot) > 1 ? 'Takes one of these' : 'Takes two of these'"
+                  @click="toggleDoubleSlot(slot)"
+                >
+                  ×2
+                </button>
+              </span>
             </div>
             <div class="row">
               <label>Health<input v-model="form.assetHealth" type="number" placeholder="—" @keydown.stop /></label>
@@ -1203,7 +1272,7 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
               optional
               type="Cost"
               label="Additional cost (optional)"
-              :bindings="defBindings()"
+              :bindings="defBindings(!!signatureOwner)"
               :modelValue="form.additionalCost"
               @update:modelValue="form.additionalCost = $event"
             />
@@ -1211,7 +1280,7 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
             <ValueEditor
               type="[DeckRestriction]"
               label="Deck restrictions (optional)"
-              :bindings="defBindings()"
+              :bindings="defBindings(!!signatureOwner)"
               :modelValue="form.deckRestrictions"
               @update:modelValue="form.deckRestrictions = $event ?? []"
             />
@@ -1244,6 +1313,7 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
             <AbilityEditor
               section="abilities"
               :cardType="form.cardType"
+              :extraBindings="remembered"
               :canRevelation="canHaveRevelation"
               :revelationImplied="revelationImplied"
               :hasRevelationPlacement="hasRevelationPlacement"
@@ -1273,12 +1343,15 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
             <AbilityEditor
               section="listeners"
               :cardType="form.cardType"
+              :extraBindings="remembered"
               :abilities="form.abilities"
               :modifiers="form.modifiers"
               v-model:handlers="form.handlers"
             />
           </fieldset>
 
+          <!-- A keyword the card's set prints, with this card's own condition
+               and result. Only offered once the set has declared one. -->
           <details>
             <summary>Raw CardDef JSON (merged over the form)</summary>
             <textarea
@@ -1534,6 +1607,17 @@ select {
 
 /* A card this one is resolved against, so it wears the same green a known card
    code does in CardCodeField. */
+/* A keyword the card's SET declares, among the engine's own. Marked, because
+   which it is decides what happens underneath: an engine keyword is a flag, a
+   set's may have a block of its own to fill in. */
+.chip.from-set {
+  border-style: dashed;
+
+  &.on {
+    border-style: solid;
+  }
+}
+
 .owner-pill {
   align-self: flex-start;
   background: rgba(190, 242, 100, 0.12);
@@ -1677,6 +1761,43 @@ fieldset {
     background: var(--button-highlight);
     border-color: var(--button-highlight);
     color: #10131f;
+  }
+}
+
+/* A pill in two parts: the thing, and how many of it. The outer pill keeps the
+   shape and the on-state so it reads as one chip among the others; the halves
+   are the two things that can be clicked. */
+.chip.segmented {
+  align-items: stretch;
+  display: inline-flex;
+  overflow: hidden;
+  padding: 0;
+
+  .seg {
+    background: transparent;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: inherit;
+    padding: 0.25rem 0.6rem;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+  }
+
+  /* Off by default even while the slot is on, because one of a slot is the
+     common case and a lit ×2 should mean the card really says so. */
+  .seg.double {
+    border-left: 1px solid rgba(0, 0, 0, 0.25);
+    opacity: 0.45;
+    padding-inline: 0.45rem;
+
+    &.on {
+      font-weight: 700;
+      opacity: 1;
+    }
   }
 }
 

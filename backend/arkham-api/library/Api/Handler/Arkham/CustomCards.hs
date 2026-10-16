@@ -9,9 +9,18 @@ module Api.Handler.Arkham.CustomCards (
   prepareCardForSet,
   persistCard,
   saveCardInSet,
-  stampSetName,
-  unsubscribeSet,
+  stampSet,
+  requireUnlocked,
+  freeName,
+  myCopyOfSet,
+  myCopyOfListing,
+  followOnly,
+  Source (..),
   normalizeUrl,
+  printedOrder,
+  hostArt,
+  portableArt,
+  setDeclarationsFromCards,
 ) where
 
 import Amazonka
@@ -28,15 +37,20 @@ import Arkham.Card.CustomCard (
   registerCustomCards,
   sanitizeCustomCardCode,
  )
+import Arkham.Custom.SetDefs qualified as SetDefs
 import Auth.ApiKey qualified as ApiKey
 import Crypto.Hash.SHA256 qualified as SHA256
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (parseMaybe, withObject)
 import Data.ByteString.Base16 qualified as B16
 import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Lazy qualified as BSL
+import Data.Char (isDigit)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time.Clock
+import Data.Traversable (for)
+import Database.Persist qualified as DB
 import Database.Persist.Sql (SqlPersistT)
 import Import hiding ((==.))
 import Import qualified as P
@@ -72,23 +86,173 @@ most needs it, and because the set handlers already depend on this module --
 the other direction would be a cycle.
 -}
 
-{- | Stop a set following the published set it came from.
+{- | Whether this set follows somebody else's, and so cannot be edited.
 
-Called wherever the set's contents change. A subscription says "this is what was
-published"; once a card in it has been touched that is no longer true, so the row
-goes. Taking the published version again is how you get back to it.
+A set in a collection is one of two things. One is your own: you can do anything
+to it. The other is a copy that follows a source -- a marketplace listing, or a
+link somebody sent you -- which you can read, deckbuild with, play, and bring up
+to date, and not change. Changing it would make it no longer what it follows.
 
-It lives here rather than with the marketplace handlers because those import this
-module, and the card writes that have to call it are here.
+The old rule was the other way round: editing a followed set quietly stopped it
+following. That lost the author's updates over a typo, and it never fired for the
+commonest edit of all, since saving a card goes through a path that did not know
+to do it -- so a "subscribed" set could drift into being something else while
+still claiming to be what was published. Refusing the edit says the same thing
+and can be acted on: "Add to my editor" is one button, and then the set is yours.
+
+Both sources are asked, because a set can follow either. Neither counts once it
+is out of reach: an author who removes you, stops sharing, or unlists the set has
+left you with a copy that can never catch up, and a lock whose point is fidelity
+to a source means nothing without the source.
+
+It lives here rather than with the marketplace or share handlers because those
+import this module, and the writes that have to refuse are here.
 -}
-unsubscribeSet :: ArkhamCustomCardSetId -> SqlPersistT Handler ()
-unsubscribeSet setId = P.deleteWhere [ArkhamCardSetSubscriptionCustomCardSetId P.==. setId]
+lockedSet :: ArkhamCustomCardSetId -> Handler Bool
+lockedSet setId = do
+  listing <- runDB $ P.getBy (UniqueCardSetSubscription setId)
+  case listing of
+    Just (Entity _ row) | arkhamCardSetSubscriptionSubscribed row -> pure True
+    _ ->
+      runDB
+        $ isJust
+        <$> P.selectFirst
+          [ ArkhamCardSetShareAccessCustomCardSetId P.==. Just setId
+          , ArkhamCardSetShareAccessSubscribed P.==. True
+          , ArkhamCardSetShareAccessRevokedAt P.==. Nothing
+          ]
+          []
+
+{- | Refuse to change a set that follows somebody else's.
+
+A 403 rather than a quiet no-op: the client hides these controls on a locked set,
+so anything that reaches here is a stale page or a script, and both are better
+told.
+-}
+requireUnlocked :: ArkhamCustomCardSetId -> Handler ()
+requireUnlocked setId = do
+  locked <- lockedSet setId
+  when locked
+    $ permissionDenied
+      "That set follows someone else's. Add it to your editor to make it yours."
 
 ownedCardSet :: UserId -> ArkhamCustomCardSetId -> Handler ArkhamCustomCardSet
 ownedCardSet userId setId = do
   set <- runDB $ get404 setId
   unless (arkhamCustomCardSetUserId set == userId) $ permissionDenied "Not your card set"
   pure set
+
+{- | Say the set changed, for a change that happened to a card in it.
+
+A set's @updatedAt@ is read as "when this set last changed": it is what orders
+the builder's list by recency, and it is the whole of how someone holding a
+share of the set is told there is something new to take. A card being saved or
+thrown away is the set changing, and nothing else moves the set's own row when
+it happens, so these two writes have to.
+
+Not folded into 'persistCard': an import writes the set row itself and then
+every card through that, and this would be another hundred and fifty updates
+saying what the first one said.
+-}
+touchSet :: ArkhamCustomCardSetId -> UTCTime -> SqlPersistT Handler ()
+touchSet setId now = P.update setId [ArkhamCustomCardSetUpdatedAt P.=. now]
+
+{- | The caller's own copy of somebody else's set, however they came by it.
+
+A copy can arrive two ways -- from a link, or from the marketplace -- and either
+can arrive second. A card code is unique per account, so the second copy cannot
+sit beside the first: writing it moves the cards out of the one already here and
+leaves an empty set behind. So "have I got this already?" has to ask both routes,
+and the write that follows replaces what it finds rather than adding to it.
+
+Asked by the author's own set, because that is what both routes point at: a share
+hangs off it, and a listing names it. A listing whose author deleted their set
+names nothing, and the caller is left to be found by their subscription instead
+(see 'Api.Handler.Arkham.PublishedCardSets.myCopyOf').
+-}
+myCopyOfSet :: UserId -> ArkhamCustomCardSetId -> Handler (Maybe ArkhamCustomCardSetId)
+myCopyOfSet userId sourceId = do
+  viaShare <- do
+    shares <- runDB $ P.selectList [ArkhamCardSetShareCustomCardSetId P.==. sourceId] []
+    copies <- for shares \(Entity shareId _) -> do
+      access <- runDB $ P.getBy (UniqueCardSetShareAccess shareId userId)
+      pure $ arkhamCardSetShareAccessCustomCardSetId . entityVal =<< access
+    pure $ listToMaybe (catMaybes copies)
+  case viaShare of
+    Just found -> pure (Just found)
+    Nothing -> do
+      listings <-
+        runDB $ P.selectList [ArkhamPublishedCardSetCustomCardSetId P.==. Just sourceId] []
+      copies <- for listings \(Entity publishedId _) -> myCopyOfListing userId publishedId
+      pure $ listToMaybe (catMaybes copies)
+
+{- | The caller's own copy of a listing, found by the row that records it.
+
+Every subscription to the listing has to be looked at rather than the first one:
+on a set other people have taken, the first row found is somebody else's, and
+stopping there would report the caller as having no copy and make them a second.
+
+Whether it still follows the listing or not -- the row is also "this set of mine
+is my copy of that", which is as true of a copy taken into the editor.
+-}
+myCopyOfListing :: UserId -> ArkhamPublishedCardSetId -> Handler (Maybe ArkhamCustomCardSetId)
+myCopyOfListing userId publishedId = do
+  subs <-
+    runDB $ P.selectList [ArkhamCardSetSubscriptionPublishedCardSetId P.==. publishedId] []
+  ours <- for subs \(Entity _ sub) -> do
+    let setId = arkhamCardSetSubscriptionCustomCardSetId sub
+    owner <- runDB $ DB.get setId
+    pure $ case owner of
+      Just set | arkhamCustomCardSetUserId set == userId -> Just setId
+      _ -> Nothing
+  pure $ listToMaybe (catMaybes ours)
+
+{- | Say this set no longer follows whatever it used to, bar the one route that
+is taking it over.
+
+One source at a time: a copy that both a link and a listing claim is a set
+answering to two things that can disagree about what is in it. Taking it either
+way therefore silences the other -- the row itself stays, because it is also the
+record of which set of yours is your copy of that.
+-}
+followOnly :: Source -> ArkhamCustomCardSetId -> SqlPersistT Handler ()
+followOnly source setId = do
+  when (source /= FromShare)
+    $ P.updateWhere
+      [ArkhamCardSetShareAccessCustomCardSetId P.==. Just setId]
+      [ArkhamCardSetShareAccessSubscribed P.=. False]
+  when (source /= FromListing)
+    $ P.updateWhere
+      [ArkhamCardSetSubscriptionCustomCardSetId P.==. setId]
+      [ArkhamCardSetSubscriptionSubscribed P.=. False]
+
+-- | Which of the two routes a copy is being taken through.
+data Source = FromShare | FromListing
+  deriving stock Eq
+
+{- | A name no set of this user's holds, bar the one being written.
+
+Taking a copy of something called what one of your own sets is called should not
+fail, and should not silently replace it. Lives here rather than with either
+importer because both the marketplace and a share link need it.
+
+The set being written is excepted because a copy taken /again/ is renamed to
+whatever the original is called now, and the name it already holds is its own: a
+copy keeping its name is not a clash, while a third set of yours holding that
+name still is -- which is a rename straight into a unique index, and used to be
+a 500 on the way to catching up with the author.
+-}
+freeName :: UserId -> Maybe ArkhamCustomCardSetId -> Text -> Handler Text
+freeName userId mine name = go name (2 :: Int)
+ where
+  go candidate attempt = do
+    taken <- runDB $ P.getBy (UniqueUserCustomCardSetName userId candidate)
+    case taken of
+      Nothing -> pure candidate
+      Just (Entity found _) | Just found == mine -> pure candidate
+      Just _
+        | attempt > 50 -> invalidArgs ["You already have a set called \"" <> name <> "\""]
+        | otherwise -> go (name <> " (" <> tshow attempt <> ")") (attempt + 1)
 
 {- | A link as it is stored: blank is nothing, trimmed, and an @http@ address or
 a refusal. The scheme is checked here rather than wherever it is shown, because
@@ -106,29 +270,80 @@ normalizeUrl raw = case T.strip <$> raw of
     | any (`T.isPrefixOf` T.toLower text) ["http://", "https://"] -> pure (Just text)
     | otherwise -> invalidArgs ["A set's link has to start with http:// or https://"]
 
-{- | The set's name, written into the card's own def.
+{- | What the set it belongs to writes into a card's own def: its name, and --
+for an investigator expansion -- the tokens and keywords the set brings with it.
 
-The set row is what a card belongs to. This copy travels with the card, and is
-what names the set when a card arrives somewhere there are no set rows to read:
-a card exported on its own and imported into another account, and the pre-set
-libraries the backfill migration filed by this same field. Nothing in a running
-app reads it to display a set -- that comes off the row.
+The set row is what a card belongs to. These copies travel with the card, and
+are what answer for the set when a card arrives somewhere there are no set rows
+to read: a card exported on its own and imported into another account, the
+pre-set libraries the backfill migration filed by the name field, and a card in
+a running game, where the engine and the client have the def and nothing else.
+The keywords are read there to resolve what a card's @_keywords@ refers to, and
+the tokens to draw a marker the engine only knows the slug of.
+
+An ordinary set writes nothing but its name: an empty list is nothing to say, so
+the key goes rather than being written onto every card of every set that has no
+tokens.
 -}
-stampSetName :: Text -> CardDef -> CardDef
-stampSetName name def = def {cdMeta = Map.insert "set" (String name) (cdMeta def)}
+stampSet :: ArkhamCustomCardSet -> CardDef -> CardDef
+stampSet set def = def {cdMeta = stamped}
+ where
+  stamped =
+    Map.insert "set" (String (arkhamCustomCardSetName set))
+      $ declared SetDefs.setTokensMetaKey (arkhamCustomCardSetTokens set)
+      $ declared SetDefs.setKeywordsMetaKey (arkhamCustomCardSetKeywords set)
+      $ cdMeta def
+  declared key value meta = case value of
+    Array xs | null xs -> Map.delete key meta
+    Null -> Map.delete key meta
+    _ -> Map.insert key value meta
+
+{- | The tokens and keywords a set declared, read back off the cards it was
+published or exported with.
+
+Every card carries a copy ('stampSet'), so what a set brings with it survives
+anywhere a card goes -- which means an import does not need the set's own row,
+or a published version to have been written in a format that had room for it.
+The first card that says anything answers for the set; they are all stamped from
+the same row, so any of them would.
+-}
+setDeclarationsFromCards :: [CustomCard] -> (Value, Value)
+setDeclarationsFromCards cards = (declared SetDefs.setTokensMetaKey, declared SetDefs.setKeywordsMetaKey)
+ where
+  declared key =
+    fromMaybe (Array mempty)
+      $ listToMaybe [v | card <- cards, Just v <- [Map.lookup key (cdMeta (customCardDef card))]]
+
+{- | A card's place in its set: the number printed on it, read out of its own def.
+
+Sorted on the leading digits rather than the text, so 10 follows 9. A card with no
+number sorts last, since it has said nothing about where it goes.
+-}
+printedOrder :: Value -> (Int, Text)
+printedOrder value = (fromMaybe maxBound (readMaybe (T.unpack digits)), number)
+ where
+  number = case value of
+    Object o -> case KeyMap.lookup "meta" o of
+      Just (Object m) -> case KeyMap.lookup "number" m of
+        Just (String t) -> t
+        Just (Number n) -> tshow (round n :: Int)
+        _ -> ""
+      _ -> ""
+    _ -> ""
+  digits = T.takeWhile isDigit number
 
 {- | Everything a card needs doing to it before it can be written: the code
-checked, the set name stamped on, and any inlined art uploaded.
+checked, what its set declares stamped on, and any inlined art uploaded.
 
 Split from the write because uploading is the part that can fail, and an import
 empties a set before it refills it. Preparing every card first means a card that
 cannot be stored fails while the set it is replacing is still whole.
 -}
-prepareCardForSet :: UserId -> Text -> CustomCard -> Handler (CardCode, CustomCard)
-prepareCardForSet userId setName card0 = do
+prepareCardForSet :: UserId -> ArkhamCustomCardSet -> CustomCard -> Handler (CardCode, CustomCard)
+prepareCardForSet userId set card0 = do
   (cardCode, card') <- normalizeCard card0
-  art <- traverse (hostArt userId) (customCardArt card')
-  def <- hostDefArt userId (stampSetName setName (customCardDef card'))
+  art <- join <$> traverse (portableArt userId) (customCardArt card')
+  def <- hostDefArt userId (stampSet set (customCardDef card'))
   pure (cardCode, card' {customCardArt = art, customCardDef = def})
 
 {- | Write a prepared card into a set. Runs in the caller's transaction, so an
@@ -179,13 +394,16 @@ persistCard userId setId now (cardCode, card) = do
 saveCardInSet
   :: UserId
   -> ArkhamCustomCardSetId
-  -> Text
+  -> ArkhamCustomCardSet
   -> UTCTime
   -> CustomCard
   -> Handler (Entity ArkhamCustomCard)
-saveCardInSet userId setId setName now card0 = do
-  prepared <- prepareCardForSet userId setName card0
-  runDB $ persistCard userId setId now prepared
+saveCardInSet userId setId set now card0 = do
+  prepared <- prepareCardForSet userId set card0
+  runDB do
+    saved <- persistCard userId setId now prepared
+    touchSet setId now
+    pure saved
 
 -- | A card is always saved into a set, so the set it goes in comes with it.
 data SaveCardPost = SaveCardPost
@@ -205,17 +423,20 @@ postApiV1ArkhamCustomCardsR = do
   userId <- callerUserId <$> getScopedCaller [ApiKey.cardsWrite]
   SaveCardPost {saveCardPostSetId, saveCardPostCard} <- requireCheckJsonBody
   set <- ownedCardSet userId saveCardPostSetId
+  requireUnlocked saveCardPostSetId
   now <- liftIO getCurrentTime
-  saveCardInSet userId saveCardPostSetId (arkhamCustomCardSetName set) now saveCardPostCard
+  saveCardInSet userId saveCardPostSetId set now saveCardPostCard
 
 deleteApiV1ArkhamCustomCardR :: ArkhamCustomCardId -> Handler ()
 deleteApiV1ArkhamCustomCardR cardId = do
   userId <- callerUserId <$> getScopedCaller [ApiKey.cardsWrite]
+  row <- runDB $ get404 cardId
+  when (arkhamCustomCardUserId row /= userId) $ permissionDenied "Not your card"
+  requireUnlocked (arkhamCustomCardCustomCardSetId row)
+  now <- liftIO getCurrentTime
   runDB do
-    row <- get404 cardId
-    when (arkhamCustomCardUserId row /= userId) $ lift $ permissionDenied "Not your card"
-    unsubscribeSet (arkhamCustomCardCustomCardSetId row)
     P.delete cardId
+    touchSet (arkhamCustomCardCustomCardSetId row) now
 
 {- | Where a custom card's art lives.
 
@@ -308,6 +529,34 @@ hostArt userId art = case parseDataUri art of
   Nothing -> pure art
   Just (contentType, bytes) -> storeArt userId contentType bytes
 
+{- | Art as it can be stored here, if it can be at all.
+
+Art lives under the host of the library it was uploaded to. In production that
+is an asset host, so the address means the same thing to everyone. In
+development 'storeArt' writes to the frontend's public directory and answers
+with a bare path, which names a file on the machine it was uploaded on and
+nothing at all anywhere else.
+
+Such a path can arrive here: an export falls back to the URL when it cannot read
+the image, and a set's tokens are read back off the copy stamped on each card
+when the file names no set -- a loose card, or a selection out of the builder.
+Stored as given, it is an image that resolves to the single-page app on every
+request, which renders as broken art with nothing to say why.
+
+So it is dropped instead, and the token draws as a plain marker while the
+builder shows an empty image control -- which is true, and is one upload to put
+right. Only a path into a library is judged, and only where this server is not
+the one serving it; anything else is somebody else's address to keep.
+-}
+portableArt :: UserId -> Text -> Handler (Maybe Text)
+portableArt userId art = do
+  hosted <- hostArt userId art
+  servesLocally <- isJust <$> getsApp (appCustomCardArtDir . appSettings)
+  pure do
+    guard . not $ T.null (T.strip hosted)
+    guard $ servesLocally || not (("/" <> artPrefix) `T.isPrefixOf` hosted)
+    pure hosted
+
 {- | The images a def carries besides its face.
 
 An investigator has a card back and two portraits, and they live in meta rather
@@ -323,9 +572,10 @@ hostDefArt userId def = do
   pure def {cdMeta = meta}
  where
   host m k = case Map.lookup k m of
-    Just (String v) -> do
-      hosted <- hostArt userId v
-      pure $ Map.insert k (String hosted) m
+    Just (String v) ->
+      portableArt userId v <&> \case
+        Nothing -> Map.delete k m
+        Just hosted -> Map.insert k (String hosted) m
     _ -> pure m
 
 parseDataUri :: Text -> Maybe (Text, BSL.ByteString)
@@ -356,7 +606,8 @@ userCustomCards userId = do
   card can claim, and in that collision the imported card is the one the deck
   means. Left-biased union rather than row order, which is `updatedAt` and says
   nothing about which card is which. -}
-  pure $ Map.fromList [(cdCardCode (customCardDef c), c) | c <- cards]
+  pure
+    $ Map.fromList [(cdCardCode (customCardDef c), c) | c <- cards]
     `Map.union` Map.fromList [(code, c) | c <- cards, code <- drop 1 (customCardCodes c)]
 
 registerUserCustomCards :: UserId -> Handler ()

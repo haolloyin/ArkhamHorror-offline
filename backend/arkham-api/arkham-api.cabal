@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.39.6.
+-- This file has been generated from package.yaml by hpack version 0.37.0.
 --
 -- see: https://github.com/sol/hpack
 
@@ -22,15 +22,23 @@ flag library-only
 
 library
   exposed-modules:
+      Api.Arkham.Archive
       Api.Arkham.Epic
       Api.Arkham.Export
       Api.Arkham.Helpers
+      Api.Arkham.Maintenance
       Api.Arkham.Types.MultiplayerVariant
+      Api.BugUpload
       Api.Handler.ApiKeys
       Api.Handler.Arkham.Achievements
+      Api.Handler.Arkham.Admin.Archives
       Api.Handler.Arkham.Admin.GameStats
       Api.Handler.Arkham.Admin.Metrics
+      Api.Handler.Arkham.Admin.Users
+      Api.Handler.Arkham.Archive
+      Api.Handler.Arkham.BuildConnection
       Api.Handler.Arkham.Cards
+      Api.Handler.Arkham.CardSetShares
       Api.Handler.Arkham.CardSetSubmissions
       Api.Handler.Arkham.CustomCards
       Api.Handler.Arkham.CustomCardSets
@@ -38,10 +46,12 @@ library
       Api.Handler.Arkham.Events
       Api.Handler.Arkham.Game.Bug
       Api.Handler.Arkham.Game.Debug
+      Api.Handler.Arkham.Game.LogExport
       Api.Handler.Arkham.Games
       Api.Handler.Arkham.Games.Admin
       Api.Handler.Arkham.Games.Shared
       Api.Handler.Arkham.Investigators
+      Api.Handler.Arkham.Maintenance
       Api.Handler.Arkham.Old
       Api.Handler.Arkham.PendingGames
       Api.Handler.Arkham.PublishedCardSets
@@ -2471,6 +2481,7 @@ library
       Arkham.Custom.Schema.Windows
       Arkham.Custom.Schema.Windows.Check
       Arkham.Custom.Schema.Windows.Table
+      Arkham.Custom.SetDefs
       Arkham.Custom.Skill
       Arkham.Custom.Steps
       Arkham.Custom.Story
@@ -2480,6 +2491,7 @@ library
       Arkham.DamageEffect
       Arkham.Debug
       Arkham.Debug.CardDestination
+      Arkham.Debug.SkillTest
       Arkham.Deck
       Arkham.DeckBuilding.Adjustment
       Arkham.Decklist
@@ -4103,6 +4115,7 @@ library
       Arkham.Helpers.Modifiers
       Arkham.Helpers.Movement
       Arkham.Helpers.Name
+      Arkham.Helpers.Narrative
       Arkham.Helpers.Phase
       Arkham.Helpers.Phases
       Arkham.Helpers.Placement
@@ -4145,6 +4158,7 @@ library
       Arkham.Homebrew.AgainstTheWendigo.Agendas.ADarkAndDisturbingValley
       Arkham.Homebrew.AgainstTheWendigo.Agendas.SomethingDarkIsComing
       Arkham.Homebrew.AgainstTheWendigo.Agendas.TheWendigoHuntsYou
+      Arkham.Homebrew.AgainstTheWendigo.Agendas.TheWendigosAttack
       Arkham.Homebrew.AgainstTheWendigo.Assets.CharlieFoxtail
       Arkham.Homebrew.AgainstTheWendigo.Assets.ExpeditionNotebook
       Arkham.Homebrew.AgainstTheWendigo.Assets.GoldMiningRevenues
@@ -4195,6 +4209,7 @@ library
       Arkham.Homebrew.AgainstTheWendigo.ScenarioDeckKeys
       Arkham.Homebrew.AgainstTheWendigo.Scenarios.AgainstTheWendigo
       Arkham.Homebrew.AgainstTheWendigo.Sets
+      Arkham.Homebrew.AgainstTheWendigo.SideStoryDefs
       Arkham.Homebrew.AgainstTheWendigo.Stories.BernardsFateV1
       Arkham.Homebrew.AgainstTheWendigo.Stories.BernardsFateV2
       Arkham.Homebrew.AgainstTheWendigo.Stories.CharlieFoxtailsDestiny
@@ -4215,11 +4230,392 @@ library
       Arkham.Homebrew.AgainstTheWendigo.Treacheries.OldInjury
       Arkham.Homebrew.AgainstTheWendigo.Treacheries.Rapid
       Arkham.Homebrew.AgainstTheWendigo.Treacheries.Skinwalker
+      Arkham.Homebrew.AgainstTheWendigo.Treacheries.SomethingIsStalkingYou
       Arkham.Homebrew.AgainstTheWendigo.Treacheries.SuddenFlood
+      Arkham.Homebrew.AgainstTheWendigo.Treacheries.TerrifyingVisions
       Arkham.Homebrew.AgainstTheWendigo.Treacheries.TheClearingOfTheSacrifices
       Arkham.Homebrew.AgainstTheWendigo.Treacheries.Trapper
       Arkham.Homebrew.AgainstTheWendigo.Treacheries.UnexpectedObstacles
       Arkham.Homebrew.AgainstTheWendigo.Treacheries.WinterSettles
+      Arkham.Homebrew.AgesUnwound.Acts.ADimensionOfItsOwn
+      Arkham.Homebrew.AgesUnwound.Acts.AFineCountryGarden
+      Arkham.Homebrew.AgesUnwound.Acts.AgainstAGod
+      Arkham.Homebrew.AgesUnwound.Acts.AllOfTimeAndSpace
+      Arkham.Homebrew.AgesUnwound.Acts.BigAndUgly_053
+      Arkham.Homebrew.AgesUnwound.Acts.BigAndUgly_161
+      Arkham.Homebrew.AgesUnwound.Acts.BreakingTheCircle
+      Arkham.Homebrew.AgesUnwound.Acts.BreakingTheCircles
+      Arkham.Homebrew.AgesUnwound.Acts.DoorwayToTheUnknown_054
+      Arkham.Homebrew.AgesUnwound.Acts.DoorwayToTheUnknown_162
+      Arkham.Homebrew.AgesUnwound.Acts.FightingTheTide
+      Arkham.Homebrew.AgesUnwound.Acts.GettingYourBearings
+      Arkham.Homebrew.AgesUnwound.Acts.HellishHound
+      Arkham.Homebrew.AgesUnwound.Acts.JustOneMan
+      Arkham.Homebrew.AgesUnwound.Acts.OnTheLam
+      Arkham.Homebrew.AgesUnwound.Acts.OutOfYourDepth
+      Arkham.Homebrew.AgesUnwound.Acts.Preservation
+      Arkham.Homebrew.AgesUnwound.Acts.SlippingTheNet
+      Arkham.Homebrew.AgesUnwound.Acts.Swarmed
+      Arkham.Homebrew.AgesUnwound.Acts.TheBoundary_052
+      Arkham.Homebrew.AgesUnwound.Acts.TheBoundary_160
+      Arkham.Homebrew.AgesUnwound.Acts.TheFirstCircle
+      Arkham.Homebrew.AgesUnwound.Acts.TheLongGame
+      Arkham.Homebrew.AgesUnwound.Acts.WardedWay
+      Arkham.Homebrew.AgesUnwound.Acts.WeatheringTheStorm
+      Arkham.Homebrew.AgesUnwound.Acts.WhatCameBefore
+      Arkham.Homebrew.AgesUnwound.Agendas.ArmyOfOne
+      Arkham.Homebrew.AgesUnwound.Agendas.Autumn
+      Arkham.Homebrew.AgesUnwound.Agendas.BadTimes
+      Arkham.Homebrew.AgesUnwound.Agendas.BreakingPoint
+      Arkham.Homebrew.AgesUnwound.Agendas.DaysNeverBeforeSeen
+      Arkham.Homebrew.AgesUnwound.Agendas.EndOfTheLine
+      Arkham.Homebrew.AgesUnwound.Agendas.FallingApart
+      Arkham.Homebrew.AgesUnwound.Agendas.FamiliarAdversaries
+      Arkham.Homebrew.AgesUnwound.Agendas.FromOneMany
+      Arkham.Homebrew.AgesUnwound.Agendas.GazeOfThreeEyes
+      Arkham.Homebrew.AgesUnwound.Agendas.Hunted
+      Arkham.Homebrew.AgesUnwound.Agendas.OnceMoreUntoTheBreach
+      Arkham.Homebrew.AgesUnwound.Agendas.OutsideOfTime
+      Arkham.Homebrew.AgesUnwound.Agendas.RageAgainstTheEnd
+      Arkham.Homebrew.AgesUnwound.Agendas.RipplesInReality
+      Arkham.Homebrew.AgesUnwound.Agendas.Spring
+      Arkham.Homebrew.AgesUnwound.Agendas.Summer
+      Arkham.Homebrew.AgesUnwound.Agendas.TheRitualBegins
+      Arkham.Homebrew.AgesUnwound.Agendas.TimeRunningOut
+      Arkham.Homebrew.AgesUnwound.Agendas.TimeRunningShort
+      Arkham.Homebrew.AgesUnwound.Agendas.Watched
+      Arkham.Homebrew.AgesUnwound.Agendas.Winter
+      Arkham.Homebrew.AgesUnwound.Assets.AforgomonsBlade
+      Arkham.Homebrew.AgesUnwound.Assets.ChronalAtlas
+      Arkham.Homebrew.AgesUnwound.Assets.DistantEntity
+      Arkham.Homebrew.AgesUnwound.Assets.ForestallFate
+      Arkham.Homebrew.AgesUnwound.Assets.IonianPendant
+      Arkham.Homebrew.AgesUnwound.Assets.UnstableWarding
+      Arkham.Homebrew.AgesUnwound.Assets.WingsOfDamakairon
+      Arkham.Homebrew.AgesUnwound.Campaign
+      Arkham.Homebrew.AgesUnwound.CampaignSteps
+      Arkham.Homebrew.AgesUnwound.CardDefEntries
+      Arkham.Homebrew.AgesUnwound.CardDefs.Acts
+      Arkham.Homebrew.AgesUnwound.CardDefs.Agendas
+      Arkham.Homebrew.AgesUnwound.CardDefs.Assets
+      Arkham.Homebrew.AgesUnwound.CardDefs.Enemies
+      Arkham.Homebrew.AgesUnwound.CardDefs.Events
+      Arkham.Homebrew.AgesUnwound.CardDefs.Locations
+      Arkham.Homebrew.AgesUnwound.CardDefs.Skills
+      Arkham.Homebrew.AgesUnwound.CardDefs.Stories
+      Arkham.Homebrew.AgesUnwound.CardDefs.Treacheries
+      Arkham.Homebrew.AgesUnwound.CardEntries
+      Arkham.Homebrew.AgesUnwound.ChaosBag
+      Arkham.Homebrew.AgesUnwound.Content
+      Arkham.Homebrew.AgesUnwound.Defs
+      Arkham.Homebrew.AgesUnwound.DummyDeck
+      Arkham.Homebrew.AgesUnwound.Enemies.AgelessWatchers
+      Arkham.Homebrew.AgesUnwound.Enemies.AncientSphinx
+      Arkham.Homebrew.AgesUnwound.Enemies.Arsonists
+      Arkham.Homebrew.AgesUnwound.Enemies.BlessedOfAforgomon
+      Arkham.Homebrew.AgesUnwound.Enemies.BrainwashedExpedition
+      Arkham.Homebrew.AgesUnwound.Enemies.Chronophage
+      Arkham.Homebrew.AgesUnwound.Enemies.DeterminedGeneral
+      Arkham.Homebrew.AgesUnwound.Enemies.DisplacedLegion
+      Arkham.Homebrew.AgesUnwound.Enemies.EagerSphinx
+      Arkham.Homebrew.AgesUnwound.Enemies.EntropicShade
+      Arkham.Homebrew.AgesUnwound.Enemies.EstraviusMalone
+      Arkham.Homebrew.AgesUnwound.Enemies.EternitysSentinel_016
+      Arkham.Homebrew.AgesUnwound.Enemies.EternitysSentinel_017
+      Arkham.Homebrew.AgesUnwound.Enemies.EternitysSentinel_193b
+      Arkham.Homebrew.AgesUnwound.Enemies.Fateweaver
+      Arkham.Homebrew.AgesUnwound.Enemies.HiredThugs
+      Arkham.Homebrew.AgesUnwound.Enemies.HoundOfUnmaking
+      Arkham.Homebrew.AgesUnwound.Enemies.Irregulars
+      Arkham.Homebrew.AgesUnwound.Enemies.MyriadAssassin
+      Arkham.Homebrew.AgesUnwound.Enemies.Oblivion
+      Arkham.Homebrew.AgesUnwound.Enemies.PanzerIV
+      Arkham.Homebrew.AgesUnwound.Enemies.PersecutedWitch
+      Arkham.Homebrew.AgesUnwound.Enemies.RomanSoldier
+      Arkham.Homebrew.AgesUnwound.Enemies.SavageYeti
+      Arkham.Homebrew.AgesUnwound.Enemies.ShamblerFromTheStars
+      Arkham.Homebrew.AgesUnwound.Enemies.SheldonsFinest
+      Arkham.Homebrew.AgesUnwound.Enemies.Smilodon
+      Arkham.Homebrew.AgesUnwound.Enemies.TheMyriad
+      Arkham.Homebrew.AgesUnwound.Enemies.TheMyriadGentleman_220
+      Arkham.Homebrew.AgesUnwound.Enemies.TheMyriadGentleman_233
+      Arkham.Homebrew.AgesUnwound.Enemies.TheMyriadGentlemanMasterOfTheHouse
+      Arkham.Homebrew.AgesUnwound.Enemies.TheMyriadGentlemanThousandfoldMan
+      Arkham.Homebrew.AgesUnwound.Enemies.TimeSpirit
+      Arkham.Homebrew.AgesUnwound.Enemies.Truth
+      Arkham.Homebrew.AgesUnwound.Enemies.TyrannosaurusRex
+      Arkham.Homebrew.AgesUnwound.Enemies.Velociraptor
+      Arkham.Homebrew.AgesUnwound.Enemies.Yourself
+      Arkham.Homebrew.AgesUnwound.Events.AgencyStrikeTeam
+      Arkham.Homebrew.AgesUnwound.Events.UnstableEnergies
+      Arkham.Homebrew.AgesUnwound.Helpers
+      Arkham.Homebrew.AgesUnwound.Import
+      Arkham.Homebrew.AgesUnwound.Key
+      Arkham.Homebrew.AgesUnwound.Locations.ADisquietingFuture_069
+      Arkham.Homebrew.AgesUnwound.Locations.ADisquietingFuture_070
+      Arkham.Homebrew.AgesUnwound.Locations.AnEarthLongDead_073
+      Arkham.Homebrew.AgesUnwound.Locations.AnEarthLongDead_074
+      Arkham.Homebrew.AgesUnwound.Locations.AnotherRealm
+      Arkham.Homebrew.AgesUnwound.Locations.APlaceToHide
+      Arkham.Homebrew.AgesUnwound.Locations.ArkhamMassachusetts_075
+      Arkham.Homebrew.AgesUnwound.Locations.ArkhamMassachusetts_076
+      Arkham.Homebrew.AgesUnwound.Locations.ArkhamMassachusetts_086
+      Arkham.Homebrew.AgesUnwound.Locations.ArkhamMassachusetts_111
+      Arkham.Homebrew.AgesUnwound.Locations.AWorldAtWar_071
+      Arkham.Homebrew.AgesUnwound.Locations.AWorldAtWar_072
+      Arkham.Homebrew.AgesUnwound.Locations.BanksOfTheNile_077
+      Arkham.Homebrew.AgesUnwound.Locations.BanksOfTheNile_078
+      Arkham.Homebrew.AgesUnwound.Locations.Cafeteria
+      Arkham.Homebrew.AgesUnwound.Locations.Cairo
+      Arkham.Homebrew.AgesUnwound.Locations.ChildrensPlayground_058
+      Arkham.Homebrew.AgesUnwound.Locations.ChildrensPlayground_171
+      Arkham.Homebrew.AgesUnwound.Locations.Classroom_227
+      Arkham.Homebrew.AgesUnwound.Locations.Classroom_228
+      Arkham.Homebrew.AgesUnwound.Locations.Classroom_229
+      Arkham.Homebrew.AgesUnwound.Locations.CrampedPassage
+      Arkham.Homebrew.AgesUnwound.Locations.DawnOfTheUniverse_201
+      Arkham.Homebrew.AgesUnwound.Locations.DawnOfTheUniverse_201b
+      Arkham.Homebrew.AgesUnwound.Locations.DawnOfTheUniverse_202
+      Arkham.Homebrew.AgesUnwound.Locations.DawnOfTheUniverse_202b
+      Arkham.Homebrew.AgesUnwound.Locations.DaysThatNeverWere_191
+      Arkham.Homebrew.AgesUnwound.Locations.DaysThatNeverWere_191b
+      Arkham.Homebrew.AgesUnwound.Locations.DaysThatNeverWere_192
+      Arkham.Homebrew.AgesUnwound.Locations.Easttown
+      Arkham.Homebrew.AgesUnwound.Locations.EntranceHall
+      Arkham.Homebrew.AgesUnwound.Locations.FeaturelessStreets
+      Arkham.Homebrew.AgesUnwound.Locations.FrenchHill
+      Arkham.Homebrew.AgesUnwound.Locations.FrontGates_056
+      Arkham.Homebrew.AgesUnwound.Locations.FrontGates_169
+      Arkham.Homebrew.AgesUnwound.Locations.FrontHallway
+      Arkham.Homebrew.AgesUnwound.Locations.FulcrumOfPossibility_189
+      Arkham.Homebrew.AgesUnwound.Locations.FulcrumOfPossibility_189b
+      Arkham.Homebrew.AgesUnwound.Locations.FulcrumOfPossibility_190
+      Arkham.Homebrew.AgesUnwound.Locations.HeartOfAnEmpire_079
+      Arkham.Homebrew.AgesUnwound.Locations.HeartOfAnEmpire_080
+      Arkham.Homebrew.AgesUnwound.Locations.HedgeMaze
+      Arkham.Homebrew.AgesUnwound.Locations.Himalayas
+      Arkham.Homebrew.AgesUnwound.Locations.IndependenceSquare
+      Arkham.Homebrew.AgesUnwound.Locations.Istanbul
+      Arkham.Homebrew.AgesUnwound.Locations.Kitchen
+      Arkham.Homebrew.AgesUnwound.Locations.Landing
+      Arkham.Homebrew.AgesUnwound.Locations.Lawn
+      Arkham.Homebrew.AgesUnwound.Locations.London
+      Arkham.Homebrew.AgesUnwound.Locations.MasterBedroom
+      Arkham.Homebrew.AgesUnwound.Locations.MexicoCity
+      Arkham.Homebrew.AgesUnwound.Locations.MillionsOfYearsAgo_081
+      Arkham.Homebrew.AgesUnwound.Locations.MillionsOfYearsAgo_082
+      Arkham.Homebrew.AgesUnwound.Locations.OrnateFountain
+      Arkham.Homebrew.AgesUnwound.Locations.Paris
+      Arkham.Homebrew.AgesUnwound.Locations.Parlor
+      Arkham.Homebrew.AgesUnwound.Locations.PrincipalsOffice
+      Arkham.Homebrew.AgesUnwound.Locations.RearCorridors
+      Arkham.Homebrew.AgesUnwound.Locations.RitualCircle_173
+      Arkham.Homebrew.AgesUnwound.Locations.RitualCircle_224
+      Arkham.Homebrew.AgesUnwound.Locations.RitualCircle_225
+      Arkham.Homebrew.AgesUnwound.Locations.Rivertown
+      Arkham.Homebrew.AgesUnwound.Locations.Rome
+      Arkham.Homebrew.AgesUnwound.Locations.SanFrancisco
+      Arkham.Homebrew.AgesUnwound.Locations.SecretsLongForgotten_193
+      Arkham.Homebrew.AgesUnwound.Locations.SecretsLongForgotten_194
+      Arkham.Homebrew.AgesUnwound.Locations.Shanghai
+      Arkham.Homebrew.AgesUnwound.Locations.SideBuilding_057
+      Arkham.Homebrew.AgesUnwound.Locations.SideBuilding_170
+      Arkham.Homebrew.AgesUnwound.Locations.SportsField_059
+      Arkham.Homebrew.AgesUnwound.Locations.SportsField_172
+      Arkham.Homebrew.AgesUnwound.Locations.Stables
+      Arkham.Homebrew.AgesUnwound.Locations.Study
+      Arkham.Homebrew.AgesUnwound.Locations.Sydney
+      Arkham.Homebrew.AgesUnwound.Locations.TheBritishLibrary
+      Arkham.Homebrew.AgesUnwound.Locations.TheEndOfAllThings_203
+      Arkham.Homebrew.AgesUnwound.Locations.TheEndOfAllThings_204
+      Arkham.Homebrew.AgesUnwound.Locations.TheFuture
+      Arkham.Homebrew.AgesUnwound.Locations.ThePast
+      Arkham.Homebrew.AgesUnwound.Locations.ThePresent
+      Arkham.Homebrew.AgesUnwound.Locations.TheTatterdemalion_083
+      Arkham.Homebrew.AgesUnwound.Locations.TheTatterdemalion_084
+      Arkham.Homebrew.AgesUnwound.Locations.TheTimestream
+      Arkham.Homebrew.AgesUnwound.Locations.TodayAThousandTimes_195
+      Arkham.Homebrew.AgesUnwound.Locations.TodayAThousandTimes_196
+      Arkham.Homebrew.AgesUnwound.Locations.Tunguska
+      Arkham.Homebrew.AgesUnwound.Locations.TwistingAlleys
+      Arkham.Homebrew.AgesUnwound.Locations.WhatCouldBe_197
+      Arkham.Homebrew.AgesUnwound.Locations.WhatCouldBe_198
+      Arkham.Homebrew.AgesUnwound.Locations.WhatCouldNeverBe_199
+      Arkham.Homebrew.AgesUnwound.Locations.WhatCouldNeverBe_200
+      Arkham.Homebrew.AgesUnwound.Locations.WinchmoreHouse
+      Arkham.Homebrew.AgesUnwound.Missions.Helpers
+      Arkham.Homebrew.AgesUnwound.ScenarioDeckKeys
+      Arkham.Homebrew.AgesUnwound.Scenarios.AWorldTornDown
+      Arkham.Homebrew.AgesUnwound.Scenarios.AWorldTornDown.Helpers
+      Arkham.Homebrew.AgesUnwound.Scenarios.AWorldTornDownAgain
+      Arkham.Homebrew.AgesUnwound.Scenarios.AWorldTornDownAgain.Helpers
+      Arkham.Homebrew.AgesUnwound.Scenarios.AYearToPlan
+      Arkham.Homebrew.AgesUnwound.Scenarios.NightOfFire
+      Arkham.Homebrew.AgesUnwound.Scenarios.NightOfFire.Helpers
+      Arkham.Homebrew.AgesUnwound.Scenarios.TheMyriadGentleman
+      Arkham.Homebrew.AgesUnwound.Scenarios.TheMyriadGentleman.Helpers
+      Arkham.Homebrew.AgesUnwound.Scenarios.TimeRunsOut
+      Arkham.Homebrew.AgesUnwound.Scenarios.TimeRunsOut.Helpers
+      Arkham.Homebrew.AgesUnwound.Scenarios.Unstuck
+      Arkham.Homebrew.AgesUnwound.Scenarios.Unstuck.Helpers
+      Arkham.Homebrew.AgesUnwound.Sets
+      Arkham.Homebrew.AgesUnwound.Skills.MonasticTraining
+      Arkham.Homebrew.AgesUnwound.Stories.ABlessingFromOnHigh
+      Arkham.Homebrew.AgesUnwound.Stories.AidFromAfar
+      Arkham.Homebrew.AgesUnwound.Stories.Answers
+      Arkham.Homebrew.AgesUnwound.Stories.AThousandAvenuesOfAttack
+      Arkham.Homebrew.AgesUnwound.Stories.AThousandPathsToVictory
+      Arkham.Homebrew.AgesUnwound.Stories.Backfire
+      Arkham.Homebrew.AgesUnwound.Stories.BookHeist
+      Arkham.Homebrew.AgesUnwound.Stories.ColourOutOfSpace
+      Arkham.Homebrew.AgesUnwound.Stories.Destination
+      Arkham.Homebrew.AgesUnwound.Stories.Erasure
+      Arkham.Homebrew.AgesUnwound.Stories.FavorsForFavors
+      Arkham.Homebrew.AgesUnwound.Stories.Gratitude
+      Arkham.Homebrew.AgesUnwound.Stories.GrudgingAssistance
+      Arkham.Homebrew.AgesUnwound.Stories.HarnessingATearInReality
+      Arkham.Homebrew.AgesUnwound.Stories.OblivionBeckons
+      Arkham.Homebrew.AgesUnwound.Stories.ShatteringParadox
+      Arkham.Homebrew.AgesUnwound.Stories.TideOfPossibility
+      Arkham.Homebrew.AgesUnwound.Stories.WindowOfOpportunity
+      Arkham.Homebrew.AgesUnwound.Traits
+      Arkham.Homebrew.AgesUnwound.Treacheries.AcceleratedDecay
+      Arkham.Homebrew.AgesUnwound.Treacheries.AerialBombardment
+      Arkham.Homebrew.AgesUnwound.Treacheries.AgedAThousandYears
+      Arkham.Homebrew.AgesUnwound.Treacheries.ALongAndLonelyYear
+      Arkham.Homebrew.AgesUnwound.Treacheries.AmIReal
+      Arkham.Homebrew.AgesUnwound.Treacheries.AMultitudeOfPlots
+      Arkham.Homebrew.AgesUnwound.Treacheries.AspectsOfInfinity
+      Arkham.Homebrew.AgesUnwound.Treacheries.AssistanceFromTheLodge
+      Arkham.Homebrew.AgesUnwound.Treacheries.ATreasureUnearthed
+      Arkham.Homebrew.AgesUnwound.Treacheries.BeckoningOfEverywhen
+      Arkham.Homebrew.AgesUnwound.Treacheries.BeckoningOfOblivion
+      Arkham.Homebrew.AgesUnwound.Treacheries.CabinPressure
+      Arkham.Homebrew.AgesUnwound.Treacheries.ContactingTheLodge
+      Arkham.Homebrew.AgesUnwound.Treacheries.CurseOfAThousandWinters
+      Arkham.Homebrew.AgesUnwound.Treacheries.DarkMaledict
+      Arkham.Homebrew.AgesUnwound.Treacheries.Dystopia
+      Arkham.Homebrew.AgesUnwound.Treacheries.EnemyOfMyEnemy
+      Arkham.Homebrew.AgesUnwound.Treacheries.EntreatingTheGods
+      Arkham.Homebrew.AgesUnwound.Treacheries.Exposition
+      Arkham.Homebrew.AgesUnwound.Treacheries.ExUnoPlures
+      Arkham.Homebrew.AgesUnwound.Treacheries.FinalPreparations
+      Arkham.Homebrew.AgesUnwound.Treacheries.FragmentedExistence
+      Arkham.Homebrew.AgesUnwound.Treacheries.GazeOfAforgomon
+      Arkham.Homebrew.AgesUnwound.Treacheries.GrandfatherParadox
+      Arkham.Homebrew.AgesUnwound.Treacheries.HelpingYourself
+      Arkham.Homebrew.AgesUnwound.Treacheries.HigherPowers
+      Arkham.Homebrew.AgesUnwound.Treacheries.InEveryShadow
+      Arkham.Homebrew.AgesUnwound.Treacheries.JustBusiness
+      Arkham.Homebrew.AgesUnwound.Treacheries.KeeperOfKnowledge
+      Arkham.Homebrew.AgesUnwound.Treacheries.LostInTheDark
+      Arkham.Homebrew.AgesUnwound.Treacheries.MemoriesFadeToDust
+      Arkham.Homebrew.AgesUnwound.Treacheries.MorbidCuriosity
+      Arkham.Homebrew.AgesUnwound.Treacheries.NexusOfAforgomon
+      Arkham.Homebrew.AgesUnwound.Treacheries.NightBlackAsPitch
+      Arkham.Homebrew.AgesUnwound.Treacheries.NotWelcomeHere
+      Arkham.Homebrew.AgesUnwound.Treacheries.Omnipresence
+      Arkham.Homebrew.AgesUnwound.Treacheries.OutOfPhase
+      Arkham.Homebrew.AgesUnwound.Treacheries.OverwhelmingNumbers
+      Arkham.Homebrew.AgesUnwound.Treacheries.PreserveCausality
+      Arkham.Homebrew.AgesUnwound.Treacheries.RealityUndone
+      Arkham.Homebrew.AgesUnwound.Treacheries.RewrittenExistence
+      Arkham.Homebrew.AgesUnwound.Treacheries.RiggedToBlow
+      Arkham.Homebrew.AgesUnwound.Treacheries.RomanOutpost
+      Arkham.Homebrew.AgesUnwound.Treacheries.Sandstorm
+      Arkham.Homebrew.AgesUnwound.Treacheries.SchemeOfTheMyriad
+      Arkham.Homebrew.AgesUnwound.Treacheries.SheerExhaustion
+      Arkham.Homebrew.AgesUnwound.Treacheries.SkillsOfAnotherLife
+      Arkham.Homebrew.AgesUnwound.Treacheries.StirringTitan
+      Arkham.Homebrew.AgesUnwound.Treacheries.StrangePortal
+      Arkham.Homebrew.AgesUnwound.Treacheries.Syzygy
+      Arkham.Homebrew.AgesUnwound.Treacheries.TemporalInstability
+      Arkham.Homebrew.AgesUnwound.Treacheries.TemporalStutter
+      Arkham.Homebrew.AgesUnwound.Treacheries.TheChainOfAforgomon
+      Arkham.Homebrew.AgesUnwound.Treacheries.TheColoursSpread
+      Arkham.Homebrew.AgesUnwound.Treacheries.TheDevilYouKnow
+      Arkham.Homebrew.AgesUnwound.Treacheries.TheEndlessFall
+      Arkham.Homebrew.AgesUnwound.Treacheries.TheTunguskaEvent
+      Arkham.Homebrew.AgesUnwound.Treacheries.TheyJustKeepComing
+      Arkham.Homebrew.AgesUnwound.Treacheries.TimeLoop
+      Arkham.Homebrew.AgesUnwound.Treacheries.TimeReshaped
+      Arkham.Homebrew.AgesUnwound.Treacheries.TimeRunsBackwards
+      Arkham.Homebrew.AgesUnwound.Treacheries.TimesEbb
+      Arkham.Homebrew.AgesUnwound.Treacheries.TimesSurge
+      Arkham.Homebrew.AgesUnwound.Treacheries.UnevenAcceleration
+      Arkham.Homebrew.AgesUnwound.Treacheries.UnleashedChaosAcceleration
+      Arkham.Homebrew.AgesUnwound.Treacheries.UnleashedChaosMutation
+      Arkham.Homebrew.AgesUnwound.Treacheries.UnleashedChaosProliferation
+      Arkham.Homebrew.AgesUnwound.Treacheries.UnwrittenExistence
+      Arkham.Homebrew.AgesUnwound.Treacheries.UpToSomething
+      Arkham.Homebrew.AgesUnwound.Treacheries.WatchYouBreak
+      Arkham.Homebrew.AgesUnwound.Treacheries.WeightOfTheCenturies
+      Arkham.Homebrew.AgesUnwound.Treacheries.WithoutHomeOrIdentity
+      Arkham.Homebrew.AgesUnwound.Treacheries.YouMustNotBeSeen
+      Arkham.Homebrew.AndThenThereWereNone.Acts.BestLaidPlans
+      Arkham.Homebrew.AndThenThereWereNone.Acts.CauseUNOwen
+      Arkham.Homebrew.AndThenThereWereNone.Agendas.SoldieringOn
+      Arkham.Homebrew.AndThenThereWereNone.Assets.AntediluvianSigils
+      Arkham.Homebrew.AndThenThereWereNone.Assets.AnthonyMarston
+      Arkham.Homebrew.AndThenThereWereNone.Assets.EdwardArmstrong
+      Arkham.Homebrew.AndThenThereWereNone.Assets.EmilyBrent
+      Arkham.Homebrew.AndThenThereWereNone.Assets.EthelRogers
+      Arkham.Homebrew.AndThenThereWereNone.Assets.JohnMacArthur
+      Arkham.Homebrew.AndThenThereWereNone.Assets.LawrenceWargrave
+      Arkham.Homebrew.AndThenThereWereNone.Assets.Methods
+      Arkham.Homebrew.AndThenThereWereNone.Assets.PhilipLombard
+      Arkham.Homebrew.AndThenThereWereNone.Assets.SpectralConduit
+      Arkham.Homebrew.AndThenThereWereNone.Assets.ThomasRogers
+      Arkham.Homebrew.AndThenThereWereNone.Assets.VeraClaythorne
+      Arkham.Homebrew.AndThenThereWereNone.Assets.WilliamBlore
+      Arkham.Homebrew.AndThenThereWereNone.CardDefEntries
+      Arkham.Homebrew.AndThenThereWereNone.CardDefs.Acts
+      Arkham.Homebrew.AndThenThereWereNone.CardDefs.Agendas
+      Arkham.Homebrew.AndThenThereWereNone.CardDefs.Assets
+      Arkham.Homebrew.AndThenThereWereNone.CardDefs.Enemies
+      Arkham.Homebrew.AndThenThereWereNone.CardDefs.Locations
+      Arkham.Homebrew.AndThenThereWereNone.CardDefs.Treacheries
+      Arkham.Homebrew.AndThenThereWereNone.CardEntries
+      Arkham.Homebrew.AndThenThereWereNone.Content
+      Arkham.Homebrew.AndThenThereWereNone.Defs
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.AnthonyMarstonDelusionsOfGrandeur
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.EdwardArmstrongDreamingDeeply
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.EmilyBrentInATangledWeb
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.EthelRogersMaidenNameMarsh
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.JohnMacArthurAmountedToNothing
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.LawrenceWargraveManOfManyFaces
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.PhilipLombardSnakeInTheGrass
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.RestlessSpirit_038
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.RestlessSpirit_039
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.RestlessSpirit_040
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.RestlessSpirit_041
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.RestlessSpirit_042
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.ThomasRogersColdAndDistant
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.VeraClaythorneDiscipliningTheYoung
+      Arkham.Homebrew.AndThenThereWereNone.Enemies.WilliamBloreInTheBusinessOfSecrets
+      Arkham.Homebrew.AndThenThereWereNone.Helpers
+      Arkham.Homebrew.AndThenThereWereNone.Import
+      Arkham.Homebrew.AndThenThereWereNone.Key
+      Arkham.Homebrew.AndThenThereWereNone.Locations.Beach
+      Arkham.Homebrew.AndThenThereWereNone.Locations.Bedrooms
+      Arkham.Homebrew.AndThenThereWereNone.Locations.DiningRoom
+      Arkham.Homebrew.AndThenThereWereNone.Locations.Sunroom
+      Arkham.Homebrew.AndThenThereWereNone.Locations.Terrace
+      Arkham.Homebrew.AndThenThereWereNone.Locations.WoodShed
+      Arkham.Homebrew.AndThenThereWereNone.Scenarios.AndThenThereWereNone
+      Arkham.Homebrew.AndThenThereWereNone.Sets
+      Arkham.Homebrew.AndThenThereWereNone.SideStoryDefs
+      Arkham.Homebrew.AndThenThereWereNone.Traits
+      Arkham.Homebrew.AndThenThereWereNone.Treacheries.CrypticMessage
+      Arkham.Homebrew.AndThenThereWereNone.Treacheries.DarkPresence
+      Arkham.Homebrew.AndThenThereWereNone.Treacheries.GrimImplications
+      Arkham.Homebrew.AndThenThereWereNone.Treacheries.HauntingNoises
+      Arkham.Homebrew.AndThenThereWereNone.Treacheries.LingeringHatred
+      Arkham.Homebrew.AndThenThereWereNone.Treacheries.PhantomHands
+      Arkham.Homebrew.AndThenThereWereNone.Treacheries.Reenactment
+      Arkham.Homebrew.AndThenThereWereNone.Treacheries.Thanatophobia
+      Arkham.Homebrew.AndThenThereWereNone.Treacheries.TheLoomingDead
+      Arkham.Homebrew.AndThenThereWereNone.Treacheries.TreacherousDarkness
       Arkham.Homebrew.CardRegistry
       Arkham.Homebrew.CircusExMortis.AchievementDefs
       Arkham.Homebrew.CircusExMortis.Achievements
@@ -4578,6 +4974,7 @@ library
       Arkham.Homebrew.ConsternationOnTheConstellation.Locations.SunDeck
       Arkham.Homebrew.ConsternationOnTheConstellation.Scenarios.ConsternationOnTheConstellation
       Arkham.Homebrew.ConsternationOnTheConstellation.Sets
+      Arkham.Homebrew.ConsternationOnTheConstellation.SideStoryDefs
       Arkham.Homebrew.ConsternationOnTheConstellation.Traits
       Arkham.Homebrew.ConsternationOnTheConstellation.Treacheries.CallOfRlyeh
       Arkham.Homebrew.ConsternationOnTheConstellation.Treacheries.ClapOfThunder
@@ -5018,6 +5415,348 @@ library
       Arkham.Homebrew.SideStoryDefs
       Arkham.Homebrew.SideStoryEntries
       Arkham.Homebrew.TH
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Acts.AncestralCorruption
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Acts.FleetingGlimpses
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Acts.TheDisturbedProprietor
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Agendas.HallOfAntiquity
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Agendas.RushingAsunder
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Assets.FadedSilhouette
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Assets.MadelineUsher
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Assets.RoderickUsher
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Assets.TheMadTristDragonsCunning
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Assets.TheMadTristShelterFromTheStorm
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.CardDefEntries
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.CardDefs.Acts
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.CardDefs.Agendas
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.CardDefs.Assets
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.CardDefs.Enemies
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.CardDefs.Locations
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.CardDefs.Treacheries
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.CardEntries
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Content
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Defs
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Enemies.LuminousPhantasm
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Enemies.ScionOfUsher
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Enemies.SecretiveSteward
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Enemies.ServantOfTwoMasters
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Enemies.TheThingFromTheTarn
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Helpers
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Import
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Key
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.BanquetHall
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.BanquetHallRuined
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.GrandHall
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.GrandHallRuined
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.ManorChapel
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.ManorChapelRuined
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.PortraitGallery
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.PortraitGalleryRuined
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.PrivateLibrary
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.PrivateLibraryRuined
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.RodericksStudio
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.RodericksStudioRuined
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.TheTarn
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.UsherFamilyCrypt
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.UsherFamilyCryptRuined
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.WineCellar
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Locations.WineCellarRuined
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Scenarios.TheFallOfTheHouseOfUsher
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Sets
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.SideStoryDefs
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Traits
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Treacheries.AuditoryHallucinations
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Treacheries.CollapsingRuin
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Treacheries.DecayedLegacy
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Treacheries.DesolateHeritage
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Treacheries.EnervatingTouch
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Treacheries.EnshroudedHost
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Treacheries.MorbidAcuteness
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Treacheries.NervousAffliction
+      Arkham.Homebrew.TheFallOfTheHouseOfUsher.Treacheries.PestilentVapor
+      Arkham.Homebrew.TheInvisibleMan.Acts.FightingChance
+      Arkham.Homebrew.TheInvisibleMan.Acts.RunningInterference
+      Arkham.Homebrew.TheInvisibleMan.Acts.SeeThroughToTheEnd
+      Arkham.Homebrew.TheInvisibleMan.Acts.TheQuestionOfFighting
+      Arkham.Homebrew.TheInvisibleMan.Acts.TheQuestionOfFleeing
+      Arkham.Homebrew.TheInvisibleMan.Acts.ZeroVisibility
+      Arkham.Homebrew.TheInvisibleMan.Agendas.SeenByTheUnseen
+      Arkham.Homebrew.TheInvisibleMan.Assets.GriffinsNotes
+      Arkham.Homebrew.TheInvisibleMan.Assets.InvisibilitySerum
+      Arkham.Homebrew.TheInvisibleMan.CardDefEntries
+      Arkham.Homebrew.TheInvisibleMan.CardDefs.Acts
+      Arkham.Homebrew.TheInvisibleMan.CardDefs.Agendas
+      Arkham.Homebrew.TheInvisibleMan.CardDefs.Assets
+      Arkham.Homebrew.TheInvisibleMan.CardDefs.Enemies
+      Arkham.Homebrew.TheInvisibleMan.CardDefs.Locations
+      Arkham.Homebrew.TheInvisibleMan.CardDefs.Stories
+      Arkham.Homebrew.TheInvisibleMan.CardDefs.Treacheries
+      Arkham.Homebrew.TheInvisibleMan.CardEntries
+      Arkham.Homebrew.TheInvisibleMan.Content
+      Arkham.Homebrew.TheInvisibleMan.Defs
+      Arkham.Homebrew.TheInvisibleMan.Enemies.Griffin
+      Arkham.Homebrew.TheInvisibleMan.Enemies.MaddenedBeast
+      Arkham.Homebrew.TheInvisibleMan.Enemies.SentientSolution
+      Arkham.Homebrew.TheInvisibleMan.Enemies.SheldonSupplier
+      Arkham.Homebrew.TheInvisibleMan.Enemies.TranslucentExperiment
+      Arkham.Homebrew.TheInvisibleMan.Helpers
+      Arkham.Homebrew.TheInvisibleMan.Import
+      Arkham.Homebrew.TheInvisibleMan.Key
+      Arkham.Homebrew.TheInvisibleMan.Locations.CountryRoad
+      Arkham.Homebrew.TheInvisibleMan.Locations.LonelyFarmstead
+      Arkham.Homebrew.TheInvisibleMan.Locations.MeltwaterStream
+      Arkham.Homebrew.TheInvisibleMan.Locations.MoonshinersShack
+      Arkham.Homebrew.TheInvisibleMan.Locations.RunDownCabin
+      Arkham.Homebrew.TheInvisibleMan.Locations.ServiceStation
+      Arkham.Homebrew.TheInvisibleMan.Locations.SparseWoodlands
+      Arkham.Homebrew.TheInvisibleMan.ScenarioDeckKeys
+      Arkham.Homebrew.TheInvisibleMan.Scenarios.TheInvisibleMan
+      Arkham.Homebrew.TheInvisibleMan.Sets
+      Arkham.Homebrew.TheInvisibleMan.SideStoryDefs
+      Arkham.Homebrew.TheInvisibleMan.Stories.EverywhereAndNowhere
+      Arkham.Homebrew.TheInvisibleMan.Stories.GotHisNumber
+      Arkham.Homebrew.TheInvisibleMan.Stories.GraspingAtStraws
+      Arkham.Homebrew.TheInvisibleMan.Stories.NowhereToRun
+      Arkham.Homebrew.TheInvisibleMan.Stories.PanickedFlight
+      Arkham.Homebrew.TheInvisibleMan.Stories.PatternRecognition
+      Arkham.Homebrew.TheInvisibleMan.Stories.ShadowedEscape
+      Arkham.Homebrew.TheInvisibleMan.Stories.SharpEarOut
+      Arkham.Homebrew.TheInvisibleMan.Stories.ShotInTheDark
+      Arkham.Homebrew.TheInvisibleMan.Stories.SubtleSigns
+      Arkham.Homebrew.TheInvisibleMan.Traits
+      Arkham.Homebrew.TheInvisibleMan.Treacheries.CleverSabotage
+      Arkham.Homebrew.TheInvisibleMan.Treacheries.DoublingBack
+      Arkham.Homebrew.TheInvisibleMan.Treacheries.MaliciousLaughter
+      Arkham.Homebrew.TheInvisibleMan.Treacheries.ObviousSigns
+      Arkham.Homebrew.TheInvisibleMan.Treacheries.OutOfNowhere
+      Arkham.Homebrew.TheInvisibleMan.Treacheries.SenselessMurder
+      Arkham.Homebrew.TheInvisibleMan.Treacheries.SubtleInterference
+      Arkham.Homebrew.TheInvisibleMan.Treacheries.UnseenMovements
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Acts.BanishingTheSpectre
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Acts.TheHessianHorseman
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Acts.TheTaleOfIchabodCrane
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Agendas.OnTheWingsOfTheWind
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Assets.IchabodCrane
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Assets.IchabodsBooks
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Assets.VanBruntsReward
+      Arkham.Homebrew.TheLegendOfSleepyHollow.CardDefEntries
+      Arkham.Homebrew.TheLegendOfSleepyHollow.CardDefs.Acts
+      Arkham.Homebrew.TheLegendOfSleepyHollow.CardDefs.Agendas
+      Arkham.Homebrew.TheLegendOfSleepyHollow.CardDefs.Assets
+      Arkham.Homebrew.TheLegendOfSleepyHollow.CardDefs.Enemies
+      Arkham.Homebrew.TheLegendOfSleepyHollow.CardDefs.Locations
+      Arkham.Homebrew.TheLegendOfSleepyHollow.CardDefs.Treacheries
+      Arkham.Homebrew.TheLegendOfSleepyHollow.CardEntries
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Content
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Defs
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Enemies.DecapitatedVictim
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Enemies.DisembodiedSkull
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Enemies.HessianSpectre
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Enemies.SecretiveHag
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Enemies.TheHeadlessHorseman
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Enemies.WitchOfTheHollow
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Helpers
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Import
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Key
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Locations.DerelictSchoolhouse
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Locations.MajorAndresTree
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Locations.OldDutchChurch
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Locations.VanTasselFarmstead
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Locations.WhitePlains
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Locations.WileysSwamp
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Scenarios.TheLegendOfSleepyHollow
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Sets
+      Arkham.Homebrew.TheLegendOfSleepyHollow.SideStoryDefs
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Traits
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Treacheries.AccursedHollow
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Treacheries.Bewitched
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Treacheries.BurgeoningEvil
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Treacheries.HurledPumpkin
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Treacheries.LoomingSpirit
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Treacheries.MarkedByTheHorseman
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Treacheries.QuickeningRitual
+      Arkham.Homebrew.TheLegendOfSleepyHollow.Treacheries.WhispersOnTheWind
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Acts.TheMidnightHour
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Acts.TheSevenChambers
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Agendas.ANestOfVipers
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Agendas.DiseaseVectors
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Agendas.UnderTheSkin
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.PlaguePolyp
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.ProsperoPrinceGregariousHost
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.TheDevilsMorbidlyFascinated
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.TheDevilsMorbidlyFated
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.TheFoxLookingForAction
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.TheFoxLookingForRelease
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.TheMothBurnedByTheFlame
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.TheMothDrawnToTheFlame
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.TheOwlReadingHerLast
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.TheOwlReadingIntoYou
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.ThePeacockCenterOfAffliction
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.ThePeacockCenterOfAttention
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.TheRavenNotEasilyDisposed
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.TheRavenNotEasilyImpressed
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.TheVulturePartOfTheFeast
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.TheVultureWatchingTheFeast
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.TheWaspViolentlyEmbraced
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Assets.TheWaspViolentlyMotivated
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.CardDefEntries
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.CardDefs.Acts
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.CardDefs.Agendas
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.CardDefs.Assets
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.CardDefs.Enemies
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.CardDefs.Locations
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.CardDefs.Treacheries
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.CardEntries
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Content
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Defs
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Enemies.InfectedGuest
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Enemies.MaddenedReveler
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Enemies.PestilenceCarrier
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Enemies.ProsperoPrinceDevoteeOfKassogtha
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Enemies.RedSpectre
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Enemies.TheRedDeath
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Helpers
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Import
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Key
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Locations.BlackChamber
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Locations.BlueChamber
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Locations.GrandBallroom
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Locations.GreenChamber
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Locations.OrangeChamber
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Locations.PurpleChamber
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Locations.VioletChamber
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Locations.WhiteChamber
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Scenarios.TheMasqueOfTheRedDeath
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Sets
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.SideStoryDefs
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Traits
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Treacheries.Debauchery
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Treacheries.FesteringHorror
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Treacheries.FreneticDance
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Treacheries.MorbidVisions
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Treacheries.ShadowOfDeath
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Treacheries.SilentScrutiny
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Treacheries.SuddenSymptoms
+      Arkham.Homebrew.TheMasqueOfTheRedDeath.Treacheries.ViolentCrowd
+      Arkham.Homebrew.ThePhantomOfTheOpera.Acts.ChasingGhosts
+      Arkham.Homebrew.ThePhantomOfTheOpera.Acts.MasksUponMasks
+      Arkham.Homebrew.ThePhantomOfTheOpera.Acts.Masquerade
+      Arkham.Homebrew.ThePhantomOfTheOpera.Acts.ThePhantomsDomain
+      Arkham.Homebrew.ThePhantomOfTheOpera.Agendas.FaceToFace
+      Arkham.Homebrew.ThePhantomOfTheOpera.Agendas.SinisterForces
+      Arkham.Homebrew.ThePhantomOfTheOpera.Assets.ChristineDaae
+      Arkham.Homebrew.ThePhantomOfTheOpera.Assets.TheGrasshopper
+      Arkham.Homebrew.ThePhantomOfTheOpera.Assets.ThePersian
+      Arkham.Homebrew.ThePhantomOfTheOpera.Assets.TheScorpion
+      Arkham.Homebrew.ThePhantomOfTheOpera.CardDefEntries
+      Arkham.Homebrew.ThePhantomOfTheOpera.CardDefs.Acts
+      Arkham.Homebrew.ThePhantomOfTheOpera.CardDefs.Agendas
+      Arkham.Homebrew.ThePhantomOfTheOpera.CardDefs.Assets
+      Arkham.Homebrew.ThePhantomOfTheOpera.CardDefs.Enemies
+      Arkham.Homebrew.ThePhantomOfTheOpera.CardDefs.Locations
+      Arkham.Homebrew.ThePhantomOfTheOpera.CardDefs.Treacheries
+      Arkham.Homebrew.ThePhantomOfTheOpera.CardEntries
+      Arkham.Homebrew.ThePhantomOfTheOpera.Content
+      Arkham.Homebrew.ThePhantomOfTheOpera.Defs
+      Arkham.Homebrew.ThePhantomOfTheOpera.Enemies.BuriedSorrows
+      Arkham.Homebrew.ThePhantomOfTheOpera.Enemies.ChaoticMinionA
+      Arkham.Homebrew.ThePhantomOfTheOpera.Enemies.ChaoticMinionB
+      Arkham.Homebrew.ThePhantomOfTheOpera.Enemies.SimmeringAnger
+      Arkham.Homebrew.ThePhantomOfTheOpera.Enemies.StifledLaughter
+      Arkham.Homebrew.ThePhantomOfTheOpera.Enemies.TerribleGuise
+      Arkham.Homebrew.ThePhantomOfTheOpera.Enemies.ThePhantom
+      Arkham.Homebrew.ThePhantomOfTheOpera.Enemies.ThePhantomTragicFigure
+      Arkham.Homebrew.ThePhantomOfTheOpera.Enemies.ViolentShade
+      Arkham.Homebrew.ThePhantomOfTheOpera.Helpers
+      Arkham.Homebrew.ThePhantomOfTheOpera.Import
+      Arkham.Homebrew.ThePhantomOfTheOpera.Key
+      Arkham.Homebrew.ThePhantomOfTheOpera.Kinds
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.Auditorium
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.Backstage
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.BoxFive
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.GrandFoyer_008
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.GrandFoyer_009
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.GrandFoyer_010
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.GrandFoyer_011
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.GrandFoyer_012
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.HiddenParlor
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.OrganChamber
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.ParisSewers_018
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.ParisSewers_019
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.ParisSewers_020
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.ParisSewers_021
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.ParisSewers_022
+      Arkham.Homebrew.ThePhantomOfTheOpera.Locations.ThePhantomsLair
+      Arkham.Homebrew.ThePhantomOfTheOpera.Scenarios.ThePhantomOfTheOpera
+      Arkham.Homebrew.ThePhantomOfTheOpera.Sets
+      Arkham.Homebrew.ThePhantomOfTheOpera.SideStoryDefs
+      Arkham.Homebrew.ThePhantomOfTheOpera.Traits
+      Arkham.Homebrew.ThePhantomOfTheOpera.Treacheries.AlwaysWatchingBait
+      Arkham.Homebrew.ThePhantomOfTheOpera.Treacheries.AlwaysWatchingFeint
+      Arkham.Homebrew.ThePhantomOfTheOpera.Treacheries.AlwaysWatchingGoad
+      Arkham.Homebrew.ThePhantomOfTheOpera.Treacheries.AngelOfMusic
+      Arkham.Homebrew.ThePhantomOfTheOpera.Treacheries.EchoingThreats
+      Arkham.Homebrew.ThePhantomOfTheOpera.Treacheries.Fixation
+      Arkham.Homebrew.ThePhantomOfTheOpera.Treacheries.InsidiousTrick
+      Arkham.Homebrew.ThePhantomOfTheOpera.Treacheries.ShroudedFaces
+      Arkham.Homebrew.ThePhantomOfTheOpera.Treacheries.SignsOfMadness
+      Arkham.Homebrew.ThePhantomOfTheOpera.Treacheries.ThePhantomStrikes
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Acts.EssentialMaterials
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Acts.Gather
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Acts.TasteOfYourOwnMedicine
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Acts.TheMadmansNotebook
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Agendas.TheDualityOfMan
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Assets.DuplicitousDrug
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Assets.FundamentalFormula
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Assets.HenryJekyll
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.CardDefEntries
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.CardDefs.Acts
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.CardDefs.Agendas
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.CardDefs.Assets
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.CardDefs.Enemies
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.CardDefs.Investigators
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.CardDefs.Locations
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.CardDefs.Stories
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.CardDefs.Treacheries
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.CardEntries
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Content
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Defs
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Enemies.EdwardHyde
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Enemies.FleshyCreation
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Enemies.MisshapenBeast
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Enemies.ProfaneSculptor
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Enemies.ServantOfYogSothoth
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Enemies.SinisterChemist
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Helpers
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Import
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Investigators.YourOtherHalf
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Key
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Locations.AbandonedFactory
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Locations.ChemicalFirm_014
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Locations.ChemicalFirm_015
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Locations.Drugstore_008
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Locations.Drugstore_009
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Locations.EtchersShop_012
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Locations.EtchersShop_013
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Locations.ImportsOffice_010
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Locations.ImportsOffice_011
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Locations.NorthsidePlaza
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Locations.Tannery_016
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Locations.Tannery_017
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Locations.Trainyard
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Scenarios.TheStrangeCaseOfDrJekyllAndMrHyde
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Sets
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.SideStoryDefs
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Stories.AdaptedFormula
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Traits
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Treacheries.AggressiveMutation
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Treacheries.BrutishCry
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Treacheries.ChemicalSpill
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Treacheries.CreepingGrowth
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Treacheries.EnthrallingInterference
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Treacheries.FesteringEvil
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Treacheries.MarkOfTheGate
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Treacheries.SupplyAndDemand
+      Arkham.Homebrew.TheStrangeCaseOfDrJekyllAndMrHyde.Treacheries.SurgingFlesh
       Arkham.Homebrew.TheSymphonyOfErichZann.Acts.MusicFromAuseilTheatre
       Arkham.Homebrew.TheSymphonyOfErichZann.Acts.ThePossessedConductor
       Arkham.Homebrew.TheSymphonyOfErichZann.Acts.UndreamableOrchestra
@@ -5115,6 +5854,7 @@ library
       Arkham.Investigator.Cards.AndrePatel
       Arkham.Investigator.Cards.AshcanPete
       Arkham.Investigator.Cards.AshcanPeteParallel
+      Arkham.Investigator.Cards.Base
       Arkham.Investigator.Cards.BobJenkins
       Arkham.Investigator.Cards.BodyOfAYithian
       Arkham.Investigator.Cards.CalvinWright
@@ -6764,6 +7504,12 @@ library
       Arkham.ModifierData
       Arkham.Movement
       Arkham.Name
+      Arkham.Narrative.OlausWormius.TheDunwichLegacy
+      Arkham.Narrative.OlausWormius.TheInnsmouthConspiracy
+      Arkham.Narrative.TheDunwichLegacy
+      Arkham.Narrative.TheDunwichLegacy.Types
+      Arkham.Narrative.TheInnsmouthConspiracy
+      Arkham.Narrative.TheInnsmouthConspiracy.Types
       Arkham.Phase
       Arkham.Placement
       Arkham.PlayerCard
@@ -8580,7 +9326,9 @@ library
       Arkham.Window
       Arkham.Xp
       Arkham.Zone
+      ArkhamBuild.OAuth
       Auth.ApiKey
+      Auth.Feature
       Auth.JWT
       Base.Api.Handler.Account
       Base.Api.Handler.Authentication
@@ -8597,18 +9345,23 @@ library
       Entity.Arkham.Achievement
       Entity.Arkham.ApiKey
       Entity.Arkham.ArkhamDBDecklist
+      Entity.Arkham.BuildAuthRequest
+      Entity.Arkham.BuildConnection
+      Entity.Arkham.CardSetShare
       Entity.Arkham.CustomCard
       Entity.Arkham.CustomCardSet
       Entity.Arkham.Deck
       Entity.Arkham.DeckOverlay
       Entity.Arkham.Epic
       Entity.Arkham.Game
+      Entity.Arkham.GameArchive
       Entity.Arkham.GameRaw
       Entity.Arkham.LogEntry
       Entity.Arkham.Player
       Entity.Arkham.PublishedCardSet
       Entity.Arkham.StatsRefresh
       Entity.Arkham.Step
+      Entity.Arkham.ThirdEditionTable
       Entity.Notification
       Entity.PasswordReset
       Entity.User
@@ -8856,6 +9609,7 @@ test-suite spec
       Arkham.Act.Cards.TheBlobThatAteEverything.BlackwatersBaneEpicMultiplayerSpec
       Arkham.Act.Cards.TheBlobThatAteEverything.ExposeTheAnomalyEpicMultiplayerSpec
       Arkham.Act.Cards.TheForgottenAge.HeartOfTheElders.AFamiliarPatternSpec
+      Arkham.Act.Cards.TheForgottenAge.TheDepthsOfYoth.JourneyToTheNexusSpec
       Arkham.Act.Cards.TheScarletKeys.DancingMad.FalseStepV2Spec
       Arkham.ActionSpec
       Arkham.Agenda.Cards.MurderAtTheExcelsiorHotel.TheTrueCulpritV10Spec
@@ -8964,6 +9718,7 @@ test-suite spec
       Arkham.Asset.Assets.SixthSense4Spec
       Arkham.Asset.Assets.SixthSenseSpec
       Arkham.Asset.Assets.SolemnVowSpec
+      Arkham.Asset.Assets.SpringfieldM19034Spec
       Arkham.Asset.Assets.StrayCatSpec
       Arkham.Asset.Assets.SummonedHound1Spec
       Arkham.Asset.Assets.SurvivalKnifeSpec
@@ -9000,6 +9755,10 @@ test-suite spec
       Arkham.CampaignLogKeySpec
       Arkham.Card.CardCodeSpec
       Arkham.ChaosTokenFaceSpec
+      Arkham.Debug.ActionsSpec
+      Arkham.Debug.CampaignLogSpec
+      Arkham.Debug.SandboxSpec
+      Arkham.Debug.SealSpec
       Arkham.DecklistSpec
       Arkham.EncounterSetSpec
       Arkham.Enemy.Cards.BrethrenOfAsh.FlyingTerrors.BatHorrorSpec
@@ -9016,6 +9775,7 @@ test-suite spec
       Arkham.Enemy.Cards.TheDrownedCity.DeepOnes.ElderDeepOneSpec
       Arkham.Enemy.Cards.TheDrownedCity.StarSpawn.CoralStarSpawnSpec
       Arkham.Enemy.Cards.TheDrownedCity.TheDoomOfArkham.CthulhuWickedClawSpec
+      Arkham.Enemy.Cards.TheFeastOfHemlockVale.TheLostSister.CavernMossSpec
       Arkham.Enemy.Cards.TheFeastOfHemlockVale.TheTwistedHollow.StalkingHybridSpec
       Arkham.Enemy.Cards.TheInnsmouthConspiracy.IntoTheMaelstrom.DagonsBroodSpec
       Arkham.Enemy.Cards.ThePathToCarcosa.Hauntings.PoltergeistSpec
@@ -9036,6 +9796,7 @@ test-suite spec
       Arkham.Event.Events.BountySpec
       Arkham.Event.Events.BuryThemDeepSpec
       Arkham.Event.Events.ButterflyEffect1Spec
+      Arkham.Event.Events.CallingInFavorsSpec
       Arkham.Event.Events.CleanSweepSpec
       Arkham.Event.Events.CloseCall2Spec
       Arkham.Event.Events.Counterespionage1Spec
@@ -9084,6 +9845,7 @@ test-suite spec
       Arkham.Event.Events.SureGamble3Spec
       Arkham.Event.Events.ThePaintedWorldSpec
       Arkham.Event.Events.ThrowTheBookAtThemSpec
+      Arkham.Event.Events.TimeWarp2Spec
       Arkham.Event.Events.ToeToToeSpec
       Arkham.Event.Events.Transfiguration2Spec
       Arkham.Event.Events.TrapLimitSpec

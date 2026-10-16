@@ -37,12 +37,20 @@ export type LogKey = {
   contents?: string | { tag: string; contents?: string }
   actualTag?: string
   name?: string
+  /* The key as the server sent it. The fields above are normalised for display
+   * (apostrophes stripped, nesting cut at two levels), so anything sending a
+   * key back must use this. */
+  raw?: unknown
 }
 
-export type CampaignOptionTag = { tag: string }
+/* `contents` carries a parameterised option's payload -- the name of the
+narrative variant a game was created with, say -- so an option is identified by
+both halves, as it is on the backend. */
+export type CampaignOptionTag = { tag: string, contents?: string }
 
 export type LogContents = {
   recorded: LogKey[];
+  crossedOut: LogKey[];
   recordedSets: Record<string, unknown[]>;
   recordedCounts: [LogKey, number][];
   partners: Record<string, Partner>;
@@ -70,7 +78,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 
 export const logKeyDecoder: JsonDecoder.Decoder<LogKey> = JsonDecoder.succeed().flatMap((value: unknown) => {
   if (!isRecord(value) || typeof value.tag !== 'string') return JsonDecoder.fail('Expected LogKey')
-  const key: LogKey = { tag: value.tag }
+  const key: LogKey = { tag: value.tag, raw: value }
   if (typeof value.contents === 'string') {
     key.contents = value.contents.replace(/'/g, '')
   } else if (isRecord(value.contents) && typeof value.contents.tag === 'string') {
@@ -84,10 +92,13 @@ export const logKeyDecoder: JsonDecoder.Decoder<LogKey> = JsonDecoder.succeed().
 
 const campaignOptionTagDecoder = JsonDecoder.object<CampaignOptionTag>({
   tag: JsonDecoder.string(),
+  contents: JsonDecoder.optional(JsonDecoder.string()),
 }, 'CampaignOptionTag');
 
 export const logContentsDecoder = JsonDecoder.object<LogContents>({
   recorded: JsonDecoder.array<LogKey>(logKeyDecoder, 'LogKey[]'),
+  // failover: a server that predates the field sends no key at all.
+  crossedOut: JsonDecoder.failover<LogKey[]>([], JsonDecoder.array<LogKey>(logKeyDecoder, 'LogKey[]')),
   recordedSets: JsonDecoder.array<[LogKey, unknown[]]>(JsonDecoder.tuple([logKeyDecoder, JsonDecoder.array(someRecordableDecoder.map(flattenRecordable), 'SomeRecorded[]')], '[string, somerecorded]'), '[string, unknown][]').map<Record<string, unknown[]>>(res => {
     return res.reduce<Record<string, unknown[]>>((acc, [k, v]) => {
       return {[formatKey(k)]: v, ...acc}
@@ -171,4 +182,18 @@ export function formatKey(key: LogKey, fallbackHomebrewScope?: string): string {
   }
 
   return `${prefix}.key.unknown`
+}
+
+/* The path a scope-less homebrew key would have got with the campaign in hand.
+ *
+ * `logContentsDecoder` has no campaign to pass `formatKey` as a fallback, so a
+ * key that carries no scope of its own (Circus Ex Mortis' do not) is baked into
+ * `recordedSets` as `homebrewCampaignLog.key.x`, which no locale defines. A
+ * caller that knows whose log it is re-points it here rather than re-deriving
+ * the prefix. */
+const UNSCOPED_HOMEBREW_PREFIX = 'homebrewCampaignLog.key.'
+
+export function withHomebrewScope(path: string, scope?: string): string {
+  if (!scope || !path.startsWith(UNSCOPED_HOMEBREW_PREFIX)) return path
+  return `${scope}.key.${path.slice(UNSCOPED_HOMEBREW_PREFIX.length)}`
 }

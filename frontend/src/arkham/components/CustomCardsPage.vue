@@ -15,6 +15,9 @@ const K = 'customCardSets.'
 withDefaults(
   defineProps<{
     title: string
+    /* An expansion's own symbol, for a page that is one set. Decorative: the
+     * title beside it already names it. */
+    icon?: string | null
     lede?: string
     /** Hidden on the one page that is a detail view rather than a section. */
     experimental?: boolean
@@ -34,7 +37,15 @@ withDefaults(
     <section class="cc-page" :class="{ inline }">
       <header class="cc-head">
         <div class="cc-titles">
-          <h1>{{ title }}</h1>
+          <h1>
+            <span
+              v-if="icon"
+              class="cc-icon"
+              :style="{ '--set-icon-url': `url(${icon})` }"
+              aria-hidden="true"
+            ></span>
+            {{ title }}
+          </h1>
           <p v-if="lede" class="cc-lede">{{ lede }}</p>
         </div>
         <!-- Whatever this page does at the top level: make a set, import one. -->
@@ -111,10 +122,25 @@ withDefaults(
   min-width: 0;
 
   h1 {
+    align-items: center;
+    display: flex;
     font-family: teutonic, sans-serif;
     font-size: 1.9em;
+    gap: 0.4rem;
     line-height: 1.1;
     margin: 0;
+  }
+
+  /* A silhouette masked out of a solid fill rather than drawn as an image, so
+     the symbol takes the title's colour exactly. Sized to the heading rather
+     than fixed, so it keeps its proportion whatever the type scale does. */
+  .cc-icon {
+    background: currentColor;
+    flex: none;
+    height: 1.1em;
+    -webkit-mask: var(--set-icon-url) center / contain no-repeat;
+    mask: var(--set-icon-url) center / contain no-repeat;
+    width: 1.1em;
   }
 }
 

@@ -124,6 +124,9 @@ an act's @Objective $ forced AnyWindow@. #5812
 hasOwnEliminatedWindow :: InvestigatorId -> [Window] -> Bool
 hasOwnEliminatedWindow iid = any $ \case
   (windowType -> InvestigatorEliminated iid') -> iid' == iid
+  -- Defeat applies its trauma on the way out, so this window belongs to an
+  -- investigator who is already defeated by the time it resolves.
+  (windowType -> SufferedTrauma iid' _ _) -> iid' == iid
   (windowType -> EndOfGame {}) -> True
   _ -> False
 
@@ -251,6 +254,8 @@ data WindowType
   | AgendaAdvance AgendaId
   | AgendaWouldAdvance AgendaAdvancementReason AgendaId
   | AllDrawEncounterCard
+  | -- | A card an investigator drew has gained surge, and that surge is resolving.
+    GainedSurge InvestigatorId Source
   | AfterCheckDoomThreshold
   | AllUndefeatedInvestigatorsResigned
   | AmongSearchedCards BatchId InvestigatorId
@@ -364,6 +369,8 @@ data WindowType
   | InvestigatorWouldBeDefeated DefeatedBy InvestigatorId
   | InvestigatorEliminated InvestigatorId
   | InvestigatorResigned InvestigatorId
+  | -- | Physical then mental, as 'Arkham.Message.SufferTrauma' carries them.
+    SufferedTrauma InvestigatorId Int Int
   | LastClueRemovedFromAsset AssetId
   | LastClueRemovedFromLocation LocationId
   | LeavePlay Target
@@ -439,6 +446,14 @@ data WindowType
   | RevealChaosTokensDuringSkillTest InvestigatorId SkillTest [ChaosToken]
   | TokensWouldBeRemovedFromChaosBag [ChaosToken]
   | ResolvesTreachery InvestigatorId TreacheryId
+  | {- | A story card being resolved by the investigator who read it. Raised at
+    both timings around the story's own resolution: @#when@ before its effects,
+    @#after@ once they have resolved -- and after its skill test, if resolving it
+    started one. Both fire while the story is still in play, so a
+    'Arkham.Matcher.StoryMatcher' can still read its traits. Declining to resolve
+    a story (@DoNotResolveIt@) raises neither.
+    -}
+    ResolvesStory InvestigatorId StoryId
   | ResolvesChaosToken InvestigatorId ChaosToken
   | ChaosTokenSealed InvestigatorId ChaosToken
   | {- | Raised on the investigator the token is sealed ON, whoever sealed it.

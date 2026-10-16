@@ -44,6 +44,7 @@ import Arkham.Classes.HasGame
 import Arkham.CommitRestriction
 import Arkham.Deck qualified as Deck
 import Arkham.DefeatedBy
+import Arkham.Discard (DiscardStrategy (DiscardChoose))
 import Arkham.Discover
 import Arkham.Draw.Types
 import Arkham.Enemy.Types qualified as Field
@@ -105,6 +106,7 @@ import Arkham.History
 import Arkham.I18n (cardNameVar, countVar, ikey', keyVar, withI18n)
 import Arkham.Investigate.Types
 import {-# SOURCE #-} Arkham.Investigator
+import Arkham.Investigator.Cards (allEncounterInvestigatorCards, allInvestigatorCards)
 import Arkham.Investigator.Runner.Action
 import Arkham.Investigator.Runner.Card
 import Arkham.Investigator.Runner.Damage
@@ -217,6 +219,16 @@ instance RunMessage Investigator where
                 }
           pure . Investigator $ overAttrs (const a'') a
         _ -> Investigator <$> runMessage msg' a
+
+{- | The card def behind a bonded card code that names an investigator card.
+
+Bonded cards are normally player cards, so 'lookupCardDef' never looks here;
+Your Other Half (The Strange Case of Dr. Jekyll and Mr. Hyde) is bonded to
+Duplicitous Drug and is an investigator card, which is the case this covers.
+-}
+lookupBondedInvestigatorCardDef :: CardCode -> Maybe CardDef
+lookupBondedInvestigatorCardDef cCode =
+  lookup cCode allInvestigatorCards <|> lookup cCode allEncounterInvestigatorCards
 
 instance RunMessage InvestigatorAttrs where
   runMessage = runInvestigatorMessage
@@ -381,6 +393,17 @@ getWindowSkippable _ _ w@(windowTiming &&& windowType -> (Timing.When, Window.Ac
     , withAlteredGame withoutCanModifiers
         $ passesCriteria iid Nothing ab.source ab.requestor [w] (abilityCriteria ab)
     ]
+-- A move onto the location you already stand on is not a legal move: it exists
+-- only so that something in the would-move window can retarget it (On the Lam's
+-- redirect, which is what makes a move action available with nothing connected
+-- in play). So the window stays unskippable until that has happened, exactly
+-- like a card cost only a reaction in the window can pay. Scoped to the
+-- investigator being moved -- another seat can do nothing about it and keeps its
+-- skip -- and it cannot deadlock, because the ask is only pushed at all when
+-- some ability or playable card is on offer.
+getWindowSkippable attrs _ (windowType -> Window.WouldMove iid _ fromLid toLid)
+  | iid == toId attrs =
+      pure $ fromLid /= toLid
 getWindowSkippable attrs ws (windowType -> Window.WouldPayCardCost iid _ _ card@(PlayerCard pc)) | iid == toId attrs = do
   allModifiers <- getModifiers card
   mCost <- getModifiedCardCost iid card
@@ -594,7 +617,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
       Lifted.checkAfter (Window.ChaosTokenSealed a.id token)
     Lifted.checkWhen (Window.ChaosTokenSealedOn a.id token)
     Lifted.checkAfter (Window.ChaosTokenSealedOn a.id token)
-    pure $ a & sealedChaosTokensL %~ (token :)
+    pure $ a & sealedChaosTokensL %~ addSealedChaosToken token
   SealedChaosToken token miid _ -> do
     when (a.id `elem` miid) do
       Lifted.checkWhen (Window.ChaosTokenSealed a.id token)
@@ -663,6 +686,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
           NoLimit -> False
           PlayerLimit PerWindow _ -> depth >= usedDepth || stillChecking u
           GroupLimit PerWindow _ -> depth >= usedDepth || stillChecking u
+          MaxPer _ PerWindow _ -> depth >= usedDepth || stillChecking u
           _ -> True
 
     usedAbilities <-
@@ -798,8 +822,10 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     let bonded = nub $ concatMap (cdBondedWith . toCardDef) (unDeck investigatorDeck)
 
     bondedCards <- concatForM bonded $ \(n, cCode) -> do
-      case lookupCardDef cCode of
-        Nothing -> error "missing card"
+      -- A bonded card can be an investigator card (Your Other Half), which is in
+      -- neither the player nor the encounter table that 'lookupCardDef' reads.
+      case lookupCardDef cCode <|> lookupBondedInvestigatorCardDef cCode of
+        Nothing -> error $ "missing bonded card " <> show cCode
         Just def -> do
           cs <- replicateM n (genCard def)
           traverse (Arkham.Card.setTaboo investigatorTaboo <=< setOwner iid) cs
@@ -1050,23 +1076,52 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     pure a
   Do (CheckHandSize iid) | iid == investigatorId -> do
     excess <- getExcessInHandCount a
-    -- investigatorHand: can only discard cards actually in hand
-    player <- getPlayer iid
-    let viable = filter (isNothing . cdCardSubType . toCardDef) $ onlyPlayerCards investigatorHand
+    -- investigatorHand: can only discard cards actually in hand, and only ones
+    -- that are allowed to leave it -- otherwise the re-check below asks again
+    -- for a discard that can never happen.
+    viable <-
+      filterM (fmap (notElem CannotLeaveYourHand) . getModifiers . toCardId)
+        $ filter (isNothing . cdCardSubType . toCardDef)
+        $ onlyPlayerCards investigatorHand
 
-    pushWhen (excess > 0 && notNull viable)
-      $ chooseOne player
-      $ [ targetLabel (toCardId card) [DiscardCard iid GameSource (toCardId card), Do (CheckHandSize iid)]
-        | card <- viable
+    {- Through the ordinary discard-from-hand machinery, in one batch of the
+    whole excess, rather than a bare choice of `DiscardCard`. That machinery
+    raises the would-discard-from-hand window, which this discard used to slip
+    past entirely: nothing could react to a card leaving your hand at the end
+    of the round, and a card that replaces such a discard had nowhere to stand.
+    One batch, because a card that speaks of "those cards" means all of them.
+
+    The re-check is pushed behind it rather than carried as the discard's
+    `then`, which only fires once the discard has actually counted down. A
+    replaced discard never counts down, so the `then` would never come and the
+    investigator would be left over their limit. -}
+    when (excess > 0 && notNull viable)
+      $ pushAll
+        [ Msg.DiscardFromHand
+            $ discardFromHand iid GameSource DiscardChoose (min excess (length viable))
+        , Do (CheckHandSize iid)
         ]
     pure a
   AddToDiscard iid pc | investigatorOwnsCardCode a iid -> do
     modifiers' <- getModifiers a
-    case [target | PlaceUnderneathInsteadOfDiscard target <- modifiers'] of
-      (target : _) -> do
-        pushAll [ObtainCard (toCard pc).id, PlaceUnderneath target [toCard pc]]
-        pure a
-      [] -> handleAddToDiscard a iid pc
+    -- A card's own "instead of being discarded" modifiers are read here as
+    -- well as the investigator's: this is where a discarded player card lands,
+    -- so it is where a card that says it goes somewhere else has to be heard.
+    -- Only the committed-card path honored them before, which left the same
+    -- words unimplementable for a card in hand.
+    cardModifiers <- getModifiers (toCardId pc)
+    let mods = modifiers' <> cardModifiers
+    if
+      | (target : _) <- [t | PlaceUnderneathInsteadOfDiscard t <- mods] -> do
+          pushAll [ObtainCard (toCard pc).id, PlaceUnderneath target [toCard pc]]
+          pure a
+      | ShuffleIntoDeckInsteadOfDiscard `elem` mods -> do
+          push $ ShuffleCardsIntoDeck (Deck.InvestigatorDeck iid) [toCard pc]
+          pure a
+      | PlaceOnBottomOfDeckInsteadOfDiscard `elem` mods -> do
+          push $ PutCardOnBottomOfDeck iid (Deck.InvestigatorDeck iid) (toCard pc)
+          pure a
+      | otherwise -> handleAddToDiscard a iid pc
   DiscardFromHand handDiscard | handDiscard.investigator == investigatorId -> handleDiscardFromHand a handDiscard msg
   Do (DiscardFromHand handDiscard) | handDiscard.investigator == investigatorId -> handleDoDiscardFromHand a handDiscard
   Discard _ source (CardIdTarget cardId) | isJust (find ((== cardId) . toCardId) investigatorHand) -> handleDiscard a source cardId
@@ -1596,9 +1651,11 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
         if
           | notNull concealed && exposeHere && clueCount > 0 ->
               Choose.chooseOneM iid do
-                Choose.labeledI "exposeConcealedCard" $ chooseExposeConcealedAt iid iid (LocationWithId lid)
+                Choose.labeledI "exposeConcealedCard"
+                  $ chooseExposeConcealedAtVia ExposedByDiscover iid iid (LocationWithId lid)
                 Choose.labeledI "discoverNormally" defaultDiscover
-          | notNull concealed && exposeHere -> chooseExposeConcealedAt iid iid (LocationWithId lid)
+          | notNull concealed && exposeHere ->
+              chooseExposeConcealedAtVia ExposedByDiscover iid iid (LocationWithId lid)
           -- The investigation declined its exposure prompt, and the location only qualified as
           -- discoverable because of the concealed card, so there is nothing left to discover.
           | notNull concealed && clueCount == 0 -> pure ()
@@ -1808,6 +1865,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     case fitsSlots of
       FitsSlots -> push (InvestigatorPlayedAsset iid aid)
       MissingSlots missingSlotTypes -> do
+        mods <- getModifiers iid
         canHoldMap <- getCanHoldMap a
         let additionalSlots = concatMap (\k -> findWithDefault [] k canHoldMap) missingSlotTypes
         assetsThatCanProvideSlots <-
@@ -1828,21 +1886,29 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
         -- Unless it cannot leave play either, in which case nothing here is discardable at all: it
         -- enters play unslotted and the investigator simply sits over their slot limit (#5424).
         canDiscardIncoming <- aid <=~> DiscardableAsset
-        if null assetsThatCanProvideSlots
+        if KeepAssetsInExcessOfSlots `elem` mods
           then
-            pushAll
-              $ InvestigatorPlayedAsset iid aid
-              : [toDiscardBy iid GameSource aid | canDiscardIncoming]
+            {- Nothing is discarded to make room and the asset is not discarded
+            either: it enters play holding no slot, which the engine already
+            allows (#5424). The investigator is then over their limit until
+            something sweeps them up. -}
+            push $ InvestigatorPlayedAsset iid aid
           else
-            push
-              $ chooseOne player
-              $ [ targetLabel
-                    aid'
-                    $ map (toDiscardBy iid GameSource) assets
-                    <> [InvestigatorPlayAsset iid aid]
-                | aid' <- assetsThatCanProvideSlots
-                , let assets = assetsInSlotsOf aid'
-                ]
+            if null assetsThatCanProvideSlots
+              then
+                pushAll
+                  $ InvestigatorPlayedAsset iid aid
+                  : [toDiscardBy iid GameSource aid | canDiscardIncoming]
+              else
+                push
+                  $ chooseOne player
+                  $ [ targetLabel
+                        aid'
+                        $ map (toDiscardBy iid GameSource) assets
+                        <> [InvestigatorPlayAsset iid aid]
+                    | aid' <- assetsThatCanProvideSlots
+                    , let assets = assetsInSlotsOf aid'
+                    ]
     pure a
   InvestigatorPlayedAsset iid aid | iid == investigatorId -> withAssetStillInPlay aid a do
     slotTypes <- field AssetSlots aid
@@ -1877,9 +1943,15 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
   PutCardIntoPlay _ card _ _ _ -> handlePutCardIntoPlay a card
   Msg.InvestigatorDamage iid source damage horror | iid == investigatorId -> do
     mods <- getModifiers a
+    {- "Increase all horror taken by 1" increases horror you are taking, so it has
+    nothing to add to a message that carries none. Assignment splits an attack
+    into one message per kind (Runner/Damage.hs's damageInvestigator pushes
+    @damage 0@ and the horror half pushes @0 horror@), so adding to a zero turns
+    a 1/1 attack into 1 damage and 3 horror. -}
+    let bumped base xs = if base > 0 then base + sum xs else base
     -- CannotBeDamaged blocks damage only; horror still applies.
-    let damage' = if CannotBeDamaged `elem` mods then 0 else damage + sum [x | DamageTaken x <- mods]
-    let horror' = horror + sum [x | HorrorTaken x <- mods]
+    let damage' = if CannotBeDamaged `elem` mods then 0 else bumped damage [x | DamageTaken x <- mods]
+    let horror' = bumped horror [x | HorrorTaken x <- mods]
     if CancelOneDamageOrHorror `elem` mods
       then
         if
@@ -2405,11 +2477,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
   BeforeSkillTest skillTestId -> do
     getSkillTestInvestigator >>= traverse_ \iid' -> do
       when (iid' == a.id) do
-        skillTestModifiers' <- getModifiers skillTestId
-        push
-          $ if RevealChaosTokensBeforeCommittingCards `elem` skillTestModifiers'
-            then StartSkillTest investigatorId
-            else CommitToSkillTest skillTestId $ StartSkillTestButton investigatorId
+        push $ CommitToSkillTest skillTestId $ StartSkillTestButton investigatorId
     pure a
   CommitToSkillTest _skillTestId _ -> do
     getSkillTestInvestigator >>= traverse_ \iid' -> do
@@ -2585,6 +2653,8 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
   UseEffectAction iid eid _ | iid == investigatorId -> handleUseEffectAction a iid eid
   LoseActions iid source n | iid == investigatorId -> handleLoseActions a iid source n msg
   Do (LoseActions iid _source n) | iid == investigatorId -> handleDoLoseActions a iid n
+  LoseStandardActions iid source n | iid == investigatorId -> handleLoseActions a iid source n msg
+  Do (LoseStandardActions iid _source n) | iid == investigatorId -> handleDoLoseStandardActions a iid n
   SetActions iid _ 0 | iid == investigatorId -> handleSetActions a iid
   SetActions iid _ n | iid == investigatorId -> handleSetActionsV2 a iid n
   SetAsideCards cards -> do

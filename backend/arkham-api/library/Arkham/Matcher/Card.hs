@@ -58,6 +58,12 @@ data ExtendedCardMatcher
   | ControlledBy Who
   | OwnedBy Who
   | InHandOf ForPlay Who
+  | {- | A card that, played now, would have no slot to go in. "Assets played
+    in excess of available slots gain fast" is a question about the card and
+    the table together, which neither a card matcher nor a slot matcher can
+    ask on its own.
+    -}
+    DoesNotFitSlotsOf Who
   | InDeckOf Who
   | InPlayAreaOf Who
   | InDiscardOf Who
@@ -265,6 +271,8 @@ data CardMatcher
   | CardWithAvailableCustomization
   | CardTaggedWith Text
   | SingleSidedCard
+  | -- | Printed cost of at least @n@; a card with no cost never matches.
+    CardWithCostAtLeast Int
   deriving stock (Show, Eq, Ord, Data)
 
 instance Not CardMatcher where

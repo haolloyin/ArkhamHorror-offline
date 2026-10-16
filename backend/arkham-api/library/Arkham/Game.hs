@@ -93,6 +93,7 @@ import Arkham.Helpers.Criteria
 import Arkham.Helpers.Customization (customizedSlots, hasCustomization)
 import Arkham.Helpers.Doom
 import Arkham.Helpers.Enemy (
+  compositeEnemyGroups,
   enemyEngagedInvestigators,
   getEnemyAttackDamageAndHorror,
   getModifiedKeywords,
@@ -153,7 +154,7 @@ import Arkham.Location.BreachStatus qualified as Breach
 import Arkham.Location.FloodLevel
 import Arkham.Location.Grid (adjacentPositions, positionColumn, positionRow)
 import Arkham.Location.Group (membershipKey)
-import Arkham.Location.Runner (getModifiedShroudValueFor)
+import Arkham.Location.Runner (getModifiedShroudValueFor, getPrintedShroudValueFor)
 import Arkham.Location.Types (
   Field (..),
   LocationAttrs (..),
@@ -357,6 +358,7 @@ newGame scenarioOrCampaignId seed playerCount difficulty includeTarotReadings =
         , gameAsIfAtIgnored = mempty
         , gameLocationOffsets = mempty
         , gameCardPlayStack = mempty
+        , gameLogBlockStack = mempty
         }
  where
   mode = case scenarioOrCampaignId of
@@ -1173,6 +1175,12 @@ getInvestigatorsMatching MatcherFunc {..} matcher = do
     MostDamage -> do
       most <- highestAmongst UneliminatedInvestigator (field InvestigatorDamage)
       flip runMatchesM as $ \i -> pure $ toId i `elem` most
+    MostDamageIncludingAssets assetMatcher -> do
+      most <- highestAmongst UneliminatedInvestigator \iid -> do
+        own <- field InvestigatorDamage iid
+        onAssets <- selectSum AssetDamage (assetMatcher <> assetControlledBy iid)
+        pure $ own + onAssets
+      flip runMatchesM as $ \i -> pure $ toId i `elem` most
     MostCardsInHand -> do
       most <- highestAmongst UneliminatedInvestigator (fieldMap InvestigatorHand length)
       flip runMatchesM as $ \i -> pure $ toId i `elem` most
@@ -1398,6 +1406,9 @@ getInvestigatorsMatching MatcherFunc {..} matcher = do
         >=> (`gameValueMatches` gameValueMatcher)
     InvestigatorThatMovedDuringTurn -> flip runMatchesM as \i -> do
       history <- getHistory TurnHistory (toId i)
+      pure $ historyMoved history > 0
+    InvestigatorThatMovedDuringRound -> flip runMatchesM as \i -> do
+      history <- getHistory RoundHistory (toId i)
       pure $ historyMoved history > 0
     InvestigatorWhenCriteria criteria -> flip runMatchesM as $ \i -> passesCriteria (toId i) Nothing GameSource GameSource [] criteria
     NotInvestigator x -> negateMatches x as go
@@ -1774,6 +1785,8 @@ getActsMatching matcher = do
     ActWithTreachery treacheryMatcher -> \act ->
       selectAny $ TreacheryIsAttachedTo (toTarget act.id) <> treacheryMatcher
     ActWithModifier modifier -> \act -> elem modifier <$> getModifiers (toTarget act)
+    ActWithTokens tkn valueMatcher -> \act ->
+      gameValueMatches (Token.countTokens tkn $ attr actTokens act) valueMatcher
     ActCanWheelOfFortuneX -> pure . not . attr actUsedWheelOfFortuneX
     NotAct matcher' -> fmap not . matcherFilter matcher'
 
@@ -1796,6 +1809,7 @@ getRemainingActsMatching matcher = do
     ActWithStep _ -> pure . const False
     ActWithTreachery _ -> pure . const False
     ActWithModifier _ -> pure . const False
+    ActWithTokens _ _ -> pure . const False
     ActWithSide _ -> error "Can't check side, since not on def"
     ActWithDeckId _ -> error "Can't check side, since not on def"
     ActCanWheelOfFortuneX -> pure . const True
@@ -2234,6 +2248,12 @@ replaceMatcherSources ability = case abilitySource ability of
   ProxySource (TreacheryMatcherSource m) base -> do
     sources <- selectMap TreacherySource m
     pure $ map (\source -> ability {abilitySource = ProxySource source base}) sources
+  -- See the matching case in 'Arkham.Helpers.Action.getActionsWith', which is
+  -- what actually offers these abilities; this path only serves the ability
+  -- matcher DSL, and has no seat to anchor on, so `You` stands in.
+  ProxySource YouSource base -> do
+    sources <- selectMap InvestigatorSource You
+    pure $ map (\source -> ability {abilitySource = ProxySource source base}) sources
   _ -> pure [ability]
 
 getLocationsMatching
@@ -2384,7 +2404,15 @@ getLocationsMatching lmatcher = do
     LocationWithFullTitle title subtitle -> pure $ filter ((== (title <:> subtitle)) . toName) ls
     LocationWithUnrevealedTitle title -> pure $ filter ((`hasTitle` title) . Unrevealed) ls
     LocationWithId locationId -> pure $ filter ((== locationId) . toId) ls
-    LocationWithSymbol locationSymbol -> pure $ filter ((== locationSymbol) . toLocationSymbol) ls
+    -- Every connection, distance and pathing query resolves a source location's
+    -- printed connections through this matcher, so excluding a DoesNotConnect
+    -- location here is the whole inbound half of its isolation (the outbound half
+    -- is Arkham.Helpers.Location.connectedMatcherParts). The symbol test comes
+    -- first so the modifier read only runs for a location carrying the symbol.
+    LocationWithSymbol locationSymbol -> flip filterM ls \l ->
+      if toLocationSymbol l == locationSymbol
+        then notElem DoesNotConnect <$> getModifiers (toId l)
+        else pure False
     LeftmostConnectionOf matcher -> do
       -- A location's connections are stored in printed order, so the first LocationWithSymbol
       -- among them is the leftmost icon on its card.
@@ -2468,6 +2496,13 @@ getLocationsMatching lmatcher = do
     LocationWithShroud gameValueMatcher -> do
       filterM
         (field LocationShroud . toId >=> maybe (pure False) (`gameValueMatches` gameValueMatcher))
+        ls
+    LocationWithPrintedShroud gameValueMatcher -> do
+      filterM
+        ( field LocationPrintedShroud
+            . toId
+            >=> maybe (pure False) (getGameValue >=> (`gameValueMatches` gameValueMatcher))
+        )
         ls
     LocationWithShroudLessThanOrEqualToLessThanEnemyMaybeField eid fld -> do
       mval <- field fld eid
@@ -3281,8 +3316,11 @@ getAssetsMatching' matcher = do
         pure $ current - totalHeal > 0
     AssetWithDoom valueMatcher ->
       filterM ((`gameValueMatches` valueMatcher) . attr assetDoom) as
-    AssetWithClues valueMatcher ->
-      filterM ((`gameValueMatches` valueMatcher) . attr assetClues) as
+    -- clue counts read through 'IgnoreCluesOnThis', so an asset whose clues are
+    -- not clues is not offered as one anywhere this matcher chooses a source
+    AssetWithClues valueMatcher -> flip filterM as \a -> do
+      mods <- getModifiers (toId a)
+      gameValueMatches (subtractIgnoredClues mods (attr assetClues a)) valueMatcher
     AssetWithTokens valueMatcher tokenType ->
       filterM ((`gameValueMatches` valueMatcher) . Token.countTokens tokenType . attr assetTokens) as
     AssetWithSpendableUses valueMatcher tokenType -> flip filterM as \a -> do
@@ -3307,6 +3345,12 @@ getAssetsMatching' matcher = do
       slotMaps <- Map.unionsWith (<>) <$> selectField InvestigatorSlots Anyone
       let inSlots = concatMap (.assets) $ Map.findWithDefault mempty slot slotMaps
       pure $ filter ((`elem` inSlots) . toId) as
+    AssetInExcessOfSlots -> do
+      slotMaps <- Map.unionsWith (<>) <$> selectField InvestigatorSlots Anyone
+      let slotted = concatMap (.assets) (concat (Map.elems slotMaps))
+      -- An asset that takes no slots is never in one, and is not in excess of
+      -- anything; only one that wanted a slot and did not get it counts.
+      pure $ filter (\a -> notNull (attr assetSlots a) && toId a `notElem` slotted) as
     AssetWithSlot slot ->
       as & filterM \a -> do
         slots <- field AssetSlots a.id
@@ -4316,8 +4360,12 @@ enemyMatcherFilter es matcher' = do
                   _ -> pure False
             anyM canBeEngaged iids
     OnlyEnemyEngagedWith investigatorMatcher -> do
-      select (EnemyIsEngagedWith investigatorMatcher) >>= \case
-        [x] -> pure $ filter (\enemy -> enemy.id == x) es
+      -- A composite enemy counts once, not once per card: Cthulhu and the facets on
+      -- the Cthulhu Board are the only enemy engaged with you, so Machete still gets
+      -- its bonus damage.
+      engaged <- select (EnemyIsEngagedWith investigatorMatcher)
+      compositeEnemyGroups engaged >>= \case
+        [grp] -> pure $ filter (\enemy -> enemy.id `elem` grp) es
         _ -> pure []
     EnemyOwnedBy investigatorMatcher -> do
       iids <- select investigatorMatcher
@@ -4409,14 +4457,14 @@ enemyMatcherFilter es matcher' = do
     M.EnemyAt locationMatcher -> do
       locations <- select locationMatcher
       es & filterM \enemy -> do
-        if enemy.placement.isAttached
+        if enemy.placement.isAttachedWithoutLocation
           then pure False
           else Helpers.placementLocations enemy.placement <&> any (`elem` locations)
     M.EnemyWasAt locationMatcher -> do
       locations <- select locationMatcher
       es & filterM \enemy -> do
         if
-          | enemy.placement.isAttached -> pure False
+          | enemy.placement.isAttachedWithoutLocation -> pure False
           | isOutOfPlayPlacement enemy.placement ->
               pure $ maybe False (`elem` locations) enemy.lastKnownLocation
           | otherwise ->
@@ -4573,7 +4621,9 @@ enemyMatcherFilter es matcher' = do
                       , getCanPerformAbility iid [window] . overrideFunc
                       ]
                 )
-                (getAbilities enemy)
+                -- Mirrors the fight side: an enemy whose evade is restricted to
+                -- certain sources (OnlySources) reads them off the requestor.
+                (map (setRequestor source) $ getAbilities enemy)
     EnemyCanBeDefeatedBy source -> flip filterM es \enemy -> do
       modifiers <- getModifiers enemy
       let
@@ -4829,7 +4879,7 @@ instance Projection Location where
       LocationDamage -> pure $ locationDamage attrs
       LocationDoom -> pure $ locationDoom attrs
       LocationPrintedShroud -> case locationShroud of
-        Just ValueX -> Just . Static <$> getModifiedShroudValueFor attrs
+        Just ValueX -> Just . Static <$> getPrintedShroudValueFor attrs
         shroud -> pure shroud
       LocationShroud ->
         if isRevealed l && isJust locationShroud
@@ -4917,7 +4967,12 @@ instance Projection Asset where
       AssetMeta -> pure assetMeta
       AssetName -> pure $ toName attrs
       AssetCost -> pure . maybe 0 toPrintedCost . cdCost $ toCardDef attrs
-      AssetClues -> pure $ assetClues attrs
+      -- "clues on this do not count as clues": the tokens stay on the card, but
+      -- every clue count the engine reads off it sees the reduction, including
+      -- the controller's InvestigatorClues, which is what makes them spendable
+      AssetClues -> do
+        mods <- getModifiers (AssetTarget aid)
+        pure $ subtractIgnoredClues mods (assetClues attrs)
       AssetResources -> pure $ assetResources attrs
       AssetHorror -> pure $ assetHorror attrs
       AssetDamage -> pure $ assetDamage attrs
@@ -4927,9 +4982,11 @@ instance Projection Asset where
           mods <- getModifiers (AssetTarget aid)
           let isSpirit = notNull [() | IsSpirit _ <- mods]
           let
-            modifiedHealth = foldl' applyHealthModifiers n mods
+            modifiedHealth = foldl' applyHealthModifiers (foldl' applyPreHealthModifiers n mods) mods
             applyHealthModifiers h (HealthModifier m) = max 0 (h + m)
             applyHealthModifiers h _ = h
+            applyPreHealthModifiers h (Helpers.HealthModifierWithMin m (Min minVal)) = max (min h minVal) (h + m)
+            applyPreHealthModifiers h _ = h
           pure $ guard (not isSpirit) $> max 0 (modifiedHealth - assetDamage attrs)
       AssetRemainingSanity -> case assetSanity of
         Nothing -> pure Nothing
@@ -5207,7 +5264,9 @@ getEnemyField f e = do
     EnemyKeywords -> do
       modifiers' <- foldMapM getModifiers [toTarget e, CardIdTarget $ toCardId $ toAttrs e]
       let
-        printedKeywords = toList $ cdKeywords (toCardDef attrs)
+        {- Keywords are printed in the text box, so a blanked one takes them with it
+        (FAQ: an enemy "loses the swarming keyword or its text box is blanked"). -}
+        printedKeywords = if Blank `elem` modifiers' then [] else toList $ cdKeywords (toCardDef attrs)
         keywords' =
           foldl'
             (\k m -> k & (`applyModifier` m) & (`applyRemoves` m) & (`applyForced` m))
@@ -5228,14 +5287,14 @@ getEnemyField f e = do
           _ -> ks
       setFromList
         <$> ( keywords' & mapMaybeM \case
-                Keyword.ScenarioModifierKeyword k v kw -> do
-                  ok <- selectAny (ScenarioWithModifier (ScenarioModifierValue k v))
-                  if ok
-                    then pure $ Just kw
-                    else
-                      selectAny (EnemyWithModifier (ScenarioModifierValue k v)) <&> \case
-                        True -> Just kw
-                        False -> Nothing
+                Keyword.ScenarioModifierKeyword k v kw ->
+                  {- The enemy's own value for the key overrides the scenario's: The Lost
+                  Sister is globally Day and marks only enemies at Dark locations Night. -}
+                  case [v' | ScenarioModifierValue k' v' <- modifiers', k' == k] of
+                    (v' : _) -> pure $ if v' == v then Just kw else Nothing
+                    [] -> do
+                      ok <- selectAny (ScenarioWithModifier (ScenarioModifierValue k v))
+                      pure $ if ok then Just kw else Nothing
                 other -> pure $ Just other
             )
     EnemyAbilities -> pure $ getAbilities e
@@ -5271,12 +5330,15 @@ instance Projection Investigator where
         let
           applyModifier (HealthModifier m) n = max 0 (n + m)
           applyModifier _ n = n
+          applyPreModifier (Helpers.HealthModifierWithMin m (Min minVal)) n = max (min n minVal) (n + m)
+          applyPreModifier _ n = n
           baseHealth = case investigatorForm of
             TransfiguredForm inner ->
               (toAttrs (lookupInvestigator (InvestigatorId inner) investigatorPlayerId)).health
             _ -> investigatorHealth
 
-        foldr applyModifier baseHealth <$> getModifiers attrs
+        mods <- getModifiers attrs
+        pure $ foldr applyModifier (foldr applyPreModifier baseHealth mods) mods
       InvestigatorSanity -> do
         let
           applyModifier (SanityModifier m) n = max 0 (n + m)
@@ -5376,6 +5438,8 @@ instance Projection Investigator where
       InvestigatorSideDeck -> pure investigatorSideDeck
       InvestigatorDecks -> pure investigatorDecks
       InvestigatorDiscard -> pure investigatorDiscard
+      InvestigatorDeckLength -> pure $ length (unDeck investigatorDeck)
+      InvestigatorDiscardLength -> pure $ length investigatorDiscard
       InvestigatorClass -> case investigatorForm of
         TransfiguredForm inner ->
           pure
@@ -5953,6 +6017,11 @@ instance Query ExtendedCardMatcher where
               <*> concatMapM getAsIfInHandCards iids
           NotForPlay -> concatMapM (field InvestigatorHand) iids
         pure $ filter (`elem` cards) cs
+      DoesNotFitSlotsOf who -> do
+        iids <- select who
+        attrs <- traverse (fmap toAttrs . getInvestigator) iids
+        flip filterM cs \c ->
+          anyM (fmap not . cardFitsAvailableSlots c) attrs
       InDeckOf who -> do
         iids <- select who
         cards <- concatMapM (fmap (map PlayerCard . unDeck) . getCurrentDeck) iids
@@ -6518,6 +6587,7 @@ instance Projection Skill where
       SkillOwner -> pure skillOwner
       SkillController -> pure skillOwner -- for now controller and owner are the same
       SkillPlacement -> pure skillPlacement
+      SkillSealedChaosTokens -> pure skillSealedChaosTokens
 
 instance Projection (InDiscardEntity Skill) where
   getAttrs aid = do
@@ -6598,7 +6668,13 @@ instance Projection Treachery where
       TreacheryResources -> pure $ treacheryResources attrs
       TreacheryDoom -> pure $ treacheryDoom attrs
       TreacheryAttachedTarget -> pure $ treacheryAttachedTarget attrs
-      TreacheryTraits -> pure $ cdCardTraits cdef
+      TreacheryTraits -> do
+        -- Locations, assets, enemies and investigators all fold granted traits
+        -- in; a treachery that gains one (Ambush on the river) needs it too.
+        modifiers' <- foldMapM getModifiers [toTarget t, CardIdTarget $ toCardId t]
+        let addedTraits = setFromList [tr | AddTrait tr <- modifiers']
+        let removedTraits = setFromList [tr | RemoveTrait tr <- modifiers']
+        pure $ (cdCardTraits cdef <> addedTraits) `difference` removedTraits
       TreacheryKeywords -> do
         modifiers' <- foldMapM getModifiers [toTarget t, CardIdTarget $ toCardId t]
         let
@@ -7320,13 +7396,20 @@ handleBlanked g = do
 
 handleDefeatedByModifiers :: Map InvestigatorId (Int, Int) -> Game -> GameT Game
 handleDefeatedByModifiers beforeMap g = flip runReaderT g $ do
-  for_ (mapToList beforeMap) \(iid, (beforeHealth, beforeSanity)) -> do
-    whenJustM (getInvestigatorMaybe iid) \_ -> do
-      afterHealth <- field InvestigatorHealth iid
-      afterSanity <- field InvestigatorSanity iid
-      when (afterHealth < beforeHealth || afterSanity < beforeSanity)
-        $ push
-        $ CheckDefeated GameSource (InvestigatorTarget iid)
+  -- Once the resolution starts the scenario is over, and teardown is exactly what
+  -- lowers a maximum: EndOfGame reverting Transfiguration's form, a resolution
+  -- removing a story asset that granted health. Neither may defeat anyone -- with
+  -- Charon's Obol in play it killed the investigator outright (#5829). A
+  -- resolution that means to defeat someone pushes InvestigatorDefeated itself.
+  inResolution <- getInResolution
+  unless inResolution do
+    for_ (mapToList beforeMap) \(iid, (beforeHealth, beforeSanity)) -> do
+      whenJustM (getInvestigatorMaybe iid) \_ -> do
+        afterHealth <- field InvestigatorHealth iid
+        afterSanity <- field InvestigatorSanity iid
+        when (afterHealth < beforeHealth || afterSanity < beforeSanity)
+          $ push
+          $ CheckDefeated GameSource (InvestigatorTarget iid)
   getGame
 
 applyBlank :: Monad m => Source -> StateT (Map Target [Modifier]) m ()

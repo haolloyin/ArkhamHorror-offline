@@ -13,6 +13,7 @@ import Arkham.Asset
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Asset.Types (Asset, AssetAttrs (..), Field (..), assetIsStory)
 import Arkham.Attack
+import Arkham.Calculation qualified as Calc
 import Arkham.Campaign.Option
 import Arkham.Campaign.Types hiding (campaign, modifiersL)
 import Arkham.CampaignLog
@@ -27,6 +28,7 @@ import Arkham.Cost qualified as Cost
 import Arkham.DamageEffect
 import Arkham.Debug
 import Arkham.Debug.CardDestination
+import Arkham.Debug.SkillTest
 import Arkham.Deck qualified as Deck
 import Arkham.Decklist
 import Arkham.Decklist.RandomBasicWeakness (
@@ -41,6 +43,7 @@ import Arkham.Enemy
 import Arkham.Enemy.Creation (EnemyCreation (..), EnemyCreationMethod (..))
 import Arkham.Enemy.Runner (getPreyMatcher)
 import Arkham.Enemy.Types (Enemy, EnemyAttrs (..), Field (..), delayEngagementL)
+import Arkham.Enemy.Types qualified as Field
 import Arkham.EnemyLocation hiding (EnemyLocation)
 import Arkham.EnemyLocation.Types (EnemyLocationAttrs (..))
 import Arkham.Entities
@@ -62,6 +65,7 @@ import Arkham.Game.Utils
 import Arkham.GameEnv
 import Arkham.Helpers
 import Arkham.Helpers.Ability (abilityRidesAlong, isForcedAbility)
+import Arkham.Helpers.Action (getPreventedActions, getPreventedPlayerAbilities)
 import Arkham.Helpers.ChaosBag (getBagChaosTokens)
 import Arkham.Helpers.Criteria
 import Arkham.Helpers.Customization
@@ -101,6 +105,7 @@ import Arkham.Investigator.Types qualified as Investigator
 import Arkham.Keyword qualified as Keyword
 import Arkham.Location
 import Arkham.Location.Types (Field (..), LocationAttrs (..), updateLocation)
+import Arkham.Log qualified as Log
 import Arkham.Matcher hiding (
   AssetCard,
   AssetDefeated,
@@ -745,6 +750,7 @@ runGameMessage msg g = case msg of
           & (focusedChaosTokensL .~ mempty)
           & (activeCardL .~ Nothing)
           & (activeAbilitiesL .~ mempty)
+          & (logBlockStackL .~ mempty)
           & (actionRemovedEntitiesL .~ mempty)
           & (tombstonesL .~ mempty)
           & (activeAbilitiesL .~ mempty)
@@ -809,6 +815,7 @@ runGameMessage msg g = case msg of
       & (focusedChaosTokensL .~ mempty)
       & (activeCardL .~ Nothing)
       & (activeAbilitiesL .~ mempty)
+      & (logBlockStackL .~ mempty)
       & (playerOrderL .~ (g ^. entitiesL . investigatorsL . to keys))
       & (actionRemovedEntitiesL .~ mempty)
       & (tombstonesL .~ mempty)
@@ -1209,12 +1216,17 @@ runGameMessage msg g = case msg of
     pushAll [BeginTurn iid, After (BeginTurn iid)]
     pure $ g & activeInvestigatorIdL .~ iid & turnPlayerInvestigatorIdL ?~ iid
   After (MoveTo (moveTarget -> InvestigatorTarget iid)) -> do
+    -- Where it ended up, as well as that it happened: "moved to a location with
+    -- an enemy" is a question about the destination, and read afterwards, which
+    -- is when the investigator is already standing there.
+    arrived <- field Investigator.InvestigatorLocation iid
     let
-      historyItem = HistoryItem HistoryMoved 1
+      historyItems =
+        HistoryItem HistoryMoved 1
+          : [HistoryItem HistoryMovedTo [lid] | lid <- maybeToList arrived]
       turn = isJust $ view turnPlayerInvestigatorIdL g
-      setTurnHistory =
-        if turn then turnHistoryL %~ insertHistory iid historyItem else id
-    pure $ g & (phaseHistoryL %~ insertHistory iid historyItem) & setTurnHistory
+      record item = (phaseHistoryL %~ insertHistory iid item) . (if turn then turnHistoryL %~ insertHistory iid item else id)
+    pure $ foldr record g historyItems
   Arkham.Helpers.Message.Defeated (EnemyTarget eid) _ source _ -> do
     attrs <- toAttrs <$> getEnemy eid
     mlid <- field EnemyLocation eid
@@ -1551,7 +1563,12 @@ runGameMessage msg g = case msg of
         case attr enemyPlacement enemy of
           AsSwarm _ c -> case toCardOwner c of
             Just owner -> push $ PutCardOnBottomOfDeck owner (Deck.InvestigatorDeck owner) c
-            Nothing -> unlessM (hasCampaignOption UseSwarmPlaceholders) $ error "Missing owner"
+            Nothing -> unlessM (hasCampaignOption UseSwarmPlaceholders) $ case c of
+              -- A scenario effect can slide an encounter card under a host enemy
+              -- (Dark Matter's Duplication). There is no owner's deck to return
+              -- it to, so it leaves play to the encounter discard instead.
+              EncounterCard ec -> push $ AddToEncounterDiscard ec
+              _ -> error "Missing owner"
           _ -> pure ()
 
         zone <-
@@ -1854,6 +1871,7 @@ runGameMessage msg g = case msg of
       & (phaseHistoryL %~ insertHistory iid historyItem)
       & (actionRemovedEntitiesL . skillsL %~ Map.foldr' (\s m -> Map.insert s.id s m) skills')
       & setTurnHistory
+  Msg.RestoreSkillTestForWindow mst -> pure $ g & (skillTestL .~ mst)
   Msg.SkillTestEnded _ -> do
     let abilitiesToResolve = filter abilityTriggersSkillTest (g ^. activeAbilitiesL)
     replaceAllMessagesMatching
@@ -1929,11 +1947,9 @@ runGameMessage msg g = case msg of
 
       card <- field AssetCard assetId
       underneath <- field AssetCardsUnderneath assetId
-      if assetIsStory $ toAttrs asset
-        then do
-          unless (cdDoubleSided (toCardDef asset)) do
-            push $ addToHand iid card
-        else pushAll [RemoveFromPlay (toSource assetId), addToHand iid card]
+      -- a double-sided story asset flips rather than leaving play
+      unless (assetIsStory (toAttrs asset) && cdDoubleSided (toCardDef asset)) do
+        pushAll [RemoveFromPlay (toSource assetId), addToHand iid card]
       for_ underneath (push . addToDiscard iid)
     pure g
   When (PlaceInBonded _ (toCardId -> cardId)) -> do
@@ -2908,13 +2924,24 @@ runGameMessage msg g = case msg of
     -- otherwise resolve the Forced first and offer the reaction only afterwards. #5784
     whenWindow <- checkWindows [mkWhen (Window.TurnBegins x)]
     afterWindow <- checkWindows [mkAfter (Window.TurnBegins x)]
-    pushAll [whenWindow, afterWindow]
+    {- Say what this seat may not trigger this turn. A fast or action ability has
+    no window of its own to be announced at, and the player window it belongs to
+    reopens several times a turn, so turn start is the one moment that happens
+    exactly once. 'withActiveInvestigator' because the criteria pass reads the
+    active investigator and this handler runs before 'activeInvestigatorIdL' is
+    x. 'AbilityPrevented' is narration only. #5827 -}
+    prevented <-
+      withActiveInvestigator x
+        $ map (uncurry $ AbilityPrevented x)
+        <$> getPreventedPlayerAbilities x
+    pushAll $ prevented <> [whenWindow, afterWindow]
     pure
       $ g
       & (activeInvestigatorIdL .~ x)
       & (activePlayerIdL .~ player)
       & (turnPlayerInvestigatorIdL ?~ x)
       & (activeAbilitiesL .~ mempty)
+      & (logBlockStackL .~ mempty)
       & (actionRemovedEntitiesL .~ mempty)
       & (tombstonesL .~ mempty)
       & (entitiesL %~ clearRemovedEntities)
@@ -3007,6 +3034,68 @@ runGameMessage msg g = case msg of
     for_ (find ((== tokenId) . (.id)) tokens) \token ->
       pushAll [SealChaosToken token, SealedChaosToken token Nothing target]
     pure g
+  DebugBeginSkillTest spec -> do
+    let
+      iid = debugTestInvestigator spec
+      refuse key = g <$ Log.sendLog (Log.notice [Log.ikeyPart key []])
+      -- an enemy target, and its value for "use the target's value" if it has one
+      enemyWithValue eid fld = do
+        inPlay <- selectAny $ EnemyWithId eid
+        value <- fieldMayJoin fld eid
+        pure
+          $ if inPlay
+            then Just (EnemyTarget eid, Calc.EnemyMaybeFieldCalculation eid fld <$ value)
+            else Nothing
+    iids <- getInvestigators
+    inTest <- isJust <$> getSkillTestId
+    mSourceCard <- traverse getCardMaybe (debugTestSourceCard spec)
+    mTarget <- case (debugTestAction spec, debugTestTarget spec) of
+      (Nothing, mtarget) -> pure $ Just (fromMaybe (toTarget iid) mtarget, Nothing)
+      (Just Action.Fight, Just (EnemyTarget eid)) -> enemyWithValue eid Field.EnemyFight
+      (Just Action.Evade, Just (EnemyTarget eid)) -> enemyWithValue eid Field.EnemyEvade
+      (Just Action.Parley, Just (EnemyTarget eid)) -> fmap (\(t, _) -> (t, Nothing)) <$> enemyWithValue eid Field.EnemyFight
+      (Just Action.Parley, Nothing) -> pure $ Just (toTarget iid, Nothing)
+      (Just Action.Investigate, Just (LocationTarget lid)) -> do
+        inPlay <- selectAny $ LocationWithId lid
+        shroud <- fieldMayJoin LocationShroud lid
+        pure
+          $ if inPlay
+            then Just (LocationTarget lid, Calc.LocationMaybeFieldCalculation lid LocationShroud <$ shroud)
+            else Nothing
+      _ -> pure Nothing
+    let
+      mTestType = case debugTestSkill spec of
+        DebugTestOneSkill skillType -> Just (SkillSkillTest skillType, SkillBaseValue skillType)
+        DebugTestCombined [] -> Nothing
+        DebugTestCombined [skillType] -> Just (SkillSkillTest skillType, SkillBaseValue skillType)
+        DebugTestCombined skillTypes -> Just (AndSkillTest skillTypes, AndSkillBaseValue skillTypes)
+        DebugTestFixed n -> Just (BaseValueSkillTest n [(#wild, 1), (#wildMinus, -1)], FixedBaseValue n)
+    if
+      | inTest -> refuse "log.debug.skillTestActive"
+      | iid `notElem` iids -> refuse "log.debug.invalidRequest"
+      | Just Nothing <- mSourceCard -> refuse "log.debug.invalidRequest"
+      | otherwise -> case (mTarget, mTestType) of
+          (Just (target, mTargetValue), Just (testType, baseValue)) -> do
+            let
+              mDifficulty = case debugTestDifficulty spec of
+                DebugDifficultyFixed n -> Just (Calc.Fixed n)
+                DebugDifficultyOfTarget -> mTargetValue
+            case mDifficulty of
+              Nothing -> refuse "log.debug.noTargetValue"
+              Just difficulty -> do
+                sid <- getRandom
+                let source = maybe GameSource CardIdSource (debugTestSourceCard spec)
+                Log.sendLog
+                  $ Log.mechanic
+                    [Log.ikeyPart "log.debug.startsSkillTest" ["investigator" Log.~> Log.investigatorRefById iid]]
+                push
+                  $ BeginSkillTest
+                  $ (buildSkillTest sid iid source target testType baseValue (SkillTestDifficulty difficulty))
+                    { skillTestAction = debugTestAction spec
+                    , skillTestSourceCard = debugTestSourceCard spec
+                    }
+                pure g
+          _ -> refuse "log.debug.invalidRequest"
   DebugMoveCard cardId destination -> do
     card <- getCard cardId
     case destination of
@@ -3051,7 +3140,7 @@ runGameMessage msg g = case msg of
       CampaignPhase {} -> error "should not be called in this situation"
     pure
       $ g
-      & (roundHistoryL %~ (<> view phaseHistoryL g))
+      & (roundHistoryL %~ foldPhaseHistory g)
       & (phaseHistoryL %~ mempty)
   EndInvestigation -> do
     whenWindow <- checkWindows [mkWhen (Window.PhaseEnds InvestigationPhase)]
@@ -3061,7 +3150,7 @@ runGameMessage msg g = case msg of
     pure
       $ g
       & (phaseHistoryL .~ mempty)
-      & (roundHistoryL %~ (<> view phaseHistoryL g))
+      & (roundHistoryL %~ foldPhaseHistory g)
       & (turnPlayerInvestigatorIdL .~ Nothing)
   Begin EnemyPhase -> do
     runQueueT $ runEnemyPhase EndEnemy
@@ -3085,7 +3174,7 @@ runGameMessage msg g = case msg of
         [mkWhen (Window.PhaseEnds EnemyPhase)]
     pure
       $ g
-      & (roundHistoryL %~ (<> view phaseHistoryL g))
+      & (roundHistoryL %~ foldPhaseHistory g)
       & (phaseHistoryL .~ mempty)
   Begin UpkeepPhase -> do
     let phaseStep step msgs = Msg.PhaseStep (UpkeepPhaseStep step) msgs
@@ -3114,7 +3203,7 @@ runGameMessage msg g = case msg of
         [mkWhen (Window.PhaseEnds UpkeepPhase)]
     pure
       $ g
-      & (roundHistoryL %~ (<> view phaseHistoryL g))
+      & (roundHistoryL %~ foldPhaseHistory g)
       & (phaseHistoryL .~ mempty)
   EndRoundWindow -> do
     windows' <-
@@ -3212,7 +3301,7 @@ runGameMessage msg g = case msg of
       =<< checkWindows [mkWhen (Window.PhaseEnds MythosPhase)]
     pure
       $ g
-      & (roundHistoryL %~ (<> view phaseHistoryL g))
+      & (roundHistoryL %~ foldPhaseHistory g)
       & (phaseHistoryL .~ mempty)
   BeginSkillTestWithPreMessages _ pre skillTest -> runMessage (BeginSkillTestWithPreMessages' pre skillTest) g
   BeginSkillTestWithPreMessages' pre skillTest -> do
@@ -3331,7 +3420,7 @@ runGameMessage msg g = case msg of
                     -- test is active, the new test is relocated to after the current
                     -- one. ResolvedStory (which removes the story) must travel with
                     -- it, or the story is removed before its own test resolves.
-                    MoveWithSkillTest (StoryMessage (ResolvedStory storyMode storyId))
+                    MoveWithSkillTest (StoryMessage (ResolvedStory iid storyMode storyId))
                   ]
               ]
           ]
@@ -3342,7 +3431,7 @@ runGameMessage msg g = case msg of
             [ targetLabel
                 (toTarget storyId)
                 [ StoryMessage (ResolveStory iid storyMode storyId)
-                , MoveWithSkillTest (StoryMessage (ResolvedStory storyMode storyId))
+                , MoveWithSkillTest (StoryMessage (ResolvedStory iid storyMode storyId))
                 ]
             ]
     pure $ g & entitiesL . storiesL . at storyId ?~ story'
@@ -3357,9 +3446,26 @@ runGameMessage msg g = case msg of
       ?~ story'
       & entryTicksL
       %~ insertMap card.id (gameWindowTick g)
-  StoryMessage (ResolveStory _ _ sid) -> do
+  StoryMessage (ResolveStory iid mode sid) -> do
     card <- field StoryCard sid
+    {- The when-half of the resolution window. This runs after the story entity has
+    already queued its own resolution, and 'push' prepends, so the window still
+    resolves in front of the story's effects. -}
+    when (mode == ResolveIt) do
+      whenResolve <- checkWhen $ Window.ResolvesStory iid sid
+      push whenResolve
     pure $ g & focusedCardsL %~ map (filter (/= card))
+  {- The after-half. Raised here rather than at the push sites so that every path
+  that ends a story read gets it: both of 'ReadStoryWithPlacement''s prompts
+  (where it travels with the story's skill test, since 'ResolvedStory' does), and
+  anything that queues 'ResolvedStory' itself. Because this runs after the
+  entities -- which is where 'RemoveStory' is pushed -- and 'push' prepends, the
+  window always resolves while the story is still in play. -}
+  StoryMessage (ResolvedStory iid mode sid) -> do
+    when (mode == ResolveIt) do
+      afterResolve <- checkAfter $ Window.ResolvesStory iid sid
+      push afterResolve
+    pure g
   StoryMessage (RemoveStory storyId) -> do
     pure $ g & entitiesL . storiesL %~ deleteMap storyId
   CreateSkill skillId card investigatorId placement -> do
@@ -3640,7 +3746,10 @@ runGameMessage msg g = case msg of
         (effectId, surgeEffect) <- createSurgeEffect source cardId
         pure $ g & entitiesL . effectsL . at effectId ?~ surgeEffect
       Nothing -> pure g
-  Surge iid source -> g <$ push (drawEncounterCard iid source)
+  Surge iid source -> do
+    whenWindow <- checkWhen $ Window.GainedSurge iid source
+    pushAll [whenWindow, drawEncounterCard iid source]
+    pure g
   ReplaceCard cardId card -> do
     replaceCard cardId card -- We must update the IORef
     pure $ g & cardsL %~ insertMap cardId card
@@ -4051,6 +4160,9 @@ runGameMessage msg g = case msg of
     case toCardType card of
       AssetType -> runMessage (RemoveAsset (coerce uuid)) g
       _ -> error "Unhandle remove card entity type"
+  -- Log only; see 'gameLogBlockStack'.
+  OpenLogBlock gid -> pure $ g & logBlockStackL %~ (<> [gid])
+  CloseLogBlock gid -> pure $ g & logBlockStackL %~ filter (/= gid)
   UseAbility _ a _ -> pure $ g & activeAbilitiesL %~ (a :)
   ResolvedAbility ab -> do
     -- a queued ResolveWindowInitiations is a set of in-flight abilities: their sources
@@ -4442,9 +4554,21 @@ runPreGameMessage msg g = case msg of
         push (After msg)
         pure $ g & cardPlayStackL %~ (<> [toCardId card])
       _ -> pure g
-  After (Do (RevealLocation _ lid)) -> do
+  After (Do (RevealLocation miid lid)) -> do
     mCard <- fieldMay LocationCard lid
-    pure $ maybe g (\card -> g & cardPlayStackL %~ filter (/= toCardId card)) mCard
+    {- Whose reveal it was. A location revealed by moving into it, or by an
+    investigation, names the investigator; one the scenario turned over by
+    itself names nobody, and is credited to whoever's turn it is -- "if you
+    revealed or put a location into play this round" is said by a card in that
+    investigator's hand. -}
+    lead <- getLead
+    let
+      iid = fromMaybe (fromMaybe lead (view turnPlayerInvestigatorIdL g)) miid
+      historyItem = HistoryItem HistoryLocationsRevealed [lid]
+      turn = isJust $ view turnPlayerInvestigatorIdL g
+      setTurnHistory = if turn then turnHistoryL %~ insertHistory iid historyItem else id
+      recorded = g & (phaseHistoryL %~ insertHistory iid historyItem) & setTurnHistory
+    pure $ maybe recorded (\card -> recorded & cardPlayStackL %~ filter (/= toCardId card)) mCard
   ForInvestigator iid _ -> do
     player <- getPlayer iid
     pure $ g & activeInvestigatorIdL .~ iid & activePlayerIdL .~ player
@@ -4461,7 +4585,16 @@ runPreGameMessage msg g = case msg of
   CheckWindows ws | notNull ws -> do
     if isJust $ modeScenario $ g ^. modeL
       then do
-        pushAll [Do (CheckWindows ws), EndCheckWindow]
+        {- Say so when this window matched an ability someone is forbidden to
+        trigger. Here rather than in @Do (CheckWindows ws)@ because only the
+        @Do@ is re-pushed on a re-check, so this fires once per window and needs
+        no dedupe state. The tick this handler is about to set is not visible to
+        'getPreventedActions' yet, which can only make its entry-tick test
+        stricter -- it under-reports rather than inventing a line. #5821 -}
+        iids <- select UneliminatedInvestigator
+        prevented <- concatForM iids \iid ->
+          map (uncurry $ AbilityPrevented iid) <$> getPreventedActions iid ws
+        pushAll $ prevented <> [Do (CheckWindows ws), EndCheckWindow]
         let tick' = gameWindowTick g + 1
         pure
           $ g
@@ -4541,6 +4674,17 @@ runPreGameMessage msg g = case msg of
     card <- field EnemyCard details.enemy
     pure $ g & entryTicksL %~ insertMap card.id (gameWindowTick g)
   _ -> pure g
+
+{- | Fold a phase's history into the round's.
+
+@Map@'s own @<>@ is a left-biased union, so folding with it kept the round's
+existing entry for an investigator and dropped everything the phase recorded for
+them -- a 'RoundHistory' read saw only the first phase that recorded anything.
+'History' knows how to merge two of itself; this is the only thing that asks it
+to.
+-}
+foldPhaseHistory :: Game -> Map InvestigatorId History -> Map InvestigatorId History
+foldPhaseHistory g roundH = Map.unionWith (<>) roundH (view phaseHistoryL g)
 
 {- | Maintain the revert information for the in-flight action.
 

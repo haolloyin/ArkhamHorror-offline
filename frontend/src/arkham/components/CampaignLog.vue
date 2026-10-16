@@ -21,16 +21,23 @@ import { type ChaosBagChange, type RecordCountChange, chaosBagChangeDecoder, rec
 import * as JsonDecoder from 'ts.data.json'
 import InvestigatorRow from '@/arkham/components/InvestigatorRow.vue'
 import CampaignLogSection from '@/arkham/components/CampaignLogSection.vue'
+import CampaignLogDebug from '@/arkham/components/debug/CampaignLogDebug.vue'
+import DebugToggle from '@/arkham/components/debug/DebugToggle.vue'
+import { customLogText } from '@/arkham/debugPlayer'
+import { useShiftHoverDebug } from '@/composable/shiftHoverDebug'
 import CampaignLogSpecialRules from '@/arkham/components/CampaignLogSpecialRules.vue'
 import CampaignLogRecordedSets from '@/arkham/components/CampaignLogRecordedSets.vue'
 import CampaignLogInvestigatorSection from '@/arkham/components/CampaignLogInvestigatorSection.vue'
 import CampaignLogPartners from '@/arkham/components/CampaignLogPartners.vue'
 import { achievementCatalog, activeAchievementPart, type AchievementPart } from '@/arkham/achievements'
+import { narrativeEntry, narrativeOf, narrativeTitle } from '@/arkham/composables/useNarrative'
 import CampaignLogChaosBag from '@/arkham/components/CampaignLogChaosBag.vue'
 import CampaignLogUltimatumsAndBoons from '@/arkham/components/CampaignLogUltimatumsAndBoons.vue'
 import CampaignLogAchievements from '@/arkham/components/CampaignLogAchievements.vue'
+import CampaignLogAbout from '@/arkham/components/CampaignLogAbout.vue'
 import CampaignLogAdditionalSection from '@/arkham/components/CampaignLogAdditionalSection.vue'
 import campaignJSON from '@/arkham/data/campaigns.json'
+import { homebrewCampaigns, homebrewCampaignScope, homebrewStandaloneScenarios } from '@/arkham/homebrewData'
 import { useI18n } from 'vue-i18n'
 import { useDbCardStore } from '@/stores/dbCards'
 
@@ -52,7 +59,7 @@ const emit = defineEmits<{ refresh: [] }>()
 const store = useDbCardStore()
 const { t, tm } = useI18n()
 
-type LogTab = 'log' | 'investigators' | 'rules' | 'achievements' | `additional:${number}`
+type LogTab = 'log' | 'investigators' | 'rules' | 'achievements' | 'about' | `additional:${number}`
 const activeTab = ref<LogTab>('log')
 
 const achievements = ref<Achievement[]>([])
@@ -87,7 +94,7 @@ const sectionComponentById: Record<string, Component> = {
 }
 
 // --- Utilities -----------------------------------------------------------------
-const EMPTY_LOG: LogContents = { recorded: [], recordedSets: {}, recordedCounts: [], partners: {}, options: [] }
+const EMPTY_LOG: LogContents = { recorded: [], crossedOut: [], recordedSets: {}, recordedCounts: [], partners: {}, options: [] }
 
 const fullName = (name: Name): string => (name.subtitle ? `${name.title}: ${name.subtitle}` : name.title)
 
@@ -113,6 +120,15 @@ const campaignDefinition = computed<CampaignDefinition | null>(() => {
 
 // Scope for homebrew keys recorded before their campaign added a scope prefix.
 const homebrewScope = computed(() => homebrewScopeFromCampaignId(props.game.campaign?.id))
+
+// Shift over the log for a Debug button that opens the custom entries editor.
+const {
+  active: logDebugging,
+  showToggle: showLogDebugToggle,
+  onEnter: onLogEnter,
+  onLeave: onLogLeave,
+  toggle: toggleLogDebug,
+} = useShiftHoverDebug()
 
 const additionalLogSections = computed(() => campaignDefinition.value?.additional ?? [])
 const additionalTabId = (index: number): `additional:${number}` => `additional:${index}`
@@ -249,6 +265,19 @@ const remembered = computed(() => {
   const toKey = (s: string) => (s.charAt(0).toLowerCase() + s.slice(1)).replace(/'/g, '')
   return log.map((record: Remembered) => {
     if (record.tag == 'YouOweBiancaResources') return `You owe Bianca resources (${record.contents})`
+    /* A homebrew key names its own campaign scope (`circusExMortis.AViceForOpulence`),
+     * so it reads from the campaign rather than from whichever scenario is showing --
+     * the same split `formatKey` makes for the campaign log. A key written without one
+     * (a custom card's, say) falls back to the campaign whose log we are rendering. */
+    if (record.tag === 'HomebrewRemembered' && record.homebrewKey) {
+      const [scope, key] = record.homebrewKey.split('.', 2)
+      const path = key
+        ? `${toKey(scope)}.remembered.${toKey(key)}`
+        : `${homebrewScope.value}.remembered.${toKey(record.homebrewKey)}`
+      const named = { ...(record.payload ?? {}), name: record.name ? simpleName(record.name) : '' }
+      const translated = t(path, named)
+      return translated === path ? logTitle(path) : translated
+    }
     if (record.tag === 'RememberedName' && record.actualTag && record.name) {
       return t(`${prefix}.remembered.${toKey(record.actualTag)}`, {
         name: simpleName(record.name),
@@ -265,15 +294,44 @@ const remembered = computed(() => {
 // duplicating it. The section is shown only while that scenario is in play.
 type SpecialRule = { title?: string; bodyKey: string }
 
+/* Without that array, the rules are read off the blocks the backend already
+reads out during setup -- `<scenario>.rules.<name>` behind the `additionalRules`
+helper, and a campaign's own `additionalRulesAndClarifications` -- so a rule the
+engine prints is listed here without a second hand-written copy of it. Entries
+are `{ title, body }`, and the block's own `title` is the section heading rather
+than a rule. An older block whose entries are plain strings carries its heading
+inside the body, so it contributes a body and no title. */
+const ruleBlocks = ['rules', 'additionalRulesAndClarifications', 'additionalRules'] as const
+
+const rulesFromBlock = (at: string, entries: Record<string, unknown>): SpecialRule[] =>
+  Object.entries(entries)
+    .filter(([name]) => name !== 'title')
+    .map(([name, entry]) => {
+      const { title, body } = (entry ?? {}) as { title?: unknown; body?: unknown }
+      return {
+        title: title ? formatContent(t(`${at}.${name}.title`)) : undefined,
+        bodyKey: body ? `${at}.${name}.body` : `${at}.${name}`,
+      }
+    })
+
 const rulesAtScope = (scope: string | null): SpecialRule[] => {
   if (!scope) return []
   const key = `${scope}.specialRules`
   const raw = tm(key) as unknown
-  if (!Array.isArray(raw)) return []
-  return raw.map((rule: any, i: number) => ({
-    title: rule.title ? formatContent(t(`${key}[${i}].title`)) : undefined,
-    bodyKey: `${key}[${i}].body`,
-  }))
+  if (Array.isArray(raw)) {
+    return raw.map((rule: any, i: number) => ({
+      title: rule.title ? formatContent(t(`${key}[${i}].title`)) : undefined,
+      bodyKey: `${key}[${i}].body`,
+    }))
+  }
+  for (const block of ruleBlocks) {
+    const at = `${scope}.${block}`
+    const entries = tm(at) as unknown
+    if (!entries || typeof entries !== 'object' || Array.isArray(entries)) continue
+    const rules = rulesFromBlock(at, entries as Record<string, unknown>)
+    if (rules.length > 0) return rules
+  }
+  return []
 }
 
 const specialRules = computed<SpecialRule[]>(() =>
@@ -326,6 +384,116 @@ const hasRules = computed(() =>
 
 watch(hasRules, (has) => {
   if (!has && activeTab.value === 'rules') activeTab.value = 'log'
+})
+
+// --- About (homebrew boxes only) ------------------------------------------------
+/* Who made the fan box being played, and whatever its back pages print: Credits,
+Acknowledgements, Design Notes. It lives in the box's own locale scope as
+
+  <scope>.about = {
+    blurb?,
+    sections: [{ title?, rows?: [{ role, names }], text?: [...], spoiler? }],
+    notes?: [...]
+  }
+
+so a box opts in by shipping the block -- nothing is registered here. Sections
+render in the order shipped, which is the order the box prints them; a `rows`
+section with no title is the common case and falls back to "Credits". A role may
+repeat (Against the Wendigo proofreads in two languages), so rows are positional.
+
+Only a `:`-prefixed id resolves to a homebrew scope and official content has no
+`about` block, which is what keeps the tab off it -- vue-i18n answers a missing
+scope with an empty object rather than undefined, so presence is tested on the
+contents. */
+type Credit = { role: string; names: string }
+type AboutSection = { title: string; rows: Credit[]; text: string[]; spoiler: boolean }
+
+const homebrewBoxScope = computed<string | null>(() => {
+  const scenario = props.game.scenario
+  if (scenario?.id.startsWith('c:')) return scenarioToKeyI18n(scenario)
+  return homebrewScopeFromCampaignId(props.game.campaign?.id) ?? null
+})
+
+/* A community narrative variant ships its own front matter -- preface, how to
+use it, acknowledgments -- in the same file as its prose, so it lands at the
+campaign's own scope once merged. The About tab reads that scope, which has no
+`about` block in a game without a variant. */
+const narrativeAboutScope = computed<string | null>(() => {
+  if (!narrativeOf(props.game)) return null
+  const campaignId = props.game.campaign?.id
+  return campaignId ? campaignIdToI18n(campaignId) : null
+})
+
+const aboutScope = computed<string | null>(() => homebrewBoxScope.value ?? narrativeAboutScope.value)
+
+/* The box's entry in the chooser data, for its name and designer: a homebrew
+campaign declares them in campaign.json, a scenario-only box in its
+scenarios.json. */
+const homebrewBoxEntry = computed(() => {
+  const scope = homebrewBoxScope.value
+  if (!scope) return null
+  return (
+    homebrewCampaigns.find((c) => homebrewCampaignScope(c.id) === scope) ??
+    homebrewStandaloneScenarios.find((entry) => homebrewCampaignScope(entry.campaign ?? '') === scope) ??
+    null
+  )
+})
+
+/* Truthiness, not a string check, on every leaf: vue-i18n hands back a compiled
+message function rather than a string once messages are precompiled, which is the
+assumption rulesAtScope already makes. */
+const aboutSections = (scope: string, raw: unknown): AboutSection[] => {
+  const list = (raw as { sections?: unknown }).sections
+  if (!Array.isArray(list)) return []
+  return list.map((entry, i) => {
+    const at = `${scope}.about.sections[${i}]`
+    const section = (entry ?? {}) as { title?: unknown; rows?: unknown; text?: unknown; spoiler?: unknown }
+    const rows: Credit[] = Array.isArray(section.rows)
+      ? section.rows.map((_, r) => ({
+          role: t(`${at}.rows[${r}].role`),
+          names: t(`${at}.rows[${r}].names`),
+        }))
+      : []
+    const text: string[] = Array.isArray(section.text)
+      ? section.text.map((_, x) => t(`${at}.text[${x}]`))
+      : []
+    return {
+      title: section.title ? t(`${at}.title`) : t('campaignLog.about.credits'),
+      rows,
+      text,
+      spoiler: !!section.spoiler,
+    }
+  }).filter((section) => section.rows.length > 0 || section.text.length > 0)
+}
+
+const about = computed(() => {
+  const scope = aboutScope.value
+  if (!scope) return null
+  const raw = tm(`${scope}.about`) as unknown
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const sections = aboutSections(scope, raw)
+  const rawNotes = (raw as { notes?: unknown }).notes
+  const notes: string[] = Array.isArray(rawNotes)
+    ? rawNotes.map((_, i) => t(`${scope}.about.notes[${i}]`))
+    : []
+  const hasBlurb = !!(raw as { blurb?: unknown }).blurb
+  if (!hasBlurb && sections.length === 0 && notes.length === 0) return null
+  const narrative = narrativeEntry(narrativeOf(props.game))
+  return {
+    title: homebrewBoxEntry.value?.name
+      ?? (narrative ? narrativeTitle(narrative, props.game.campaign?.id) : null)
+      ?? t(`${scope}.name`),
+    designer: homebrewBoxEntry.value?.designer ?? narrative?.designer,
+    beta: !!narrative?.beta,
+    url: narrative?.url,
+    blurb: hasBlurb ? t(`${scope}.about.blurb`) : undefined,
+    sections,
+    notes,
+  }
+})
+
+watch(about, (panel) => {
+  if (!panel && activeTab.value === 'about') activeTab.value = 'log'
 })
 
 watch(additionalLogSections, (sections) => {
@@ -398,14 +566,26 @@ const TDC_TASK_KEYS = new Set([
   'PlumbTheDepths',
 ])
 
-const recorded = computed(() => {
+const recordedKeys = computed(() => {
   return selectedLog.value.recorded
     .filter(r => !['Teachings1', 'Teachings2', 'Teachings3'].includes(r.tag))
     .filter((c) => !isSection(c))
     .filter((c) => !(c.tag === 'TheDrownedCityKey' && TDC_ARTIFACT_KEYS.has(String((c as any).contents))))
     .filter((c) => !(c.tag === 'TheDrownedCityKey' && TDC_TASK_KEYS.has(String((c as any).contents))))
-    .map((k: LogKey) => formatKey(k, homebrewScope.value))
 })
+
+const recorded = computed(() => recordedKeys.value.map((k: LogKey) => formatKey(k, homebrewScope.value)))
+
+// A player-typed entry (see `customLogText`) reads exactly as it was typed; its
+// locale path would lose capitals and apostrophes.
+const logKeyLabel = (k: LogKey) => customLogText(k.raw) ?? logTitle(formatKey(k, homebrewScope.value))
+const recordedTitles = computed(() => recordedKeys.value.map(logKeyLabel))
+
+/* An erased record is taken out of `recorded`, but the log still shows the line
+ * struck through, so it is listed after the standing ones. */
+const crossedOutKeys = computed(() => selectedLog.value.crossedOut.filter((c) => !isSection(c)))
+const crossedOut = computed(() => crossedOutKeys.value.map((k: LogKey) => formatKey(k, homebrewScope.value)))
+const crossedOutTitles = computed(() => crossedOutKeys.value.map(logKeyLabel))
 
 type SectionModel = {
   key: string
@@ -901,6 +1081,12 @@ onUnmounted(() => {
             @click="activeTab = 'achievements'"
           >{{ t('achievements.tabTitle') }}</button>
           <button
+            v-if="about"
+            type="button"
+            :class="{ active: activeTab === 'about' }"
+            @click="activeTab = 'about'"
+          >{{ t('campaignLog.tabs.about') }}</button>
+          <button
             v-for="(section, index) in additionalLogSections"
             :key="section.title"
             type="button"
@@ -916,6 +1102,7 @@ onUnmounted(() => {
             :investigator="investigator"
             :game="game"
             :bonus-xp="bonusXp && bonusXp[investigator.id]"
+            :debuggable="showingMain"
           />
         </div>
 
@@ -947,6 +1134,17 @@ onUnmounted(() => {
           :part="activeCampaignPart"
         />
 
+        <CampaignLogAbout
+          v-if="about && activeTab === 'about'"
+          :title="about.title"
+          :blurb="about.blurb"
+          :designer="about.designer"
+          :beta="about.beta"
+          :url="about.url"
+          :sections="about.sections"
+          :notes="about.notes"
+        />
+
         <template v-for="(section, index) in additionalLogSections" :key="section.title">
           <CampaignLogAdditionalSection
             v-if="activeTab === additionalTabId(index)"
@@ -974,7 +1172,7 @@ onUnmounted(() => {
           :items="remembered"
         />
 
-        <div class="log-categories">
+        <div class="log-categories" @mouseenter="onLogEnter" @mouseleave="onLogLeave">
           <div v-if="hasSupplies" class="supplies-container">
             <h2>{{ t('theForgottenAge.supplies.title') }}</h2>
             <div class="supplies-content">
@@ -1024,9 +1222,10 @@ onUnmounted(() => {
           />
 
           <CampaignLogSection
-            v-if="recorded.length > 0"
+            v-if="recorded.length > 0 || crossedOut.length > 0"
             :title="t('campaignLog.campaignNotes')"
-            :items="recorded.map(logTitle)"
+            :items="[...recordedTitles, ...crossedOutTitles]"
+            :crossed="crossedOutTitles"
           />
 
           <!-- Campaign sections -->
@@ -1057,6 +1256,7 @@ onUnmounted(() => {
             :recordedCounts="m.recordedCounts"
             :recordedSetsEntries="m.recordedSetsEntries"
             :displayRecordValue="displayRecordValue"
+            :homebrewScope="homebrewScope"
           />
 
           <ArtifactsEarned v-if="game.campaign?.id === '11'" :log="selectedLog" :game-id="game.id" @refresh="emit('refresh')" />
@@ -1084,6 +1284,20 @@ onUnmounted(() => {
             v-if="Object.values(partners).length > 0"
             :partners="partners"
             :cardCodeToTitle="cardCodeToTitle"
+          />
+
+          <CampaignLogDebug
+            v-if="logDebugging && showingMain"
+            :game="game"
+            :log="selectedLog"
+            :homebrewScope="homebrewScope"
+          />
+
+          <DebugToggle
+            v-if="showLogDebugToggle && showingMain"
+            :active="logDebugging"
+            class="log-debug-toggle"
+            @click="toggleLogDebug"
           />
         </div>
         </template>
@@ -1287,6 +1501,10 @@ h1 {
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.log-debug-toggle {
+  align-self: flex-end;
 }
 
 .hemlock-overview {

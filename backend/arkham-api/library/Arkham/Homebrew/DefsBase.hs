@@ -3,6 +3,7 @@
 module Arkham.Homebrew.DefsBase where
 
 import Arkham.Action (Action)
+import Arkham.Campaigns.TheScarletKeys.Concealed.Kind (ConcealedCardKind)
 import Arkham.Card.CardDef
 import Arkham.Card.CardType
 import Arkham.Criteria (Criterion)
@@ -25,6 +26,16 @@ data HomebrewDefs = HomebrewDefs
   they are folded into @allPlayerAssetCards@ rather than the encounter map.
   -}
   , hdPlayerSkills :: [CardDef]
+  , hdPlayerEvents :: [CardDef]
+  {- ^ Events with a *player* card back ('EventType'). As with assets, the back
+  is carried by the card type, so 'EncounterEventType' is a separate slot.
+  -}
+  , hdInvestigators :: [CardDef]
+  {- ^ Investigator cards contributed by this campaign. Folded into
+  @allInvestigatorCards@ (not @allEncounterInvestigatorCards@): that is the
+  aggregate every card-code lookup consults, including the one
+  'Arkham.Game' uses to read a transfigured form's printed traits.
+  -}
   , hdStories :: [CardDef]
   , hdPlayerStories :: [CardDef]
   {- ^ Story cards printed on a player card back (Dark Matter's "Delights").
@@ -46,6 +57,13 @@ data HomebrewDefs = HomebrewDefs
   and its use in @Arkham.Helpers.Ability.canDoAction'@). An action with no
   entry is always affordable.
   -}
+  , hdConcealedCardKinds :: [(ConcealedCardKind, CardDef)]
+  {- ^ The campaign's own concealed mini-card kinds (see its
+  @ConcealedKinds.hs@), each paired with the card def it conceals — the
+  homebrew half of
+  @Arkham.Campaigns.TheScarletKeys.Concealed.Helpers.concealedKindToCardDef@.
+  A kind that conceals nothing (a decoy of your own) pairs with no entry.
+  -}
   }
 
 instance Semigroup HomebrewDefs where
@@ -60,15 +78,18 @@ instance Semigroup HomebrewDefs where
       , hdEncounterAssets = hdEncounterAssets a <> hdEncounterAssets b
       , hdPlayerAssets = hdPlayerAssets a <> hdPlayerAssets b
       , hdPlayerSkills = hdPlayerSkills a <> hdPlayerSkills b
+      , hdPlayerEvents = hdPlayerEvents a <> hdPlayerEvents b
+      , hdInvestigators = hdInvestigators a <> hdInvestigators b
       , hdStories = hdStories a <> hdStories b
       , hdPlayerStories = hdPlayerStories a <> hdPlayerStories b
       , hdTraits = hdTraits a <> hdTraits b
       , hdActions = hdActions a <> hdActions b
       , hdActionAffordability = hdActionAffordability a <> hdActionAffordability b
+      , hdConcealedCardKinds = hdConcealedCardKinds a <> hdConcealedCardKinds b
       }
 
 instance Monoid HomebrewDefs where
-  mempty = HomebrewDefs [] [] [] [] [] [] [] [] [] [] [] [] [] []
+  mempty = HomebrewDefs [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] [] []
 
 {- | Implement in your campaign's @Defs.hs@ on a campaign-local tag type; the
 instance is discovered automatically (see 'Arkham.Homebrew.Defs').
@@ -125,6 +146,8 @@ discoveredDefs = foldMap toDefs
     EncounterAssetType -> mempty {hdEncounterAssets = [def]}
     AssetType -> mempty {hdPlayerAssets = [def]}
     SkillType -> mempty {hdPlayerSkills = [def]}
+    EventType -> mempty {hdPlayerEvents = [def]}
+    InvestigatorType -> mempty {hdInvestigators = [def]}
     StoryType
       | playerBack -> mempty {hdPlayerStories = [def]}
       | otherwise -> mempty {hdStories = [def]}

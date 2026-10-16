@@ -7,7 +7,9 @@ import { storeToRefs } from 'pinia';
 import { useSettings } from '@/stores/settings';
 import { useDebug } from '@/arkham/debug'
 import * as DebugMove from '@/arkham/debugCardMove';
+import { discardRandomMessage } from '@/arkham/debugPlayer';
 import { cardDropInFlight } from '@/arkham/debugCardDrop';
+import * as DebugInPlay from '@/arkham/debugInPlay';
 import { Game } from '@/arkham/types/Game';
 import { toCardContents } from '@/arkham/types/Card';
 import { imgsrc } from '@/arkham/helpers';
@@ -723,7 +725,7 @@ async function openDebugAddCard() {
   if (debugPlayerCards.value.length === 0) {
     debugAddCardLoading.value = true
     try {
-      const allCards = await Api.fetchCards(true)
+      const allCards = await Api.fetchCards(true, true)
       debugPlayerCards.value = allCards.filter(isDebugPlayerCard)
     } catch (error) {
       console.error(error)
@@ -753,6 +755,8 @@ async function debugAddCardToHand(card: CardDef) {
 }
 
 const debug = useDebug()
+
+const discardRandom = () => debug.send(props.game.id, discardRandomMessage(props.investigator.id))
 const events = computed(() => props.investigator.events.map((e) => props.game.events[e]).filter(e => e))
 const skills = computed(() => props.investigator.skills.map((e) => props.game.skills[e]).filter(e => e))
 const emptySlots = computed(() => {
@@ -880,15 +884,54 @@ const dragover = (e: DragEvent) => {
   }
 }
 
+/* Whether the hand would take whatever is in the air: a card from another zone
+ * (deck, discard, victory display) or an entity in play on its way back to hand.
+ * `null` means nothing of ours is being dragged, so the area stays unlit. */
+const handDropAccepts = computed(() => {
+  if (!debug.active) return null
+  if (cardDropInFlight()) return false
+  if (DebugInPlay.draggedInPlay.value) return true
+  // Any card may go to a hand, so the id alone is enough -- no back to check.
+  return DebugMove.draggedCardId.value === null ? null : true
+})
+
+const handDraggedOver = ref(false)
+
+function onDragOverHand(event: DragEvent) {
+  event.preventDefault()
+  if (!event.dataTransfer) return
+  // Tokens seal onto cards in play, never into a hand.
+  if (handDropAccepts.value !== true) {
+    event.dataTransfer.dropEffect = 'none'
+    return
+  }
+  // Must sit inside the drag's effectAllowed or the browser drops the drop: the
+  // card drags declare 'copy', the in-play ones 'copyMove'.
+  event.dataTransfer.dropEffect = 'copy'
+  handDraggedOver.value = true
+}
+
+function onDragLeaveHand(event: DragEvent) {
+  const from = event.currentTarget
+  const to = event.relatedTarget
+  if (from instanceof Node && to instanceof Node && from.contains(to)) return
+  handDraggedOver.value = false
+}
+
 function onDropHand(event: DragEvent) {
   event.preventDefault()
-  if (event.dataTransfer) {
-    const data = event.dataTransfer.getData('text/plain')
-    if (data) {
-      const json = JSON.parse(data)
-      if (json.tag === "CardTarget") {
-        DebugMove.debugMoveCard(props.game.id, json.contents, DebugMove.toHand(id.value))
-      }
+  handDraggedOver.value = false
+  if (!debug.active || !event.dataTransfer) return
+  const inPlay = DebugInPlay.droppedInPlayTarget()
+  if (inPlay) {
+    debug.send(props.game.id, DebugInPlay.returnToHandMessage(id.value, inPlay))
+    return
+  }
+  const data = event.dataTransfer.getData('text/plain')
+  if (data) {
+    const json = JSON.parse(data)
+    if (json.tag === "CardTarget") {
+      DebugMove.debugMoveCard(props.game.id, json.contents, DebugMove.toHand(id.value))
     }
   }
 }
@@ -1288,12 +1331,23 @@ function closeHand() {
           @choose="$emit('choose', $event)"
         />
       </div>
-      <div v-if="!isMobile" class="hand hand-area">
-        <transition-group tag="section" class="hand" @enter="onEnter" @leave="onLeave" @before-enter="onBeforeEnter"
-          @drop="onDropHand($event)"
-          @dragover.prevent="dragover($event)"
-          @dragenter.prevent
-          >
+      <!-- The drop zone is this whole area rather than the card row inside it:
+           `.hand` is `flex: 0`, so its box stops at the last card and a drop in
+           the empty space beside the hand hit nothing. -->
+      <div
+        v-if="!isMobile"
+        class="hand hand-area"
+        :class="{
+          'hand-area--droppable': handDropAccepts === true,
+          'hand-area--drop-target': handDraggedOver && handDropAccepts === true,
+        }"
+        @drop="onDropHand($event)"
+        @dragover.prevent="onDragOverHand($event)"
+        @dragleave="onDragLeaveHand($event)"
+        @dragend="handDraggedOver = false"
+        @dragenter.prevent
+      >
+        <transition-group tag="section" class="hand" @enter="onEnter" @leave="onLeave" @before-enter="onBeforeEnter">
           <div v-if="asIfInHandCards.length > 0" class="special-hand-card-stack">
             <span
               v-for="card in asIfInHandPhantomCards"
@@ -1362,20 +1416,40 @@ function closeHand() {
         <div class="hand-debug-actions" v-if="debug.active">
           <button type="button" @click="openDebugAddCard">+ Card to hand</button>
           <button v-if="customCardsEnabled" type="button" @click="showCustomCardPicker = true">+ Custom card</button>
+          <button type="button" :disabled="investigator.hand.length === 0" @click="discardRandom">{{ $t('debug.hand.discardRandom') }}</button>
         </div>
         <div v-if="investigator.handSize" class="hand-size" :class="handSizeClasses" :current-length="totalHandSize">{{ t('handSize') }}: {{totalHandSize}}/{{investigator.handSize}}</div>
       </div>
     </div>
-    <div v-if="isMobile" class="hand hand-area-IsMobile" :style="{ bottom: `${handAreaMarginBottom}px` }" @click="toggleHandAreaMarginBottom">
-      <button
+    <div
+      v-if="isMobile"
+      class="hand hand-area-IsMobile"
+      :class="{ 'hand-area--drop-target': handDraggedOver && handDropAccepts === true }"
+      :style="{ bottom: `${handAreaMarginBottom}px` }"
+      @click="toggleHandAreaMarginBottom"
+      @drop="onDropHand($event)"
+      @dragover.prevent="onDragOverHand($event)"
+      @dragleave="onDragLeaveHand($event)"
+      @dragend="handDraggedOver = false"
+      @dragenter.prevent
+    >
+      <div
         v-if="debug.active"
         v-show="handAreaPointerEvents === 'auto'"
-        class="hand-debug-add-button"
-        type="button"
-        @click.stop="openDebugAddCard"
+        class="hand-debug-mobile"
       >
-        + Card
-      </button>
+        <button class="hand-debug-add-button" type="button" @click.stop="openDebugAddCard">
+          + Card
+        </button>
+        <button
+          class="hand-debug-add-button"
+          type="button"
+          :disabled="investigator.hand.length === 0"
+          @click.stop="discardRandom"
+        >
+          {{ $t('debug.hand.discardRandom') }}
+        </button>
+      </div>
       <button
         v-show="handAreaPointerEvents === 'auto'"
         class="hand-close-button"
@@ -1399,9 +1473,6 @@ function closeHand() {
         </svg>
       </button>
       <transition-group tag="section" class="hand" @enter="onEnter" @leave="onLeave" @before-enter="onBeforeEnter"
-        @drop="onDropHand($event)"
-        @dragover.prevent="dragover($event)"
-        @dragenter.prevent
         :style="{ pointerEvents: `${handAreaPointerEvents}`, flex: 1 }"
         >
         <div v-if="asIfInHandCards.length > 0" class="special-hand-card-stack">
@@ -1952,6 +2023,19 @@ function closeHand() {
   max-width: 100%;
 }
 
+/* An empty hand has nothing to give the area height, so there would be nowhere
+   to aim. Held only while a drag is actually in flight, so the resting layout is
+   untouched. */
+.hand-area--droppable {
+  min-height: calc(var(--card-width) * 1.4);
+}
+
+/* Matches the deck and discard drop zones in Draw.vue. */
+.hand-area--drop-target {
+  outline: 3px solid var(--highlight);
+  outline-offset: 3px;
+}
+
 .hand-debug-actions button,
 .hand-debug-add-button {
   border: 1px solid var(--button-highlight);
@@ -1985,11 +2069,20 @@ function closeHand() {
   }
 }
 
-.hand-debug-add-button {
+/* The mobile hand's debug buttons, top-left over the hand. */
+.hand-debug-mobile {
   position: absolute;
   top: 6px;
   left: 6px;
   z-index: var(--z-index-101);
+  display: flex;
+  gap: 6px;
+}
+
+.hand-debug-actions button:disabled,
+.hand-debug-add-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .hand-close-button {

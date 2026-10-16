@@ -12,15 +12,18 @@ import Arkham.Classes.Query
 import Arkham.GameEnv (getAllAbilities, getCurrentWindowTick, getEntryTicks)
 import Arkham.Helpers.Ability (
   abilityWindowFor,
+  applyCriteriaOverride,
   getCanAffordAbility,
   getCanPerformAbility,
   isForcedAbility,
  )
 import Arkham.Helpers.CombatTarget
 import {-# SOURCE #-} Arkham.Helpers.Cost (hasConditionalCost, resolveConditionalCosts)
+import {-# SOURCE #-} Arkham.Helpers.Criteria (passesCriteria)
 import Arkham.Helpers.Modifiers (
   ModifierType (..),
   getModifiers,
+  getModifiers',
   withGrantedAction,
   withModifiersOf,
  )
@@ -35,12 +38,14 @@ import Arkham.Matcher.Action
 import Arkham.Matcher.Card
 import Arkham.Matcher.Enemy
 import Arkham.Matcher.Window
+import Arkham.Modifier (Modifier (..))
 import Arkham.Prelude
 import Arkham.Projection
 import Arkham.Source
 import Arkham.Target
 import Arkham.Window (Window (..), defaultWindows)
 import Arkham.Window qualified as Window
+import Data.List.Extra (nubOrdOn)
 
 data IsFast = IsFast | NotFast
   deriving stock Eq
@@ -180,6 +185,139 @@ matchTarget _ IsAnyAction _ = True
 getActions :: (HasGame m, HasCallStack) => InvestigatorId -> [Window] -> m [Ability]
 getActions iid ws = getActionsWith iid ws id
 
+{- | Whether any of @ws@ is a window this ability may actually respond to: its
+window matcher matches it AND the entry-tick rule holds.
+
+A forced/reaction ability may only respond to a triggering condition that
+occurred while its source card was already in play. A card that enters during an
+open window cannot respond to that window's already-occurred triggering
+condition (#4927). A window built ahead of the point at which it is checked --
+an attack's after-window, say -- pins the tick its condition initiated at;
+otherwise the condition began when the window opened (#5576).
+
+Two callers and they must agree: 'getActionsWith' admits abilities with it, and
+'getPreventedActions' uses it to decide whether a suppressed ability was close
+enough to firing to be worth announcing. A laxer deriving side would announce
+abilities that never had a window to begin with.
+
+97% of these evaluations return False (measured: 9326 ability checks per act
+advance, 257 matches), so rejecting on timing first is worth far more than
+making the full check faster.
+-}
+abilityRespondsToAny
+  :: (HasCallStack, HasGame m)
+  => InvestigatorId
+  -> Map CardId Int
+  -- ^ 'getEntryTicks', hoisted by the caller so a filter pass reads it once
+  -> [Window]
+  -> Ability
+  -> m Bool
+abilityRespondsToAny iid entryTicks ws ability = do
+  let abWindow = abilityWindowFor ability
+  let
+    respectsEntryTick w = do
+      isForced <- isForcedAbility iid ability
+      if not (isForced || isReactionAbility ability)
+        then pure True
+        else
+          sourceToMaybeCard (abilitySource ability) >>= \case
+            Nothing -> pure True
+            Just card -> case lookup card.id entryTicks of
+              Nothing -> pure True
+              Just entryTick -> case windowConditionTick w of
+                Just conditionTick -> pure $ entryTick <= conditionTick
+                Nothing -> getCurrentWindowTick <&> maybe True (> entryTick)
+  flip anyM ws \w -> do
+    matched <- windowMatches iid (abilitySource ability) w abWindow
+    if matched then respectsEntryTick w else pure False
+
+{- | Abilities one of @ws@ matched that @iid@ is forbidden to trigger, each paired
+with the source of the 'CannotTriggerAbilityMatching' modifier forbidding it.
+
+'getActionsWith' drops these silently, which left a player with no way to tell a
+blocked ability from one that does not exist: Infernal Machinery's "you cannot
+trigger abilities on Glyph or Artifact cards" quietly ate Chamber of Records'
+[reaction], and with the clue gone the glyph was unrecoverable (#5821). The
+caller turns each pair into an 'AbilityPrevented' for the log.
+
+Cost: an investigator with no such modifier returns on the first line, so the
+common case pays one cached modifier lookup and nothing else. When there is one,
+the candidate set is only the abilities the matcher names -- a handful of cards
+in play -- so the window and criteria passes below are cheap. The expensive part
+of 'getActionsWith', enumerating every ability in the game, is not repeated.
+-}
+getPreventedActions
+  :: (HasCallStack, HasGame m) => InvestigatorId -> [Window] -> m [(Ability, Source)]
+getPreventedActions iid ws = getPreventedAbilitiesBy isReactionAbility iid ws
+
+{- | The non-reaction half of 'getPreventedActions': the fast and action
+abilities @iid@ is forbidden to trigger right now, tested against the windows
+'getActions' builds the player window from.
+
+A reaction is announced where its own window opens; a fast or action ability has
+no such moment, so this is called once per turn ('BeginTurn' in
+"Arkham.Game.Runner"). That call site is what keeps the line out of the log on
+every one of the several player windows a turn opens -- the reason the collector
+was reactions-only to begin with. Sacrificial Shepherd forbidding every ability
+on a Bystander card left a player staring at a Kidnapped Citizen with no button
+and nothing said (#5827).
+-}
+getPreventedPlayerAbilities
+  :: (HasCallStack, HasGame m) => InvestigatorId -> m [(Ability, Source)]
+getPreventedPlayerAbilities iid =
+  getPreventedAbilitiesBy (not . isReactionAbility) iid (defaultWindows iid)
+
+getPreventedAbilitiesBy
+  :: (HasCallStack, HasGame m)
+  => (Ability -> Bool)
+  -> InvestigatorId
+  -> [Window]
+  -> m [(Ability, Source)]
+getPreventedAbilitiesBy isWanted iid ws = do
+  modifiers <- getModifiers' iid
+  let
+    -- The same matcher 'getActionsWith' builds, so the two cannot drift. Note a
+    -- Forced ability is not a 'TriggeredAbility' here, which is what exempts it
+    -- from these modifiers in the first place.
+    filters =
+      modifiers & mapMaybe \m -> case modifierType m of
+        CannotTriggerAbilityMatching matcher ->
+          Just (TriggeredAbility <> matcher, modifierSource m)
+        _ -> Nothing
+  if null filters || null ws
+    then pure []
+    else do
+      entryTicks <- getEntryTicks
+      let
+        -- Only announce what was otherwise ready to fire. This is
+        -- 'getCanPerformAbility' minus its prevention check -- calling that
+        -- would re-suppress every candidate -- so an ability whose criteria or
+        -- cost would have failed anyway is never reported as blocked.
+        wouldHaveFired ability = do
+          -- The criteria 'getCanPerformAbility' would have tested, override and
+          -- all: an override to 'Never' means the ability was not going to fire
+          -- regardless, and saying it was blocked would be a lie.
+          abilityModifiers <- getModifiers (AbilityTarget iid ability.ref)
+          let criteria = foldr applyCriteriaOverride ability.criteria abilityModifiers
+          andM
+            [ abilityRespondsToAny iid entryTicks ws ability
+            , getCanAffordAbility iid ability ws
+            , passesCriteria iid Nothing (toSource ability) ability.requestor ws criteria
+            ]
+      blocked <- concatForM filters \(matcher, blocker) -> do
+        -- 'isWanted' splits the two kinds because they are announced at
+        -- different moments, not because one of them does not matter. A window
+        -- opens and closes on its own, so a suppressed reaction is invisible --
+        -- that is #5821, and 'getPreventedActions' reports it wherever the
+        -- window is checked. A fast or action ability has no window of its own
+        -- to hang off and its player window reopens several times a turn, so
+        -- 'getPreventedPlayerAbilities' is called once per turn instead.
+        candidates <- filter isWanted <$> select (AbilityOneOf [matcher])
+        map (,blocker) <$> filterM wouldHaveFired candidates
+      -- One line per ability: two modifiers forbidding the same thing is still
+      -- one thing the player could not do, and either reason explains it.
+      pure $ nubOrdOn (\(ability, _) -> ability.ref) blocked
+
 getActionsWith
   :: (HasCallStack, HasGame m)
   => InvestigatorId
@@ -219,40 +357,20 @@ getActionsWith iid ws f = do
         ProxySource (EnemyMatcherSource m) base -> do
           sources <- selectMap EnemySource m
           pure $ sources & map \source -> action {abilitySource = ProxySource source base}
+        -- An ability anchored on the investigator it is offered to, so the UI
+        -- draws its button on their portrait rather than on the card that
+        -- grants it. These abilities are collected per investigator, so @iid@
+        -- is the anchor -- unlike 'replaceMatcherSources', which has no seat to
+        -- work from and has to settle for `You`.
+        ProxySource YouSource base ->
+          pure [action {abilitySource = ProxySource (InvestigatorSource iid) base}]
         _ -> pure [action]
 
   entryTicks <- getEntryTicks
   actionsMatchingWindow <-
     if null ws
       then pure actionsWithSources
-      else flip filterM actionsWithSources \ability -> do
-        let abWindow = abilityWindowFor ability
-        -- A forced/reaction ability may only respond to a triggering condition
-        -- that occurred while its source card was already in play. A card that
-        -- enters during an open window cannot respond to that window's
-        -- already-occurred triggering condition (#4927). A window built ahead of
-        -- the point at which it is checked -- an attack's after-window, say --
-        -- pins the tick its condition initiated at; otherwise the condition
-        -- began when the window opened (#5576).
-        let
-          respectsEntryTick w = do
-            isForced <- isForcedAbility iid ability
-            if not (isForced || isReactionAbility ability)
-              then pure True
-              else
-                sourceToMaybeCard (abilitySource ability) >>= \case
-                  Nothing -> pure True
-                  Just card -> case lookup card.id entryTicks of
-                    Nothing -> pure True
-                    Just entryTick -> case windowConditionTick w of
-                      Just conditionTick -> pure $ entryTick <= conditionTick
-                      Nothing -> getCurrentWindowTick <&> maybe True (> entryTick)
-        -- 97% of these evaluations return False (measured: 9326 ability checks
-        -- per act advance, 257 matches), so rejecting on timing first is worth
-        -- far more than making the full check faster.
-        flip anyM ws \w -> do
-          matched <- windowMatches iid (abilitySource ability) w abWindow
-          if matched then respectsEntryTick w else pure False
+      else filterM (abilityRespondsToAny iid entryTicks ws) actionsWithSources
 
   let bountiesOnly = BountiesOnly `elem` investigatorModifiers
 

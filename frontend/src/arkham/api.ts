@@ -70,12 +70,118 @@ export const fetchGameReplay = async (gameId: string, step: number): Promise<Fet
 export interface AppNotification {
   id: number;
   body: string;
-  created_at: Date;
+  createdAt: string;
 }
 
 export const fetchNotifications = async (): Promise<AppNotification[]> => {
   const { data } = await api.get('notifications')
   return data
+}
+
+/* --------------------------------------------------- admin: notifications ---
+
+   The home-page banner everybody sees. There is no draft state on the server --
+   the public read has no filter -- so creating one publishes it, and taking one
+   down is a delete. Editing reaches whoever is still seeing it, but not anybody
+   who already dismissed it: dismissal is per-browser and keyed by row id. */
+
+export const fetchAdminNotifications = async (): Promise<AppNotification[]> => {
+  const { data } = await api.get('admin/notifications')
+  return data
+}
+
+/* `createdAt` is what the list is ordered by, so it is settable: without it there
+ * is no way to put a new notification above one that is already up. */
+export const createNotification = async (
+  body: string,
+  createdAt?: string,
+): Promise<AppNotification> => {
+  const { data } = await api.post('admin/notifications', { body, createdAt })
+  return data
+}
+
+// Only what is sent is written, so re-dating one does not resend its body.
+export const updateNotification = async (
+  id: number,
+  changes: { body?: string; createdAt?: string },
+): Promise<AppNotification> => {
+  const { data } = await api.put(`admin/notifications/${id}`, changes)
+  return data
+}
+
+export const deleteNotification = async (id: number): Promise<void> => {
+  await api.delete(`admin/notifications/${id}`)
+}
+
+/* ----------------------------------------------------------- admin: users ---
+
+   Feature grants, for rolling one out a few accounts at a time. With no query
+   the server answers with every account that has a grant on it, which is the
+   list of who is already in; with one it matches username and email alike,
+   which is how somebody new is found. */
+
+export interface AdminUser {
+  id: number
+  username: string
+  email: string
+  admin: boolean
+  features: string[]
+}
+
+export interface AdminUsers {
+  allFeatures: string[]
+  users: AdminUser[]
+}
+
+export const fetchAdminUsers = async (query?: string): Promise<AdminUsers> => {
+  const { data } = await api.get('admin/users', { params: query ? { q: query } : {} })
+  return data
+}
+
+/* The whole list, not a toggle: what is sent is what the account ends up with,
+ * so a stale page cannot flip something it was not showing. */
+export const updateUserFeatures = async (id: number, features: string[]): Promise<AdminUser> => {
+  const { data } = await api.put(`admin/users/${id}/features`, { features })
+  return data
+}
+
+/* What an account has been playing. Active or not is decided by the server from
+ * the game's own state, not from whether a room is open for it: a room is who
+ * is connected this second, and an abandoned game is still in progress.
+ *
+ * `total` is every game on the account, so a list capped at the server's limit
+ * can say it is capped rather than reading as the whole of it. */
+export interface AdminUserGame {
+  active: boolean
+  createdAt: string
+  updatedAt: string
+  game: GameDetailsEntry
+}
+
+export interface AdminUserGames {
+  total: number
+  games: AdminUserGame[]
+}
+
+const adminUserGameDecoder = JsonDecoder.object<AdminUserGame>(
+  {
+    active: JsonDecoder.boolean(),
+    createdAt: JsonDecoder.string(),
+    updatedAt: JsonDecoder.string(),
+    game: gameDetailsEntryDecoder,
+  },
+  'AdminUserGame',
+)
+
+export const fetchAdminUserGames = async (id: number): Promise<AdminUserGames> => {
+  const { data } = await api.get(`admin/users/${id}/games`)
+  return JsonDecoder.object<AdminUserGames>(
+    {
+      total: JsonDecoder.number(),
+      games: JsonDecoder.array(adminUserGameDecoder, 'AdminUserGame[]'),
+    },
+    'AdminUserGames',
+  ).decodePromise(data)
 }
 
 export const findGame = async (playerId: string): Promise<GameDetailsEntry> => {
@@ -100,9 +206,20 @@ export const fetchDeck = async (deckId: string): Promise<Deck> => {
 
 export type CardPoolMode = 'player' | 'campaign' | 'both'
 
-export const fetchCards = async (cardPool: CardPoolMode | boolean = 'player'): Promise<CardDef[]> => {
+/* `allSides` keeps the back of a double-sided card, which the listing otherwise
+ * drops in favour of its front. Only the debug card picker wants them: it names a
+ * card by its def, and a back such as Gold Mining Revenues has no front that could
+ * stand in for it. */
+export const fetchCards = async (
+  cardPool: CardPoolMode | boolean = 'player',
+  allSides = false,
+): Promise<CardDef[]> => {
   const mode: CardPoolMode = cardPool === true ? 'both' : cardPool === false ? 'player' : cardPool
-  const query = mode === 'player' ? "" : `?includeEncounter&cardPool=${mode}`
+  const params = [
+    ...(mode === 'player' ? [] : ['includeEncounter', `cardPool=${mode}`]),
+    ...(allSides ? ['allSides'] : []),
+  ]
+  const query = params.length === 0 ? '' : `?${params.join('&')}`
   const { data } = await api.get(`arkham/cards${query}`)
   const cards = await JsonDecoder.array(cardDefDecoder, 'ArkhamCardDef[]').decodePromise(data)
   registerArtVariants(cards)
@@ -138,6 +255,58 @@ export type StoredCustomCard = {
   updatedAt: string
 }
 
+/* A marker an investigator expansion brings with it: the token its cards place
+ * on themselves. `slug` is what the engine stores and what a card's keyword
+ * names; `name` is what a player reads; `image` is what it is drawn with, and a
+ * token without one falls back to a plain marker. */
+export type CustomSetToken = {
+  slug: string
+  name: string
+  image?: string | null
+}
+
+/* One thing a keyword asks each card that prints it to fill in.
+ *
+ * `kind` only decides which editor the builder puts there; the engine just
+ * substitutes whatever was filled in. `required` it does read: a card that
+ * leaves a required slot empty gets nothing from the keyword, rather than a
+ * template with a hole in it that quietly fails to decode. */
+export type KeywordSlot = {
+  name: string
+  label: string
+  kind: 'window' | 'criterion' | 'text' | 'steps' | 'value'
+  required: boolean
+}
+
+/* What a keyword does, as templates in the shapes the engine already runs.
+ *
+ * `abilities`, `modifiers` and `handlers` are appended to the card's own, with
+ * `$slot` replaced by what that card filled in. `activeWhen` gates the card's
+ * OWN result -- the modifiers and abilities on its `_keywords` entry -- which
+ * is how "that benefit remains active until the card leaves play" is said once
+ * for every card that prints the keyword. */
+export type KeywordBehavior = {
+  abilities: any[]
+  modifiers: any[]
+  handlers: any[]
+  activeWhen?: any
+}
+
+/* A keyword an investigator expansion prints on its own cards.
+ *
+ * `description` is the rules text as the box prints it. A keyword with no
+ * `behavior` is rules text and nothing more -- the cards that print it say what
+ * they do in the ordinary way, and the description is there so a player can
+ * read what the word means. One WITH a behavior is run by the engine, which
+ * knows nothing about the keyword beyond what is written here. */
+export type CustomSetKeyword = {
+  name: string
+  description: string
+  token?: string | null
+  slots: KeywordSlot[]
+  behavior?: KeywordBehavior | null
+}
+
 /* A set is what a card belongs to: the unit you build, export, and hand to
  * someone else. Every card has one. */
 export type StoredCustomCardSet = {
@@ -155,10 +324,27 @@ export type StoredCustomCardSet = {
   // The pack id an imported set came from, so re-importing that pack replaces
   // this set rather than making a second copy of it. Null for a set made here.
   sourceCode: string | null
+  /* Whether the set is an investigator expansion: a box, rather than a handful
+   * of cards. The three fields below belong to one and are only asked about
+   * when this is set. */
+  investigatorExpansion: boolean
+  // The expansion symbol. Shown in the marketplace; nothing in a game reads it.
+  icon: string | null
+  /* The markers this set's cards place on themselves. Counters, not chaos
+   * tokens -- a chaos token belongs to a scenario. */
+  tokens: CustomSetToken[]
+  // The keywords this set's cards print, and what each one means.
+  keywords: CustomSetKeyword[]
   cardCount: number
   updatedAt: string
-  /* The marketplace listing this set came from and still follows. All three go
-   * null the moment the set is edited, which is what stops it updating. */
+  /* Whether this set follows somebody else's — a marketplace listing, or a link
+   * somebody sent you — and so cannot be edited. Its cards, its details and a
+   * file imported over it are all refused; "Add to my editor" is the way out,
+   * and makes it an ordinary set of yours. */
+  locked: boolean
+  /* The marketplace listing this set follows. All three are null on a copy that
+   * was imported rather than subscribed, and on one since taken into the
+   * editor: both are yours, and a listing has nothing more to say about either. */
   publishedCardSetId: string | null
   subscribedVersion: number | null
   latestVersion: number | null
@@ -173,6 +359,22 @@ export type StoredCustomCardSet = {
   // The version of this set that is in the marketplace now, which is not
   // necessarily the one last submitted.
   approvedVersion: number | null
+  /* The secret in this set's share link, if it is being shared, and how many
+   * people have opened it. Carried here so a row can say the set is shared and
+   * hand over the link without a request per set. */
+  shareToken: string | null
+  shareCount: number
+  /* The share link this set follows, for a set somebody handed you — the other
+   * direction from `shareToken`, and the way back to the page that can take the
+   * author's newest cards. Null on a copy that was imported rather than
+   * subscribed, and once they stop sharing or remove you, because there is then
+   * nothing at the other end of it. */
+  sharedToken: string | null
+  // Who shared it — the one thing such a copy has to say for itself that the
+  // rest of the row cannot.
+  sharedBy: string | null
+  // The author has changed that set since you took it.
+  sharedBehind: boolean
 }
 
 /* Where a submission stands. A set is listed only once a version of it is
@@ -193,18 +395,27 @@ export const createCustomCardSet = async (
   return data
 }
 
-/* Name, description and link in one call, because they are one form.
+/* Everything about a set in one call, because it is one form.
  *
- * `description` and `url` are three-valued on the wire: leaving the key out
+ * Every field but the name is three-valued on the wire: leaving the key out
  * keeps whatever is stored, `null` clears it. So a caller that only means to
- * rename passes neither rather than passing null, which would silently wipe
- * them.
+ * rename passes nothing else rather than passing null, which would silently
+ * wipe the rest.
  *
- * Renaming stops a set following a published one; changing only the description
- * or the link does not. */
+ * Renaming, or changing what the set declares, stops it following a published
+ * one -- the cards carry copies, so those are the cards changing. Changing only
+ * the description, the link or the icon does not. */
 export const updateCustomCardSet = async (
   id: string,
-  changes: { name: string; description?: string | null; url?: string | null },
+  changes: {
+    name: string
+    description?: string | null
+    url?: string | null
+    investigatorExpansion?: boolean
+    icon?: string | null
+    tokens?: CustomSetToken[]
+    keywords?: CustomSetKeyword[]
+  },
 ): Promise<StoredCustomCardSet> => {
   const { data } = await api.put(`arkham/custom-card-sets/${id}`, changes)
   return data
@@ -213,6 +424,20 @@ export const updateCustomCardSet = async (
 // Takes the set's cards with it.
 export const deleteCustomCardSet = async (id: string): Promise<void> => {
   await api.delete(`arkham/custom-card-sets/${id}`)
+}
+
+/* Take a followed set into your editor: stop following it, keep the cards.
+ *
+ * The way out of a locked copy of a published set. Nothing is fetched — the
+ * cards are already here — and what changes is only that this copy stops claiming
+ * to be what was published, so it can be edited, published and shared like any
+ * set of yours. Subscribing again from the listing puts it back.
+ *
+ * Refused for a copy taken from a share link: that set is unpublished and stays
+ * the author's. */
+export const unlockCustomCardSet = async (id: string): Promise<StoredCustomCardSet> => {
+  const { data } = await api.post(`arkham/custom-card-sets/${id}/unlock`, {})
+  return data
 }
 
 /* One call, one set: whatever the set held before is replaced by exactly these
@@ -226,10 +451,141 @@ export const importCustomCardSet = async (payload: {
   description?: string | null
   url?: string | null
   sourceCode: string | null
+  /* What the set declares. A file written before expansions existed carries
+   * none of it, and the server falls back to the copies stamped on the cards. */
+  investigatorExpansion?: boolean
+  icon?: string | null
+  tokens?: CustomSetToken[]
+  keywords?: CustomSetKeyword[]
   cards: { def: any; art: string | null }[]
 }): Promise<{ set: StoredCustomCardSet; cards: StoredCustomCard[] }> => {
   const { data } = await api.post('arkham/custom-card-sets/import', payload)
   return { set: data.set, cards: data.cards.map(toStoredCustomCard) }
+}
+
+/* ----------------------------------------------------------------- shares ---
+
+   A link that hands an unpublished set to a few people. The marketplace is the
+   other way to do this and the wrong one for a set that is not finished: it is
+   public, every version is reviewed before anyone can take it, and what
+   playtesting wants is for the people trying the cards to have whatever changed
+   this afternoon. Nothing here is versioned -- a share hands out the set as it
+   stands, and taking it again is how a friend catches up. */
+
+export type CardSetShare = {
+  setId: string
+  // The secret in the url. `shareUrl` is what turns it into a link to send.
+  token: string
+  createdAt: string
+  // When the link was last minted, so rotating it can be seen to have worked.
+  updatedAt: string
+  people: CardSetShareAccess[]
+}
+
+/* One person the link reached. A share is a url, so there is no invitation
+ * addressed to anybody: who has opened it is the whole of who has access. */
+export type CardSetShareAccess = {
+  id: string
+  name: string
+  // When they last took a copy. Null for somebody who has only looked.
+  takenAt: string | null
+  // Whether you have changed the set since they took it.
+  behind: boolean
+  revoked: boolean
+  firstSeenAt: string
+  lastSeenAt: string
+}
+
+// A shared set as the person holding the link sees it: the whole set, and what
+// they have of it.
+export type SharedCardSet = {
+  name: string
+  description: string | null
+  url: string | null
+  icon: string | null
+  investigatorExpansion: boolean
+  author: string
+  // You following your own link, which has nothing to take.
+  mine: boolean
+  cards: CustomCard[]
+  // When the author last changed the set, which is what "new" is measured from.
+  updatedAt: string
+  // Your own copy, if you have taken one.
+  setId: string | null
+  /* The marketplace listing for this set, once the author has published it and a
+   * version has been approved. It changes what you may do: a shared set stays
+   * the author's, but a published one is public, so subscribing to the listing
+   * gives an ordinary marketplace copy — editable via "Add to my editor", and
+   * exportable. Subscribing there adopts the copy you already have. */
+  listing: string | null
+  /* Whether that copy follows this set, and so is locked, rather than being an
+   * ordinary set of yours imported from it. */
+  subscribed: boolean
+  /* The author has changed the set since you took it — the whole of whether
+   * there is anything to do here. Subscribing again is how it catches up, and
+   * when it is level there is nothing to take and no button for it. */
+  behind: boolean
+}
+
+// The link to send. Hash history, so the route lives after the `#`.
+export const shareUrl = (token: string) =>
+  `${window.location.origin}${window.location.pathname}#/card-builder/shared/${token}`
+
+// 404 for a set that is not being shared, which is how the panel knows to offer
+// to start.
+export const fetchCardSetShare = async (setId: string): Promise<CardSetShare> => {
+  const { data } = await api.get(`arkham/custom-card-sets/${setId}/share`)
+  return data
+}
+
+/* Start sharing, or -- with `rotate` -- mint a new link for a set already
+ * shared, which makes a link that got out worthless. Asking without `rotate`
+ * hands back the link that is there rather than making a second one. Rotating
+ * keeps the people: they are the record of who took the set, which is still
+ * true of them. */
+export const shareCardSet = async (setId: string, rotate = false): Promise<CardSetShare> => {
+  const { data } = await api.post(`arkham/custom-card-sets/${setId}/share`, { rotate })
+  return data
+}
+
+/* Stop sharing: the link stops working and the list of who had it goes with it.
+ * What anyone already took stays in their library -- those are their cards now,
+ * possibly in a deck or a game. */
+export const unshareCardSet = async (setId: string): Promise<void> => {
+  await api.delete(`arkham/custom-card-sets/${setId}/share`)
+}
+
+/* Cut one person off, or let them back in, without disturbing the link everyone
+ * else is holding. Takes nothing away from them: all it stops is reading the set
+ * and taking it again. */
+export const setCardSetShareAccess = async (
+  setId: string,
+  accessId: string,
+  revoked: boolean,
+): Promise<CardSetShare> => {
+  const { data } = await api.put(`arkham/custom-card-sets/${setId}/share/${accessId}`, {
+    revoked,
+  })
+  return data
+}
+
+/* The set behind a link. Reading it is what grants access -- there is no
+ * invitation to accept -- so this is also what puts you on the author's list. */
+export const fetchSharedCardSet = async (token: string): Promise<SharedCardSet> => {
+  const { data } = await api.get(`arkham/shared-card-sets/${token}`)
+  return data
+}
+
+/* The one way to take a shared set: subscribe. The copy is locked, so it stays
+ * what the author shared, and subscribing again is how it catches up.
+ *
+ * The marketplace's other way — importing a copy of your own, to edit and keep —
+ * is not offered for a shared set, because that set is unpublished. It was handed
+ * to a few people to try, not given away, and a copy somebody can edit is a copy
+ * they can export and pass on. */
+export const subscribeToSharedCardSet = async (token: string): Promise<SharedCardSet> => {
+  const { data } = await api.post(`arkham/shared-card-sets/${token}/subscribe`, {})
+  return data
 }
 
 /* ------------------------------------------------------------ marketplace ---
@@ -248,6 +604,11 @@ export type PublishedCardSet = {
   /* Where the set lives in the world, for the one thing a listing cannot say
    * for itself. The listing's own, like the description. */
   url: string | null
+  /* The expansion symbol, copied onto the listing when the set was published,
+   * so a symbol can be drawn beside a name without loading a card. */
+  icon: string | null
+  // Whether this is an investigator expansion rather than a handful of cards.
+  investigatorExpansion: boolean
   author: string
   mine: boolean
   /* Whether the author is an admin, which is what the marketplace calls
@@ -364,13 +725,28 @@ export const unpublishCardSet = async (id: string): Promise<void> => {
   await api.delete(`arkham/published-card-sets/${id}`)
 }
 
-/* Take a published set into your collection and follow it from then on. The
- * import happens on the server, so the cards never round-trip through here. */
+/* Take a published set into your collection and follow it from then on: the copy
+ * is locked, so it stays what was published, and subscribing again is how it
+ * catches up. The import happens on the server, so the cards never round-trip
+ * through here. */
 export const subscribeToCardSet = async (
   id: string,
   version?: number,
 ): Promise<PublishedCardSet> => {
   const { data } = await api.post(`arkham/published-card-sets/${id}/subscribe`, {
+    version: version ?? null,
+  })
+  return data
+}
+
+/* Take it as your own instead: the same cards, editable, frozen at this version
+ * and hearing nothing more from the listing. One replaces the other — a card
+ * code is unique per account, so nobody holds both. */
+export const importCardSet = async (
+  id: string,
+  version?: number,
+): Promise<PublishedCardSet> => {
+  const { data } = await api.post(`arkham/published-card-sets/${id}/import`, {
     version: version ?? null,
   })
   return data
@@ -556,6 +932,81 @@ export const refreshGameStats = async (): Promise<GameStats> => {
   return data
 }
 
+/* What the nightly archive sweep has reclaimed, for the admin panel.
+ *
+ * `candidates` is capped at `candidateCap`: the backlog is a predicate over the
+ * whole games table, and the page only needs to know whether it is large. */
+export interface ArchiveStatsRow {
+  gameId: string
+  gameName: string
+  state: GameArchiveState
+  steps: number
+  bytes: number
+  archivedAt: string
+  gameUpdatedAt: string
+  restoredAt: string | null
+  error: string | null
+}
+
+export interface ArchiveStats {
+  enabled: boolean
+  /* Whether the nightly job runs. Separate from `enabled`: a configured bucket
+   * makes archiving possible, this is what lets a job pick games itself. */
+  sweepEnabled: boolean
+  bucket: string | null
+  afterMonths: number
+  batchSize: number
+  pauseSeconds: number
+  archived: number
+  restoring: number
+  restored: number
+  failed: number
+  stepsOffloaded: number
+  stepsEverArchived: number
+  bytesStored: number
+  archivedLastDay: number
+  restoredLastWeek: number
+  candidates: number
+  candidateCap: number
+  lastSweepAt: string | null
+  lastSweepMs: number | null
+  recent: ArchiveStatsRow[]
+}
+
+/* Archive one game, chosen by hand -- the way to do it the first time, since a
+ * sweep picks its own games by age.
+ *
+ * Synchronous on the server: the response carries what was stored, or why it
+ * could not be. `force` is needed for a game played in the last day, which is a
+ * guard against a mistyped id rather than against the operation. */
+export const archiveGameNow = async (
+  gameId: string,
+  force = false,
+): Promise<{ game: string; steps: number; bytes: number; key: string }> => {
+  const { data } = await api.post(
+    `admin/archives/${gameId}${force ? '?force=true' : ''}`,
+    {},
+    // A big game is minutes of export, upload and read-back.
+    { timeout: 600000 },
+  )
+  return data
+}
+
+export const fetchArchiveStats = async (): Promise<ArchiveStats> => {
+  const { data } = await api.get('admin/archives')
+  return data
+}
+
+/* Start a sweep now.
+ *
+ * Rarely needed: the server claims a run a minute after every replica starts,
+ * so a deploy kicks one off by itself. Answers as soon as it has started -- a
+ * run drains the whole backlog, which is hours -- and 409s if one already ran in
+ * the last hour, which `force` overrides. */
+export const runArchiveSweep = async (force = false): Promise<void> => {
+  await api.post(`admin/archives/run${force ? '?force=true' : ''}`, {})
+}
+
 // The reason is required: a denial the author cannot act on is worse than silence.
 export const denyCardSetSubmission = async (
   id: string,
@@ -645,6 +1096,46 @@ export const validateDeck = async (deckList: ArkhamDbDecklist): Promise<void> =>
   }
 }
 
+export interface ArkhamBuildConnection {
+  accountId: string
+  username: string
+  scopes: string[]
+  missingScopes: string[]
+  connectedAt: string
+  refreshedAt: string
+  expiresAt: string
+}
+
+export interface ArkhamBuildStatus {
+  configured: boolean
+  scopes: string[]
+  connection: ArkhamBuildConnection | null
+}
+
+export const fetchArkhamBuildConnection = async (): Promise<ArkhamBuildStatus> => {
+  const { data } = await api.get('arkham-build/connection')
+  return data
+}
+
+export interface ArkhamBuildDeck {
+  source: 'account' | 'arkhamdb'
+  id: string | number
+  updatedAt: string
+  decklist: ArkhamDbDecklist
+}
+
+export interface ArkhamBuildDecks {
+  decks: ArkhamBuildDeck[]
+  providers: { account: boolean; arkhamdb: boolean }
+}
+
+/* The decks on the player's connected arkham.build account. Reading them is two
+ * round trips upstream, so this is slower than the rest of the deck API. */
+export const fetchArkhamBuildDecks = async (): Promise<ArkhamBuildDecks> => {
+  const { data } = await api.get('arkham-build/decks', { timeout: 30000 })
+  return data
+}
+
 export const fetchDeckList = async (url: string): Promise<ArkhamDbDecklist> => {
   const { data } = await api.post('arkham/decks/fetch', { url })
   return data
@@ -656,6 +1147,19 @@ export const deleteDeck = (deckId: string): Promise<void> =>
 export const syncDeck = async (deckId: string): Promise<Deck> => {
   const { data } = await api.post(`arkham/decks/${deckId}/sync`)
   return deckDecoder.decodePromise(data)
+}
+
+/* Point a saved deck at a different url. The list comes back refetched from
+ * there, so the caller replaces the whole deck rather than just its url. */
+export const setDeckUrl = async (deckId: string, url: string): Promise<Deck> => {
+  const { data } = await api.put(`arkham/decks/${deckId}/url`, { url })
+  return deckDecoder.decodePromise(data)
+}
+
+/* The API reports a rejected deck request as a JSONError (Api.Handler.Arkham.Decks). */
+export const deckErrorMessage = (e: unknown): string | null => {
+  const msg = (e as { response?: { data?: { errorMsg?: string } } })?.response?.data?.errorMsg
+  return typeof msg === 'string' && msg.length > 0 ? msg : null
 }
 
 export const fileBug = (gameId: string): Promise<{ data: string }> =>
@@ -838,6 +1342,35 @@ export const undoRound = (gameId: string): Promise<void> =>
 export const undoToStep = (gameId: string, step: number): Promise<void> =>
   undoRequest(`arkham/games/${gameId}/undo/step/${step}`, UNDO_MULTI_TIMEOUT_MS)
 
+/* Where a game's undo history is.
+ *
+ * A game nobody has touched in six months has its steps moved to object
+ * storage by a nightly job (see Api.Arkham.Archive); the game plays normally,
+ * but undo has nothing to step back through until they are fetched. The undo
+ * endpoints refuse with 409 and one of these states attached, which is how the
+ * client finds out -- nothing is checked in advance. */
+export type GameArchiveState = 'archived' | 'restoring' | 'restored' | 'failed'
+
+export interface GameArchive {
+  state: GameArchiveState
+  steps: number
+  bytes: number
+  archivedAt: string
+  requestedAt: string | null
+  restoredAt: string | null
+  error: string | null
+}
+
+/* Ask for an archived undo history back.
+ *
+ * Returns as soon as the download is claimed, not when it has finished: the
+ * outcome arrives on the game's websocket as GameUnarchived or
+ * GameUnarchiveFailed. */
+export const unarchiveGame = async (gameId: string): Promise<{ state: GameArchiveState }> => {
+  const { data } = await api.put(`arkham/games/${gameId}/unarchive`)
+  return data
+}
+
 /* Say something in the log. A real engine message rather than a side channel,
  * so it is persisted with a step, reaches the room like any other update, and
  * the rules that care what you typed -- Carcosa's HASTUR recorder -- can see
@@ -849,6 +1382,72 @@ export const undoToStep = (gameId: string, step: number): Promise<void> =>
 export const fetchLogBefore = async (gameId: string, beforeSeq: number): Promise<LogRow[]> => {
   const { data } = await api.get(`arkham/games/${gameId}/log/before/${beforeSeq}`)
   return JsonDecoder.array(logRowDecoder, 'LogRow[]').decodePromise(data)
+}
+
+/* The scenarios a game's log covers, as step ranges, for the export dialog's
+ * scope picker. Empty for a game whose log predates the structured overhaul:
+ * there is no scenario banner row to find, so only the whole log can be
+ * exported. */
+export type LogExportSection = {
+  index: number
+  /* Absent when the banner row's payload would not decode: the client names the
+   * section from `cardCode`, or says it cannot. */
+  name: string | null
+  cardCode: string | null
+  fromStep: number
+  untilStep: number | null
+}
+
+const logExportSectionDecoder = JsonDecoder.object<LogExportSection>(
+  {
+    index: JsonDecoder.number(),
+    name: JsonDecoder.nullable(JsonDecoder.string()),
+    cardCode: JsonDecoder.nullable(JsonDecoder.string()),
+    fromStep: JsonDecoder.number(),
+    untilStep: JsonDecoder.nullable(JsonDecoder.number()),
+  },
+  'LogExportSection',
+)
+
+export const fetchLogSections = async (gameId: string): Promise<LogExportSection[]> => {
+  const { data } = await api.get(`arkham/games/${gameId}/log/sections`)
+  return JsonDecoder.array(logExportSectionDecoder, 'LogExportSection[]').decodePromise(data)
+}
+
+/* Which slice of the log to export. Both bounds absent is the whole game;
+ * `scenario` only names the slice in the exported file. */
+export type LogExportRange = {
+  fromStep?: number
+  untilStep?: number
+  scenario?: string
+}
+
+export type LogExport = {
+  gameName: string
+  scenario: string | null
+  rows: LogRow[]
+}
+
+/* The rows themselves, which the readable transcript is rendered from -- see
+ * logTranscript.ts for why that happens on this side. */
+export const fetchLogExport = async (gameId: string, range: LogExportRange): Promise<LogExport> => {
+  const { data } = await api.get(`arkham/games/${gameId}/log/export`, { params: range })
+  const rows = await JsonDecoder.array(logRowDecoder, 'LogRow[]').decodePromise(data.rows)
+  return { gameName: data.gameName, scenario: data.scenario ?? null, rows }
+}
+
+/* The same endpoint as a file to save, for the formats nothing has to render:
+ * the raw rows, or the server's own trace text. */
+export const fetchLogExportFile = async (
+  gameId: string,
+  range: LogExportRange,
+  format: 'json' | 'trace',
+): Promise<Blob> => {
+  const { data } = await api.get(`arkham/games/${gameId}/log/export`, {
+    params: { ...range, format },
+    responseType: 'blob',
+  })
+  return data
 }
 
 export const sayInLog = (gameId: string, investigatorId: string, text: string): Promise<void> =>

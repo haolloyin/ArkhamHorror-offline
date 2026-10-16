@@ -10,6 +10,7 @@ import { onClickOutside } from '@vueuse/core'
 import ExpressionEditor from '@/arkham/components/debug/ExpressionEditor.vue'
 import BoolField from '@/arkham/components/debug/BoolField.vue'
 import CardCodeField from '@/arkham/components/debug/CardCodeField.vue'
+import ConditionField from '@/arkham/components/debug/ConditionField.vue'
 import ScopeBar from '@/arkham/components/debug/ScopeBar.vue'
 import ValueEditor from '@/arkham/components/debug/ValueEditor.vue'
 import ValueMatcherField from '@/arkham/components/debug/ValueMatcherField.vue'
@@ -20,6 +21,7 @@ import {
   stepBindings,
   type Binding,
 } from '@/arkham/customCardBindings'
+import { QUERY_TYPES } from '@/arkham/customCardExpressions'
 
 const props = defineProps<{
   modelValue: any[]
@@ -32,6 +34,10 @@ const props = defineProps<{
    * a top-level list wants; a nested list passes only what its enclosing step
    * adds, since the rest was already announced further up. */
   announce?: Binding[]
+  /* Slots that stand for a list of steps, offered as a step of their own. Only
+   * a KEYWORD's behaviour has any: a card's steps are its own, while a
+   * keyword's are written once and have to leave a place for each card's. */
+  slotSteps?: Binding[]
 }>()
 const emit = defineEmits<{ 'update:modelValue': [v: any[]] }>()
 
@@ -48,6 +54,7 @@ type StepKind =
   | 'forEach'
   | 'repeat'
   | 'distribute'
+  | 'search'
   | 'request'
   | 'modify'
   | 'withSkillTest'
@@ -70,6 +77,18 @@ type StepKind =
   | 'draw'
   | 'gather'
   | 'customize'
+  | 'place'
+  | 'discover'
+  | 'setAside'
+  | 'activateAbility'
+  | 'repeatAbilities'
+  | 'notifyResult'
+  | 'skillTestOption'
+  | 'seal'
+  /* Not a step the engine runs, but a slot standing where a list of steps goes.
+   * Only ever offered while editing a KEYWORD's behaviour, where the steps a
+   * card supplies are spliced in at this point. */
+  | 'slot'
 
 const KIND_LABELS: Record<StepKind, string> = {
   query: 'Query',
@@ -82,6 +101,7 @@ const KIND_LABELS: Record<StepKind, string> = {
   forEach: 'For each',
   repeat: 'Repeat',
   distribute: 'Distribute',
+  search: 'Search',
   request: 'Ask the game',
   modify: 'Modify',
   withSkillTest: 'With skill test',
@@ -104,6 +124,15 @@ const KIND_LABELS: Record<StepKind, string> = {
   draw: 'Draw cards',
   gather: 'Gather',
   customize: 'Customize',
+  place: 'Place a card',
+  discover: 'Discover clues',
+  setAside: 'Set cards aside',
+  activateAbility: "Activate another card's ability",
+  repeatAbilities: "Repeat what a card's abilities did",
+  notifyResult: "Tell a card the test's result again",
+  skillTestOption: 'Offer this at the end of the test',
+  seal: 'Seal chaos tokens',
+  slot: 'Whatever the card fills in',
 }
 
 function kindOf(step: any): StepKind {
@@ -118,6 +147,7 @@ function kindOf(step: any): StepKind {
     'forEach',
     'repeat',
     'distribute',
+    'search',
     'request',
     'modify',
     'withSkillTest',
@@ -140,7 +170,18 @@ function kindOf(step: any): StepKind {
     'draw',
     'gather',
     'customize',
+    'place',
+    'discover',
+    'setAside',
+    'activateAbility',
+    'repeatAbilities',
+    'notifyResult',
+    'skillTestOption',
+    'seal',
   ] as StepKind[]
+  // A slot is written as the bare `$name` the template substitutes, so it is a
+  // string where every other step is an object.
+  if (typeof step === 'string') return 'slot'
   for (const kind of kinds) {
     if (kind in (step ?? {})) return kind
   }
@@ -160,6 +201,15 @@ const blankStep = (kind: StepKind) =>
     modify: { modify: { target: null, modifiers: [] } },
     repeat: { repeat: { times: 1, bind: 'i', steps: [] } },
     distribute: { distribute: { total: 1, among: { kind: 'investigator', matcher: null }, label: '', bind: 'who', amount: 'amount', steps: [] } },
+    search: {
+      search: {
+        how: 'search',
+        zones: [{ zone: 'topOfDeck', amount: 1, return: 'ShuffleBackIn' }],
+        matcher: null,
+        found: 'draw',
+        amount: 1,
+      },
+    },
     request: { request: { push: null, on: '', steps: [] } },
     withSkillTest: { withSkillTest: { bind: 'skillTestId', steps: [] } },
     withLocationOf: { withLocationOf: { kind: 'investigator', of: '$iid', bind: 'location', steps: [] } },
@@ -181,6 +231,15 @@ const blankStep = (kind: StepKind) =>
     draw: { draw: { amount: 1 } },
     gather: { gather: { cardCode: '' } },
     customize: { customize: { optional: true } },
+    place: { place: { placement: null } },
+    discover: { discover: { amount: 1 } },
+    setAside: { setAside: {} },
+    activateAbility: { activateAbility: { matcher: null, modifiers: [] } },
+    repeatAbilities: { repeatAbilities: { source: null } },
+    notifyResult: { notifyResult: { target: null } },
+    skillTestOption: { skillTestOption: { label: '', steps: [] } },
+    seal: { seal: { tokens: null } },
+    slot: `$${props.slotSteps?.[0]?.name ?? ''}`,
   })[kind]
 
 /* One line each, taken from what the step's own editor says once it is there.
@@ -198,6 +257,7 @@ const KIND_HELP: Record<StepKind, string> = {
   forEach: 'Runs its steps once per thing found, from a matcher or a list, bound inside.',
   repeat: 'Runs its steps a number of times, with the pass number bound inside.',
   distribute: 'Splits a total between investigators, then runs its steps on each share.',
+  search: 'Searches a zone for cards, and says what happens to what it finds — and to finding nothing.',
   request: 'Pushes a message that is answered later, with the answer handled here.',
   modify: 'Gives something modifiers for as long as a window lasts.',
   withSkillTest: 'Runs its steps during a skill test, with that test bound inside.',
@@ -220,16 +280,34 @@ const KIND_HELP: Record<StepKind, string> = {
   draw: 'Draws cards. Nothing is drawn when the amount works out to zero or less.',
   gather: 'Shuffles a card into the encounter deck.',
   customize: 'Marks a checkbox on the upgrade sheet of a customizable card.',
+  place: 'Puts a card somewhere — attached, in a play area, in a threat area. An event that places itself stays in play.',
+  discover: 'Discovers clues, with the id everything reacting to a discovery is keyed on.',
+  setAside: 'Makes copies of named cards in the set-aside zone, owned by an investigator.',
+  activateAbility: "Offers every ability of a named shape on OTHER cards, and uses the one chosen.",
+  repeatAbilities:
+    "Pushes every ability USE already recorded for a source, so whatever it did happens again.",
+  notifyResult:
+    "Says the test's result to a card a second time, so its \"if you succeed\" happens again.",
+  skillTestOption:
+    'Registers these steps as one of the options the investigator orders at the end of a test.',
+  seal: 'Seals chaos tokens on this card, or releases the ones it is holding.',
+  slot: 'Splices in the steps whichever card prints this keyword supplied.',
 }
 
 /* A query is an expression now, so binding one is what a Let does and a Query
  * step adds nothing a Let cannot say. The kind stays known -- cards already
  * written hold Query steps, and those keep running and keep their editor -- it
  * is simply not offered for anything new. */
-const ADDABLE = (Object.keys(KIND_LABELS) as StepKind[])
-  .filter((k) => k !== 'query')
-  // By what the menu shows, not by the key behind it, since that is what is read.
-  .sort((a, b) => KIND_LABELS[a].localeCompare(KIND_LABELS[b]))
+/* `slot` is left out unless there is a slot to insert: on a card there is never
+ * one, and offering a step that can only produce `$` would be offering a way to
+ * write a step that does nothing. */
+const ADDABLE = computed(() =>
+  (Object.keys(KIND_LABELS) as StepKind[])
+    .filter((k) => k !== 'query')
+    .filter((k) => k !== 'slot' || (props.slotSteps?.length ?? 0) > 0)
+    // By what the menu shows, not by the key behind it, since that is what is read.
+    .sort((a, b) => KIND_LABELS[a].localeCompare(KIND_LABELS[b])),
+)
 
 const set = (index: number, step: any) =>
   emit('update:modelValue', steps.value.map((s, i) => (i === index ? step : s)))
@@ -268,6 +346,29 @@ const innerScope = (index: number) => scopeInside(base.value, steps.value, index
 const innerPath = (index: number, branch = '') =>
   `${path.value}-${index}${branch ? `-${branch}` : ''}`
 
+/* What ONE option of a Choose sees.
+ *
+ * An option carrying a query stands for one option per thing found, bound for
+ * that option's steps alone -- so it cannot come from the step's own `inside`,
+ * which every option shares. Without this the steps under such an option
+ * reported their own binding as unbound, which is the editor telling an author
+ * their card is broken when it is not. Mirrors `runChoose`. */
+function optionBinding(index: number, option: any, oi: number): Binding | null {
+  if (!option?.query) return null
+  return {
+    name: typeof option.bind === 'string' && option.bind ? option.bind : 'chosen',
+    detail: 'what was chosen',
+    type: QUERY_TYPES[option.query?.kind],
+    origin: `the query on option ${oi + 1} of this Choose`,
+    anchor: anchorFor(index),
+  }
+}
+
+function optionScope(index: number, option: any, oi: number): Binding[] {
+  const bound = optionBinding(index, option, oi)
+  return bound ? [...innerScope(index), bound] : innerScope(index)
+}
+
 const announced = computed(() => props.announce ?? base.value)
 
 // What an enclosing step adds for the steps nested in it, so the nested list
@@ -298,16 +399,49 @@ const TEST_KINDS = ['test', 'fight', 'investigate', 'evade', 'parley']
 
 const startsTest = (step: any) => TEST_KINDS.includes(kindOf(step)) && !step.fight?.basic
 
+/* Which steps can carry "if you succeed" and "if you fail": the ones that START
+ * a test, and `withSkillTest`, which names one already under way. */
+const hasOutcomes = (step: any) => startsTest(step) || kindOf(step) === 'withSkillTest'
+
 /* "If you succeed, …" and "If you fail, …". Kept on the step that started the
  * test because only it knows which test, and only here can the steps still see
- * what this run chose. */
-const outcome = (step: any, which: 'onSuccess' | 'onFailure') => step[kindOf(step)]?.[which] ?? null
+ * what this run chose.
+ *
+ * A card may say it twice — "if you succeed, evade the target; if you succeed by
+ * 2 or more, discover a clue" — so an outcome holds a LIST of riders, each with
+ * its own margin. One rider stays written as the bare block it has always been,
+ * so nothing already saved changes shape. */
+const outcomes = (step: any, which: 'onSuccess' | 'onFailure'): any[] => {
+  const held = step[kindOf(step)]?.[which]
+  if (Array.isArray(held)) return held
+  return held ? [held] : []
+}
 
-const setOutcome = (index: number, which: 'onSuccess' | 'onFailure', value: any) => {
+const setOutcomes = (index: number, which: 'onSuccess' | 'onFailure', riders: any[]) => {
   const step = steps.value[index]
   const kind = kindOf(step)
+  const value = riders.length === 0 ? undefined : riders.length === 1 ? riders[0] : riders
   set(index, { ...step, [kind]: { ...step[kind], [which]: value } })
 }
+
+const setRider = (index: number, which: 'onSuccess' | 'onFailure', at: number, rider: any) =>
+  setOutcomes(index, which, outcomes(steps.value[index], which).map((r, i) => (i === at ? rider : r)))
+
+/* One entry of a setAside list, with null meaning "take it out". Kept here
+ * rather than inline because the list may not exist yet. */
+const setAsideCard = (index: number, at: number, code: string | null) => {
+  const step = steps.value[index]
+  const cards = [...(step.setAside?.cards ?? [])]
+  if (code === null) cards.splice(at, 1)
+  else cards[at] = code
+  set(index, { ...step, setAside: { ...step.setAside, cards } })
+}
+
+const addRider = (index: number, which: 'onSuccess' | 'onFailure') =>
+  setOutcomes(index, which, [...outcomes(steps.value[index], which), { steps: [] }])
+
+const removeRider = (index: number, which: 'onSuccess' | 'onFailure', at: number) =>
+  setOutcomes(index, which, outcomes(steps.value[index], which).filter((_, i) => i !== at))
 
 /* Which of the two difficulty fields is in use. A calculation is a tagged
  * object; a number or an expression is not, so the shape says which was written
@@ -384,6 +518,20 @@ const OUTCOME_LEGENDS: Record<string, string> = {
  * than leaving both for the runner to pick between. */
 const overSource = (block: any) => (block?.over === undefined ? 'query' : 'over')
 
+/* What an `over` list holds, so each option can show as that thing. Clearing it
+ * drops the key rather than storing an empty one, and takes the per-option
+ * label with it — a kind names every option on its own. */
+const setOverKind = (index: number, step: any, kind: string) => {
+  const chooseFrom = { ...step.chooseFrom }
+  if (kind) {
+    chooseFrom.kind = kind
+    delete chooseFrom.label
+  } else {
+    delete chooseFrom.kind
+  }
+  set(index, { ...step, chooseFrom })
+}
+
 const setSource = (index: number, kind: 'chooseFrom' | 'forEach', source: string) => {
   const step = steps.value[index]
   const { over: _over, query: _query, ...rest } = step[kind] ?? {}
@@ -416,6 +564,92 @@ const ANSWERS = [
 ]
 
 const matcherType = (kind: string | undefined) => props.queryKinds[kind ?? 'enemy'] ?? 'EnemyMatcher'
+
+/* How a search treats the deck it reads. The same machinery with three manners:
+ * a search is a search as far as everything that reacts to one is concerned,
+ * looking leaves the deck alone, revealing shows the card to the table. */
+const SEARCH_HOWS: [string, string][] = [
+  ['search', 'search it'],
+  ['look', 'look at it'],
+  ['reveal', 'reveal it'],
+]
+
+/* The zones a card names, and how deep. Only the two deck zones take a depth --
+ * a hand or a discard pile is read whole. */
+const SEARCH_ZONES: [string, string][] = [
+  ['topOfDeck', 'the top of your deck'],
+  ['bottomOfDeck', 'the bottom of your deck'],
+  ['deck', 'your whole deck'],
+  ['hand', 'your hand'],
+  ['discard', 'your discard pile'],
+]
+
+const ZONE_TAKES_DEPTH = ['topOfDeck', 'bottomOfDeck']
+
+/* What becomes of the cards it did NOT take. */
+const SEARCH_RETURNS: [string, string][] = [
+  ['ShuffleBackIn', 'shuffle the rest back in'],
+  ['PutBack', 'put the rest back as they were'],
+  ['PutBackInAnyOrder', 'put the rest back in any order'],
+  ['PutBackInAnyOrderBothTopAndBottom', 'put the rest back, top or bottom'],
+  ['DiscardRest', 'discard the rest'],
+  ['RemoveRestFromGame', 'remove the rest from the game'],
+  ['DoNothing', 'leave the rest alone'],
+]
+
+/* What becomes of what it DID find. Everything but the last is one of the
+ * engine's own strategies, which handle the prompt themselves; the last hands
+ * the result back to this card so its own steps can say. */
+const SEARCH_FOUND: [string, string][] = [
+  ['draw', 'draw it'],
+  ['drawUpTo', 'draw up to that many'],
+  ['drawAll', 'draw all of them'],
+  ['hand', 'add it to your hand'],
+  ['play', 'play it, paying its cost'],
+  ['playFree', 'play it without paying its cost'],
+  ['handOrPlay', 'add it to your hand or play it'],
+  ['drawOrCommit', 'draw it or commit it'],
+  ['removeFromGame', 'remove it from the game'],
+  ['return', 'nothing — just look'],
+  ['steps', 'whatever the steps below say'],
+]
+
+/* Whether this search hands its result back to the card. Writing either branch
+ * is what asks for that, so the strategy follows from the steps rather than
+ * having to be kept in step with them by hand. */
+const searchDefers = (step: any) =>
+  step.search?.found === 'steps' ||
+  step.search?.onFound !== undefined ||
+  step.search?.onNoneFound !== undefined
+
+const SEARCH_COUNTED = ['draw', 'drawUpTo', 'hand', 'play', 'playFree', 'handOrPlay', 'drawOrCommit', 'removeFromGame']
+
+function setSearch(index: number, step: any, changes: Record<string, any>) {
+  set(index, { ...step, search: { ...step.search, ...changes } })
+}
+
+const searchZones = (step: any): any[] => step.search?.zones ?? []
+
+function setSearchZone(index: number, step: any, zi: number, changes: Record<string, any>) {
+  const zones = searchZones(step).map((z, i) => (i === zi ? { ...z, ...changes } : z))
+  setSearch(index, step, { zones })
+}
+
+const addSearchZone = (index: number, step: any) =>
+  setSearch(index, step, {
+    zones: [...searchZones(step), { zone: 'deck', return: 'ShuffleBackIn' }],
+  })
+
+const removeSearchZone = (index: number, step: any, zi: number) =>
+  setSearch(index, step, { zones: searchZones(step).filter((_, i) => i !== zi) })
+
+/* Turning the branches on and off, rather than leaving an author to guess that
+ * an absent key and an empty list mean different things to the engine. */
+function toggleSearchBranch(index: number, step: any, which: 'onFound' | 'onNoneFound') {
+  const on = step.search?.[which] !== undefined
+  setSearch(index, step, { [which]: on ? undefined : [], found: on ? step.search?.found : 'steps' })
+}
+
 
 /* The names a step introduces, shown on the step that introduces them.
  *
@@ -458,8 +692,8 @@ const addSearch = ref('')
 
 const matchingKinds = computed(() => {
   const needle = addSearch.value.trim().toLowerCase()
-  if (!needle) return ADDABLE
-  return ADDABLE.filter(
+  if (!needle) return ADDABLE.value
+  return ADDABLE.value.filter(
     (k) =>
       KIND_LABELS[k].toLowerCase().includes(needle) || KIND_HELP[k].toLowerCase().includes(needle),
   )
@@ -480,6 +714,18 @@ const optionsOf = (step: any): any[] => step.choose?.options ?? []
 
 const setOption = (step: any, index: number, option: any, at: number) =>
   set(at, { ...step, choose: { ...step.choose, options: optionsOf(step).map((o, i) => (i === index ? option : o)) } })
+
+/* Switching an option between the two things it can be. The keys the other kind
+ * reads are dropped rather than left behind: a `query` beside a `label` is not
+ * half of each, it is a query, and the label would simply never be shown. */
+function setOptionSource(step: any, oi: number, at: number, kind: string) {
+  const option = optionsOf(step)[oi] ?? {}
+  const next =
+    kind === 'query'
+      ? { ...option, label: undefined, query: { kind: 'enemy', matcher: null }, bind: 'chosen' }
+      : { ...option, query: undefined, bind: undefined, label: option.label ?? '' }
+  setOption(step, oi, next, at)
+}
 
 const addOption = (step: any, at: number) =>
   set(at, { ...step, choose: { ...step.choose, options: [...optionsOf(step), { label: '', steps: [] }] } })
@@ -616,22 +862,12 @@ const removeOption = (step: any, index: number, at: number) =>
       />
 
       <template v-else-if="kindOf(step) === 'if'">
-        <p class="hint">Runs the matcher; takes the first branch when it finds anything.</p>
-        <label>
-          Kind
-          <select
-            :value="step.if?.kind"
-            @change="set(index, { ...step, if: { kind: ($event.target as HTMLSelectElement).value, matcher: null } })"
-          >
-            <option v-for="(_, kind) in queryKinds" :key="kind" :value="kind">{{ kind }}</option>
-          </select>
-        </label>
-        <ValueEditor
+        <p class="hint">Takes the first branch when the condition holds.</p>
+        <ConditionField
           :bindings="scopeFor(index)"
-          :type="matcherType(step.if?.kind)"
-          label="Matcher"
-          :modelValue="step.if?.matcher"
-          @update:modelValue="set(index, { ...step, if: { ...step.if, matcher: $event } })"
+          :queryKinds="queryKinds"
+          :modelValue="step.if"
+          @update:modelValue="set(index, { ...step, if: $event })"
         />
         <!-- Both branches belong to the If above them, so they are bounded and
              indented under it rather than left as two labelled step lists that
@@ -639,6 +875,7 @@ const removeOption = (step: any, index: number, at: number) =>
         <div class="branch">
           <span class="branch-label">Then</span>
           <StepsEditor
+            :slotSteps="slotSteps"
             :bindings="innerScope(index)"
             :path="innerPath(index, 'then')"
             :announce="[]"
@@ -650,6 +887,7 @@ const removeOption = (step: any, index: number, at: number) =>
         <div class="branch">
           <span class="branch-label">Else</span>
           <StepsEditor
+            :slotSteps="slotSteps"
             :bindings="innerScope(index)"
             :path="innerPath(index, 'else')"
             :announce="[]"
@@ -670,26 +908,17 @@ const removeOption = (step: any, index: number, at: number) =>
       </template>
 
       <template v-else-if="kindOf(step) === 'when'">
-        <p class="hint">Runs the steps below only when the matcher finds something.</p>
-        <label>
-          Kind
-          <select
-            :value="step.when?.kind"
-            @change="set(index, { ...step, when: { kind: ($event.target as HTMLSelectElement).value, matcher: null } })"
-          >
-            <option v-for="(_, kind) in queryKinds" :key="kind" :value="kind">{{ kind }}</option>
-          </select>
-        </label>
-        <ValueEditor
+        <p class="hint">Runs the steps below only when the condition holds.</p>
+        <ConditionField
           :bindings="scopeFor(index)"
-          :type="matcherType(step.when?.kind)"
-          label="Matcher"
-          :modelValue="step.when?.matcher"
-          @update:modelValue="set(index, { ...step, when: { ...step.when, matcher: $event } })"
+          :queryKinds="queryKinds"
+          :modelValue="step.when"
+          @update:modelValue="set(index, { ...step, when: $event })"
         />
         <div class="branch">
           <span class="branch-label">Then</span>
           <StepsEditor
+            :slotSteps="slotSteps"
             :bindings="innerScope(index)"
             :path="innerPath(index, 'then')"
             :announce="[]"
@@ -722,25 +951,17 @@ const removeOption = (step: any, index: number, at: number) =>
         <p class="hint">The first branch whose condition holds.</p>
         <div v-for="(b, bi) in step.case ?? []" :key="bi" class="option">
           <div class="row">
-            <label>
-              Kind
-              <select
-                :value="b.if?.kind"
-                @change="set(index, { ...step, case: step.case.map((x: any, i: number) => i === bi ? { ...x, if: { kind: ($event.target as HTMLSelectElement).value, matcher: null } } : x) })"
-              >
-                <option v-for="(_, kind) in queryKinds" :key="kind" :value="kind">{{ kind }}</option>
-              </select>
-            </label>
+            <span class="branch-label">Branch {{ bi + 1 }}</span>
             <button type="button" @click="set(index, { ...step, case: step.case.filter((_: any, i: number) => i !== bi) })">×</button>
           </div>
-          <ValueEditor
-          :bindings="scopeFor(index)"
-            :type="matcherType(b.if?.kind)"
-            label="Matcher"
-            :modelValue="b.if?.matcher"
-            @update:modelValue="set(index, { ...step, case: step.case.map((x: any, i: number) => i === bi ? { ...x, if: { ...x.if, matcher: $event } } : x) })"
+          <ConditionField
+            :bindings="scopeFor(index)"
+            :queryKinds="queryKinds"
+            :modelValue="b.if"
+            @update:modelValue="set(index, { ...step, case: step.case.map((x: any, i: number) => i === bi ? { ...x, if: $event } : x) })"
           />
           <StepsEditor
+          :slotSteps="slotSteps"
           :bindings="innerScope(index)"
           :path="innerPath(index, `case${bi}`)"
           :announce="[]"
@@ -755,6 +976,7 @@ const removeOption = (step: any, index: number, at: number) =>
         <div class="branch">
           <span class="branch-label">Else</span>
           <StepsEditor
+            :slotSteps="slotSteps"
             :bindings="innerScope(index)"
             :path="innerPath(index, 'else')"
             :announce="[]"
@@ -813,6 +1035,7 @@ const removeOption = (step: any, index: number, at: number) =>
           @update:modelValue="set(index, { ...step, forEach: { ...step.forEach, over: $event } })"
         />
         <StepsEditor
+          :slotSteps="slotSteps"
           :bindings="innerScope(index)"
           :path="innerPath(index, 'forEach')"
           :announce="addedInside(index)"
@@ -839,6 +1062,7 @@ const removeOption = (step: any, index: number, at: number) =>
           />
         </label>
         <StepsEditor
+          :slotSteps="slotSteps"
           :bindings="innerScope(index)"
           :path="innerPath(index, 'withSkillTest')"
           :announce="addedInside(index)"
@@ -881,6 +1105,7 @@ const removeOption = (step: any, index: number, at: number) =>
           @update:modelValue="set(index, { ...step, withLocationOf: { ...step.withLocationOf, of: $event } })"
         />
         <StepsEditor
+          :slotSteps="slotSteps"
           :bindings="innerScope(index)"
           :path="innerPath(index, 'withLocationOf')"
           :announce="addedInside(index)"
@@ -923,6 +1148,7 @@ const removeOption = (step: any, index: number, at: number) =>
         <div class="branch">
           <span class="branch-label">With the answer</span>
           <StepsEditor
+            :slotSteps="slotSteps"
             :bindings="innerScope(index)"
             :path="innerPath(index, 'request')"
             :announce="[]"
@@ -930,6 +1156,160 @@ const removeOption = (step: any, index: number, at: number) =>
             :modelValue="step.request?.steps ?? []"
             @update:modelValue="set(index, { ...step, request: { ...step.request, steps: $event } })"
           />
+        </div>
+      </template>
+
+      <template v-else-if="kindOf(step) === 'search'">
+        <p class="hint">
+          Searches a zone and says what happens to what it finds. Everything but the last
+          option under <em>What happens to what you find</em> is one of the engine's own
+          ways of resolving a search, prompt and all. Choosing <em>whatever the steps below
+          say</em> — or writing either branch — hands the result back to this card instead,
+          which is the only way to say anything else, and brings the
+          <em>found nothing</em> branch with it.
+        </p>
+
+        <label>
+          How
+          <select
+            :value="step.search?.how ?? 'search'"
+            @change="setSearch(index, step, { how: ($event.target as HTMLSelectElement).value })"
+          >
+            <option v-for="[value, label] in SEARCH_HOWS" :key="value" :value="value">{{ label }}</option>
+          </select>
+        </label>
+
+        <label>
+          Whose zones <span class="muted">(defaults to whoever used this)</span>
+          <input
+            type="text"
+            placeholder="$iid"
+            :value="step.search?.of ?? ''"
+            @input="setSearch(index, step, { of: ($event.target as HTMLInputElement).value || undefined })"
+            @keydown.stop
+          />
+        </label>
+
+        <h6>Where to look</h6>
+        <div v-for="(zone, zi) in searchZones(step)" :key="zi" class="zone">
+          <select
+            :value="zone.zone"
+            @change="setSearchZone(index, step, zi, { zone: ($event.target as HTMLSelectElement).value })"
+          >
+            <option v-for="[value, label] in SEARCH_ZONES" :key="value" :value="value">{{ label }}</option>
+          </select>
+          <!-- A depth is an expression: "the top X cards, where X is your
+               location's shroud" has no number to write down. -->
+          <ExpressionEditor
+            v-if="ZONE_TAKES_DEPTH.includes(zone.zone)"
+            label="How many"
+            :bindings="scopeFor(index)"
+            :modelValue="zone.amount ?? 1"
+            @update:modelValue="setSearchZone(index, step, zi, { amount: $event })"
+          />
+          <select
+            :value="zone.return ?? 'ShuffleBackIn'"
+            @change="setSearchZone(index, step, zi, { return: ($event.target as HTMLSelectElement).value })"
+          >
+            <option v-for="[value, label] in SEARCH_RETURNS" :key="value" :value="value">{{ label }}</option>
+          </select>
+          <button type="button" class="drop" @click="removeSearchZone(index, step, zi)">
+            <font-awesome-icon icon="trash" />
+          </button>
+        </div>
+        <button type="button" class="add-zone" @click="addSearchZone(index, step)">
+          <font-awesome-icon icon="plus" /> another zone
+        </button>
+
+        <ValueEditor
+          optional
+          label="Only cards matching"
+          type="ExtendedCardMatcher"
+          :bindings="scopeFor(index)"
+          :modelValue="step.search?.matcher"
+          @update:modelValue="setSearch(index, step, { matcher: $event })"
+        />
+
+        <label>
+          What happens to what you find
+          <select
+            :value="step.search?.found ?? 'return'"
+            @change="setSearch(index, step, { found: ($event.target as HTMLSelectElement).value })"
+          >
+            <option v-for="[value, label] in SEARCH_FOUND" :key="value" :value="value">{{ label }}</option>
+          </select>
+        </label>
+
+        <ExpressionEditor
+          v-if="SEARCH_COUNTED.includes(step.search?.found)"
+          label="How many"
+          :bindings="scopeFor(index)"
+          :modelValue="step.search?.amount ?? 1"
+          @update:modelValue="setSearch(index, step, { amount: $event })"
+        />
+
+        <label class="inline">
+          <input
+            type="checkbox"
+            :checked="step.search?.asDraw === true"
+            @change="setSearch(index, step, { asDraw: ($event.target as HTMLInputElement).checked || undefined })"
+          />
+          Finding a card counts as drawing it
+        </label>
+
+        <template v-if="searchDefers(step)">
+          <label>
+            Bind the card to
+            <input
+              type="text"
+              placeholder="card"
+              :value="step.search?.bind ?? ''"
+              @input="setSearch(index, step, { bind: ($event.target as HTMLInputElement).value || undefined })"
+              @keydown.stop
+            />
+          </label>
+          <p class="declares">
+            binds <code>${{ step.search?.bind || 'card' }}</code> :: Card and
+            <code>${{ step.search?.bind || 'card' }}s</code> :: [Card] for the
+            <em>found</em> steps
+          </p>
+        </template>
+
+        <div v-if="step.search?.onFound !== undefined" class="branch">
+          <span class="branch-label">When it finds something</span>
+          <StepsEditor
+            :slotSteps="slotSteps"
+            :bindings="innerScope(index)"
+            :path="innerPath(index, 'onFound')"
+            :announce="addedInside(index)"
+            :queryKinds="queryKinds"
+            :modelValue="step.search?.onFound ?? []"
+            @update:modelValue="setSearch(index, step, { onFound: $event })"
+          />
+        </div>
+
+        <!-- The other branch, which the engine only ever takes for a deferred
+             search: "If you cannot discard an event, shuffle this back in". -->
+        <div v-if="step.search?.onNoneFound !== undefined" class="branch">
+          <span class="branch-label">When it finds nothing</span>
+          <StepsEditor
+            :slotSteps="slotSteps"
+            :bindings="scopeFor(index)"
+            :path="innerPath(index, 'onNoneFound')"
+            :announce="[]"
+            :queryKinds="queryKinds"
+            :modelValue="step.search?.onNoneFound ?? []"
+            @update:modelValue="setSearch(index, step, { onNoneFound: $event })"
+          />
+        </div>
+
+        <div class="branch-toggles">
+          <button type="button" @click="toggleSearchBranch(index, step, 'onFound')">
+            {{ step.search?.onFound === undefined ? '+ found something' : '− found something' }}
+          </button>
+          <button type="button" @click="toggleSearchBranch(index, step, 'onNoneFound')">
+            {{ step.search?.onNoneFound === undefined ? '+ found nothing' : '− found nothing' }}
+          </button>
         </div>
       </template>
 
@@ -986,6 +1366,7 @@ const removeOption = (step: any, index: number, at: number) =>
         <div class="branch">
           <span class="branch-label">For each share</span>
           <StepsEditor
+            :slotSteps="slotSteps"
             :bindings="innerScope(index)"
             :path="innerPath(index, 'distribute')"
             :announce="addedInside(index)"
@@ -1019,6 +1400,7 @@ const removeOption = (step: any, index: number, at: number) =>
           />
         </label>
         <StepsEditor
+          :slotSteps="slotSteps"
           :bindings="innerScope(index)"
           :path="innerPath(index, 'repeat')"
           :announce="addedInside(index)"
@@ -1059,9 +1441,24 @@ const removeOption = (step: any, index: number, at: number) =>
       </template>
 
       <template v-else-if="kindOf(step) === 'choose'">
+        <p class="hint">
+          Named options, each with steps of its own. An option can instead stand for one option per
+          thing a matcher finds, bound for that option's steps — which is what lets a single prompt
+          span several kinds of thing, where a Choose from can only span one.
+        </p>
         <div v-for="(option, oi) in optionsOf(step)" :key="oi" class="option">
           <div class="row">
             <label>
+              This option is
+              <select
+                :value="option.query ? 'query' : 'one'"
+                @change="setOptionSource(step, oi, index, ($event.target as HTMLSelectElement).value)"
+              >
+                <option value="one">one named option</option>
+                <option value="query">one per thing a matcher finds</option>
+              </select>
+            </label>
+            <label v-if="!option.query">
               Option label
               <input
                 :value="option.label"
@@ -1069,12 +1466,66 @@ const removeOption = (step: any, index: number, at: number) =>
                 @keydown.stop
               />
             </label>
+            <label v-if="option.query">
+              Kind
+              <select
+                :value="option.query?.kind"
+                @change="setOption(step, oi, { ...option, query: { kind: ($event.target as HTMLSelectElement).value, matcher: null } }, index)"
+              >
+                <option v-for="(_, kind) in queryKinds" :key="kind" :value="kind">{{ kind }}</option>
+              </select>
+            </label>
+            <label v-if="option.query">
+              Bind to
+              <input
+                :value="option.bind"
+                placeholder="chosen"
+                @input="setOption(step, oi, { ...option, bind: ($event.target as HTMLInputElement).value }, index)"
+                @keydown.stop
+              />
+            </label>
             <button type="button" @click="removeOption(step, oi, index)">×</button>
           </div>
+
+          <ValueEditor
+            v-if="option.query"
+            :bindings="innerScope(index)"
+            :type="matcherType(option.query?.kind)"
+            label="Matcher"
+            :modelValue="option.query?.matcher"
+            @update:modelValue="setOption(step, oi, { ...option, query: { ...option.query, matcher: $event } }, index)"
+          />
+
+          <!-- Whether this option is on the table at all. Read before the query
+               runs, so it cannot name what the option binds. -->
+          <ValueEditor
+            optional
+            type="Criterion"
+            label="Only offered when (optional)"
+            :bindings="innerScope(index)"
+            :modelValue="option.criteria?.criteria ?? (option.criteria?.tag ? option.criteria : undefined)"
+            @update:modelValue="setOption(step, oi, { ...option, criteria: $event ? { criteria: $event } : undefined }, index)"
+          />
+          <!-- Said where it is created, the way every other binding in the
+               builder is: an option with a query stands for one option per thing
+               found, and that thing is what its steps are written against. -->
+          <div v-if="optionBinding(index, option, oi)" class="step-foot">
+            <span class="binds">
+              <span class="binds-label">binds</span>
+              <code class="binds-name"
+                >${{ optionBinding(index, option, oi)!.name
+                }}<span v-if="optionBinding(index, option, oi)!.type" class="binds-type">
+                  :: {{ optionBinding(index, option, oi)!.type }}</span
+                ></code
+              >
+              <span class="binds-scope">for this option's steps</span>
+            </span>
+          </div>
           <StepsEditor
-          :bindings="innerScope(index)"
+          :slotSteps="slotSteps"
+          :bindings="optionScope(index, option, oi)"
           :path="innerPath(index, `option${oi}`)"
-          :announce="[]"
+          :announce="optionBinding(index, option, oi) ? [optionBinding(index, option, oi)!] : []"
             :queryKinds="queryKinds"
             :modelValue="option.steps ?? []"
             @update:modelValue="setOption(step, oi, { ...option, steps: $event }, index)"
@@ -1142,6 +1593,15 @@ const removeOption = (step: any, index: number, at: number) =>
         </p>
         <div class="row">
           <label>
+            Played by <span class="muted">(defaults to whoever is resolving this)</span>
+            <input
+              :value="step.playCard?.iid"
+              placeholder="$iid"
+              @input="set(index, { ...step, playCard: { ...step.playCard, iid: ($event.target as HTMLInputElement).value || undefined } })"
+              @keydown.stop
+            />
+          </label>
+          <label>
             This card (optional)
             <input
               :value="step.playCard?.card"
@@ -1157,15 +1617,6 @@ const removeOption = (step: any, index: number, at: number) =>
           />
         </div>
         <div class="row">
-          <label>
-            Discount
-            <input
-              type="number"
-              :value="step.playCard?.discount ?? 0"
-              @input="set(index, { ...step, playCard: { ...step.playCard, discount: Number(($event.target as HTMLInputElement).value) } })"
-              @keydown.stop
-            />
-          </label>
           <BoolField
             label="may decline"
             :modelValue="!!step.playCard?.optional"
@@ -1187,6 +1638,14 @@ const removeOption = (step: any, index: number, at: number) =>
           label="Which cards"
           :modelValue="step.playCard?.matcher"
           @update:modelValue="set(index, { ...step, playCard: { ...step.playCard, matcher: $event } })"
+        />
+        <ExpressionEditor
+          :queryKinds="queryKinds"
+          :bindings="scopeFor(index)"
+          label="Discount"
+          expect="Int"
+          :modelValue="step.playCard?.discount ?? 0"
+          @update:modelValue="set(index, { ...step, playCard: { ...step.playCard, discount: $event } })"
         />
         <ValueEditor
           optional
@@ -1578,6 +2037,283 @@ const removeOption = (step: any, index: number, at: number) =>
         />
       </template>
 
+      <template v-else-if="kindOf(step) === 'discover'">
+        <p class="summary">
+          Discovers clues. Not a push: a discovery carries an id minted for it, which is what the
+          would-discover window and everything reacting to it are keyed on.
+        </p>
+        <ExpressionEditor
+          :queryKinds="queryKinds"
+          label="How many"
+          expect="Int"
+          :bindings="scopeFor(index)"
+          :modelValue="step.discover?.amount ?? 1"
+          @update:modelValue="set(index, { ...step, discover: { ...step.discover, amount: $event } })"
+        />
+        <ValueEditor
+          optional
+          :bindings="scopeFor(index)"
+          type="InvestigatorId"
+          label="Who discovers them (defaults to you)"
+          :modelValue="step.discover?.iid"
+          @update:modelValue="set(index, { ...step, discover: { ...step.discover, iid: $event } })"
+        />
+        <ValueEditor
+          optional
+          :bindings="scopeFor(index)"
+          type="LocationId"
+          label="From where (defaults to your location)"
+          :modelValue="step.discover?.location"
+          @update:modelValue="set(index, { ...step, discover: { ...step.discover, location: $event } })"
+        />
+        <BoolField
+          label="counts as investigating"
+          :modelValue="step.discover?.via === 'investigate'"
+          @update:modelValue="set(index, { ...step, discover: { ...step.discover, via: $event ? 'investigate' : undefined } })"
+        />
+        <p class="hint">
+          Which decides whether "discover 1 additional clue when you investigate" applies. A card
+          that just says "discover a clue" is not investigating.
+        </p>
+      </template>
+
+      <template v-else-if="kindOf(step) === 'place'">
+        <p class="summary">
+          Puts a card somewhere. "Attach to your location" and "put into play in your threat area"
+          are both a placement; the target says which message carries it, so only the placement is
+          written here.
+        </p>
+        <ValueEditor
+          :bindings="scopeFor(index)"
+          type="Placement"
+          label="Where it goes"
+          :modelValue="step.place?.placement"
+          @update:modelValue="set(index, { ...step, place: { ...step.place, placement: $event } })"
+        />
+        <ValueEditor
+          optional
+          :bindings="scopeFor(index)"
+          type="Target"
+          label="What is placed (defaults to this card)"
+          :modelValue="step.place?.target"
+          @update:modelValue="set(index, { ...step, place: { ...step.place, target: $event } })"
+        />
+        <p class="hint">
+          An event that places itself stays in play: the runner only discards one still in limbo
+          when it has finished resolving.
+        </p>
+      </template>
+
+      <template v-else-if="kindOf(step) === 'setAside'">
+        <p class="summary">
+          Makes copies of named cards in the set-aside zone, owned by an investigator — which is
+          what "you begin the game with each copy of X set aside" needs, since the copies are not
+          anywhere yet to be moved.
+        </p>
+        <label class="cap">Which cards</label>
+        <div v-for="(code, ci) in (step.setAside?.cards ?? [])" :key="ci" class="row">
+          <CardCodeField
+            :modelValue="code"
+            @update:modelValue="setAsideCard(index, ci, $event)"
+          />
+          <button type="button" class="drop" @click="setAsideCard(index, ci, null)">remove</button>
+        </div>
+        <button type="button" class="add-rider" @click="setAsideCard(index, (step.setAside?.cards ?? []).length, '')">
+          + a card
+        </button>
+        <p class="hint">
+          Left empty, it uses this card's own set-aside list — which is also what registers those
+          defs on the game, so a card set aside here and declared nowhere is a code it cannot
+          look up.
+        </p>
+        <ValueEditor
+          optional
+          :bindings="scopeFor(index)"
+          type="InvestigatorId"
+          label="Who owns them (defaults to you)"
+          :modelValue="step.setAside?.iid"
+          @update:modelValue="set(index, { ...step, setAside: { ...step.setAside, iid: $event } })"
+        />
+      </template>
+
+      <template v-else-if="kindOf(step) === 'repeatAbilities'">
+        <p class="summary">
+          Does again whatever a card's abilities already did. Nothing records a card's
+          <em>effects</em>, but the game records which of its abilities were <em>used</em> — so
+          every recorded use of this source is pushed again, with the windows it fired in.
+        </p>
+        <ExpressionEditor
+          :queryKinds="queryKinds"
+          :bindings="scopeFor(index)"
+          label="Whose abilities"
+          expect="Source"
+          :modelValue="step.repeatAbilities?.source"
+          @update:modelValue="set(index, { ...step, repeatAbilities: { ...step.repeatAbilities, source: $event } })"
+        />
+        <p class="hint">
+          The source is the entity, not the card: a committed skill's abilities belong to the
+          skill standing in limbo for the test. A silent forced ability cannot be reached by
+          "activate another card's ability" at all, which is what this is for.
+        </p>
+      </template>
+
+      <template v-else-if="kindOf(step) === 'notifyResult'">
+        <p class="summary">
+          Tells a card the current test's result again. A committed card's "if you succeed" is a
+          handler on that notification rather than an ability, so hearing it twice is what
+          "resolve its effects an additional time" means.
+        </p>
+        <ExpressionEditor
+          :queryKinds="queryKinds"
+          :bindings="scopeFor(index)"
+          label="Which card to tell (defaults to this one)"
+          expect="Target"
+          :modelValue="step.notifyResult?.target"
+          @update:modelValue="set(index, { ...step, notifyResult: { ...step.notifyResult, target: $event } })"
+        />
+        <p class="hint">
+          The message is the test's own result, so nothing is told about a success the test did not
+          have. A skill committed to the test is a <em>skill</em> target, standing in limbo.
+        </p>
+      </template>
+
+      <template v-else-if="kindOf(step) === 'skillTestOption'">
+        <p class="summary">
+          Holds these steps back and offers them as one of the options at the end of the test, in
+          the list the investigator puts in order — beside a chaos token's effect and the
+          investigation's own clue.
+        </p>
+        <label>
+          Label
+          <input
+            :value="step.skillTestOption?.label"
+            placeholder="Resolve"
+            @input="set(index, { ...step, skillTestOption: { ...step.skillTestOption, label: ($event.target as HTMLInputElement).value } })"
+            @keydown.stop
+          />
+        </label>
+        <StepsEditor
+          :slotSteps="slotSteps"
+          :bindings="innerScope(index)"
+          :path="innerPath(index, 'skillTestOption')"
+          :announce="addedInside(index)"
+          :queryKinds="queryKinds"
+          :modelValue="step.skillTestOption?.steps ?? []"
+          @update:modelValue="set(index, { ...step, skillTestOption: { ...step.skillTestOption, steps: $event } })"
+        />
+        <p class="hint">
+          An option resolves after every committed card has been told the result once, which is
+          what lets it speak about effects that have already happened.
+        </p>
+      </template>
+
+      <template v-else-if="kindOf(step) === 'activateAbility'">
+        <p class="summary">
+          Uses an ability that is not this card's own — "take a fight action printed on each
+          Firearm you control", "activate an ability on the attached card". Only abilities that
+          could actually be used are offered.
+        </p>
+        <ValueEditor
+          :bindings="scopeFor(index)"
+          type="AbilityMatcher"
+          label="Which abilities"
+          :modelValue="step.activateAbility?.matcher"
+          @update:modelValue="set(index, { ...step, activateAbility: { ...step.activateAbility, matcher: $event } })"
+        />
+        <ValueEditor
+          type="[ModifierType]"
+          label="Modifiers on those abilities"
+          :bindings="scopeFor(index)"
+          :modelValue="step.activateAbility?.modifiers"
+          @update:modelValue="set(index, { ...step, activateAbility: { ...step.activateAbility, modifiers: $event } })"
+        />
+        <p class="hint">
+          These go on the abilities themselves, not on anything on the table, so "without paying
+          its cost" is an action-cost modifier here rather than one anyone else can see.
+        </p>
+        <div class="row">
+          <BoolField
+            label="does not provoke attacks of opportunity"
+            :modelValue="!!step.activateAbility?.noAttacksOfOpportunity"
+            @update:modelValue="set(index, { ...step, activateAbility: { ...step.activateAbility, noAttacksOfOpportunity: $event } })"
+          />
+        </div>
+        <div class="row">
+          <BoolField
+            label="may decline"
+            :modelValue="!!step.activateAbility?.optional"
+            @update:modelValue="set(index, { ...step, activateAbility: { ...step.activateAbility, optional: $event } })"
+          />
+          <label v-if="step.activateAbility?.optional">
+            Decline label
+            <input
+              :value="step.activateAbility?.declineLabel"
+              placeholder="Do not"
+              @input="set(index, { ...step, activateAbility: { ...step.activateAbility, declineLabel: ($event.target as HTMLInputElement).value } })"
+              @keydown.stop
+            />
+          </label>
+        </div>
+      </template>
+
+      <template v-else-if="kindOf(step) === 'seal'">
+        <p class="summary">
+          Seals chaos tokens on this card, or lets go of the ones it is holding. Both halves are
+          here because a card that seals nearly always says when it stops.
+        </p>
+        <BoolField
+          label="release what it is holding"
+          :modelValue="!!step.seal?.release"
+          @update:modelValue="set(index, { ...step, seal: $event ? { release: true } : { tokens: null } })"
+        />
+        <ExpressionEditor
+          v-if="!step.seal?.release"
+          :queryKinds="queryKinds"
+          label="Which tokens"
+          expect="[ChaosToken]"
+          :bindings="scopeFor(index)"
+          :modelValue="step.seal?.tokens"
+          @update:modelValue="set(index, { ...step, seal: { ...step.seal, tokens: $event } })"
+        />
+        <p v-else class="hint">
+          Every token this card is holding, so "release each token on it" needs no list. Name
+          tokens below to release only some.
+        </p>
+        <ExpressionEditor
+          v-if="step.seal?.release"
+          :queryKinds="queryKinds"
+          label="Only these (optional)"
+          expect="[ChaosToken]"
+          :bindings="scopeFor(index)"
+          :modelValue="step.seal?.tokens"
+          @update:modelValue="set(index, { ...step, seal: { ...step.seal, tokens: $event } })"
+        />
+        <ValueEditor
+          optional
+          :bindings="scopeFor(index)"
+          type="Target"
+          label="On what (defaults to this card)"
+          :modelValue="step.seal?.on"
+          @update:modelValue="set(index, { ...step, seal: { ...step.seal, on: $event } })"
+        />
+      </template>
+
+      <template v-else-if="kindOf(step) === 'slot'">
+        <p class="hint">
+          Whatever the card printing this keyword put in that slot is spliced in here. Nothing is
+          written at this point for a card that left it empty.
+        </p>
+        <label class="cap">Which slot</label>
+        <select
+          :value="String(step).replace(/^\$/, '')"
+          @change="set(index, `$${($event.target as HTMLSelectElement).value}`)"
+        >
+          <option v-for="slot in slotSteps ?? []" :key="slot.name" :value="slot.name">
+            {{ slot.detail || slot.name }}
+          </option>
+        </select>
+      </template>
+
       <template v-else-if="kindOf(step) === 'customize'">
         <p class="hint">
           Mark a checkbox on an upgrade sheet for a customizable card you own — pick the card and
@@ -1667,6 +2403,16 @@ const removeOption = (step: any, index: number, at: number) =>
             @update:modelValue="set(index, { ...step, chooseFrom: { ...step.chooseFrom, over: $event } })"
           />
           <label>
+            Holding
+            <select
+              :value="step.chooseFrom?.kind ?? ''"
+              @change="setOverKind(index, step, ($event.target as HTMLSelectElement).value)"
+            >
+              <option value="">plain words — a trait, a skill, a number</option>
+              <option v-for="(_, kind) in queryKinds" :key="kind" :value="kind">{{ kind }}</option>
+            </select>
+          </label>
+          <label v-if="!step.chooseFrom?.kind">
             Label each option
             <input
               :value="step.chooseFrom?.label"
@@ -1676,11 +2422,15 @@ const removeOption = (step: any, index: number, at: number) =>
             />
           </label>
           <p class="hint">
-            An entity shows as itself; a list has nothing behind it to show, so each option reads as
-            the value when that is already a word — a trait, a skill — and otherwise as this.
+            A matcher's options show as the thing itself; a list has nothing behind it to show unless
+            it says what it holds. Say so and each option is that card or entity; leave it as plain
+            words and the option reads as the value — a trait, a skill — or as the label above. One
+            label for every option is no choice at all, so name the kind whenever the list holds
+            cards.
           </p>
         </template>
         <StepsEditor
+          :slotSteps="slotSteps"
           :bindings="innerScope(index)"
           :path="innerPath(index, 'chooseFrom')"
           :announce="addedInside(index)"
@@ -1714,6 +2464,7 @@ const removeOption = (step: any, index: number, at: number) =>
               @update:modelValue="setOnReveal(index, kindOf(step), { ...onReveal(step, kindOf(step)), whenPassed: $event })"
             />
             <StepsEditor
+              :slotSteps="slotSteps"
               :queryKinds="queryKinds"
               :bindings="revealScope(index)"
               :path="innerPath(index, 'reveal')"
@@ -1724,37 +2475,56 @@ const removeOption = (step: any, index: number, at: number) =>
           </template>
         </fieldset>
 
+      </template>
+
+      <!-- "If you succeed, …" belongs to any step that can name a test, not just
+           one that started it: a card played into someone else's test says it
+           too, and by then its own steps have long finished. -->
+      <template v-if="hasOutcomes(step)">
         <fieldset v-for="which in (['onSuccess', 'onFailure'] as const)" :key="which" class="outcome">
           <legend>{{ OUTCOME_LEGENDS[which] }}</legend>
           <BoolField
             label="something happens"
-            :modelValue="!!outcome(step, which)"
-            @update:modelValue="setOutcome(index, which, $event ? { steps: [] } : undefined)"
+            :modelValue="outcomes(step, which).length > 0"
+            @update:modelValue="setOutcomes(index, which, $event ? [{ steps: [] }] : [])"
           />
-          <template v-if="outcome(step, which)">
+          <div v-for="(rider, ri) in outcomes(step, which)" :key="ri" class="rider">
+            <div v-if="outcomes(step, which).length > 1" class="rider-head">
+              <span class="rider-label">and</span>
+              <button type="button" class="drop" @click="removeRider(index, which, ri)">remove</button>
+            </div>
             <ValueMatcherField
               :bindings="scopeFor(index)"
-              :modelValue="outcome(step, which).by"
-              @update:modelValue="setOutcome(index, which, { ...outcome(step, which), by: $event })"
+              :modelValue="rider.by"
+              @update:modelValue="setRider(index, which, ri, { ...rider, by: $event })"
             />
             <p class="hint">
               By how much, when the card says so — "if you succeed by 2 or more". Any value covers
               the plain wording.
             </p>
             <StepsEditor
+              :slotSteps="slotSteps"
               :queryKinds="queryKinds"
-              :bindings="revealScope(index)"
-              :path="innerPath(index, which)"
+              :bindings="kindOf(step) === 'withSkillTest' ? innerScope(index) : revealScope(index)"
+              :path="innerPath(index, `${which}${ri}`)"
               :announce="[]"
-              :modelValue="outcome(step, which).steps ?? []"
-              @update:modelValue="setOutcome(index, which, { ...outcome(step, which), steps: $event })"
+              :modelValue="rider.steps ?? []"
+              @update:modelValue="setRider(index, which, ri, { ...rider, steps: $event })"
             />
             <p class="hint">
               Worked out when the test begins, so these can name what this ability chose — the card
               revealed, the trait picked. A query inside them reads the board as it stands now,
               not after the test; use a handler for anything that has to look afterwards.
             </p>
-          </template>
+          </div>
+          <button
+            v-if="outcomes(step, which).length > 0"
+            type="button"
+            class="add-rider"
+            @click="addRider(index, which)"
+          >
+            + another, at a different margin
+          </button>
         </fieldset>
       </template>
       </div>
@@ -1883,6 +2653,40 @@ const removeOption = (step: any, index: number, at: number) =>
   }
 }
 
+/* One rider of several. Separated only once there IS more than one, so the
+   ordinary single "if you succeed" reads exactly as it did before. */
+.rider {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+
+  & + .rider {
+    border-top: 1px dashed #374151;
+    padding-top: 0.4rem;
+  }
+}
+
+.rider-head {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.rider-label {
+  color: #9ca3af;
+  font-size: 0.72rem;
+}
+
+.add-rider {
+  align-self: flex-start;
+  background: none;
+  border: 1px dashed #374151;
+  border-radius: 4px;
+  color: #9ca3af;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.5rem;
+}
+
 
 
 
@@ -1944,6 +2748,69 @@ const removeOption = (step: any, index: number, at: number) =>
   flex-direction: column;
   gap: 0.3rem;
   padding-left: 0.5rem;
+}
+
+/* What a step binds for the steps under it, said on the step that binds it --
+   so a $name in scope can be traced back to where it came from. */
+.declares {
+  color: #9ca3af;
+  font-size: 0.72rem;
+  margin: 0;
+
+  code {
+    color: #5eead4;
+  }
+}
+
+h6 {
+  color: #9ca3af;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  margin: 0.2rem 0 0;
+  text-transform: uppercase;
+}
+
+.muted {
+  opacity: 0.6;
+}
+
+/* One zone of a Search, on a line: where, how deep, and what happens to the
+   rest. Read left to right as the sentence a card prints. */
+.zone {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.add-zone,
+.branch-toggles > button {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid #4b5563;
+  border-radius: 4px;
+  color: #9ca3af;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.5rem;
+
+  &:hover {
+    border-color: #6b7280;
+    color: #5eead4;
+  }
+}
+
+.branch-toggles {
+  display: flex;
+  gap: 0.4rem;
+}
+
+/* A checkbox reads as one line, not as a stacked label over a field. */
+label.inline {
+  align-items: center;
+  flex-direction: row;
+  gap: 0.35rem;
 }
 
 /* A branch of an If: its own edge and indent, so what belongs to which is read

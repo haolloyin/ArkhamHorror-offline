@@ -11,7 +11,7 @@ import Arkham.CampaignLogKey (CampaignLogKey, recorded)
 import Arkham.Card
 import Arkham.Classes.GameLogger (HasGameLogger, sendCustomCardIssue)
 import Arkham.Classes.HasGame (HasGame)
-import Arkham.Classes.HasQueue (push)
+import Arkham.Classes.HasQueue (push, pushAll)
 import Arkham.Classes.Query
 import Arkham.Deck qualified as Deck
 import Arkham.Discover (Discover (..), IsInvestigate (..), discoverAtYourLocation, discoverPure)
@@ -21,8 +21,10 @@ import Arkham.Discover (Discover (..), IsInvestigate (..), discoverAtYourLocatio
 -- modules into the cycle and onto their boot interfaces).
 
 import Arkham.Aspect (InsteadOf (..), IsAspect)
+import Arkham.Asset.Types (Field (AssetSealedChaosTokens))
 import Arkham.Calculation (GameCalculation (Fixed))
 import Arkham.Card.PlayerCard (lookupPlayerCard)
+import Arkham.ChaosToken (ChaosToken)
 import Arkham.Custom.Env
 import Arkham.Custom.Expr (evalExpr, exprInt, runQuery, runQueryStep, valueList)
 import Arkham.Custom.Overlay (setAsideMetaKey)
@@ -30,6 +32,7 @@ import Arkham.Customization (CustomizationChoice (..))
 import Arkham.EffectMetadata (EffectMetadata (EffectModifiers))
 import Arkham.Evade (mkChooseEvade, mkChooseEvadeMatch)
 import Arkham.Evade qualified as Evade
+import Arkham.Event.Types (Field (EventSealedChaosTokens))
 import Arkham.Fight (ChooseFight (..))
 import Arkham.Helpers.Ability (getCanPerformAbility)
 import Arkham.Helpers.Card (getCardEntityTarget)
@@ -60,10 +63,12 @@ import Arkham.Id
 import Arkham.Investigate (mkInvestigate, mkInvestigateLocation)
 import Arkham.Investigate qualified as Investigate
 import Arkham.Investigate.Types (Investigate (..))
+import Arkham.Investigator.Types (Field (InvestigatorUsedAbilities))
 import Arkham.Matcher
 import Arkham.Message
 import Arkham.Message qualified as Msg
 import Arkham.Message.Lifted (
+  additionalSkillTestOption,
   aspect,
   cancelBatch,
   chooseFightEnemyEdit,
@@ -83,6 +88,9 @@ import Arkham.Modifier (Modifier (Modifier))
 import Arkham.Name (toTitle)
 import Arkham.PlayerCard (allPlayerCards)
 import Arkham.Prelude
+import Arkham.Projection
+import Arkham.Search (SearchType (..), mkSearch)
+import Arkham.Skill.Types (Field (SkillSealedChaosTokens))
 import Arkham.SkillType (SkillType (SkillWillpower))
 import Arkham.Source
 import Arkham.Target
@@ -153,10 +161,22 @@ beginTest env spec f = do
   -- Registered before the test starts, the way a printed card does it: the
   -- effect has to be watching by the time tokens are revealed.
   for_ (KeyMap.lookup "onReveal" o) (runOnReveal env' sid source)
-  for_ (KeyMap.lookup "onSuccess" o) (runOutcome env' sid source True)
-  for_ (KeyMap.lookup "onFailure" o) (runOutcome env' sid source False)
+  for_ (KeyMap.lookup "onSuccess" o) (runOutcomes env' sid source True)
+  for_ (KeyMap.lookup "onFailure" o) (runOutcomes env' sid source False)
   f sid iid source
   pure env'
+
+{- | The success (or failure) riders a card prints, which may be more than one.
+
+"If you succeed, automatically evade the target. If you succeed by 2 or more,
+discover a clue" is two riders on the same test, each with its own margin, so a
+list of blocks is a list of riders and a lone block is the same thing said once.
+-}
+runOutcomes
+  :: (HasGameLogger m, ReverseQueue m) => Env -> SkillTestId -> Source -> Bool -> Value -> m ()
+runOutcomes env sid source passed = \case
+  Array blocks -> traverse_ (runOutcome env sid source passed) blocks
+  block -> runOutcome env sid source passed block
 
 {- | "If you succeed, …" and "If you fail, …", as a rider on the test the step
 just started.
@@ -220,12 +240,12 @@ withTestSkill
   -> a
   -> m ()
 withTestSkill env o iid source setSkill action =
-  case (field "skill", field "insteadOf") of
+  case (skillAt "skill", skillAt "insteadOf") of
     (Just using, Just replaced) -> aspect iid source (using `InsteadOf` replaced) (pure action)
     (Just using, Nothing) -> push $ toMessage (setSkill using action)
     _ -> push $ toMessage action
  where
-  field k = KeyMap.lookup k o >>= decodeWith @SkillType env
+  skillAt k = KeyMap.lookup k o >>= decodeWith @SkillType env
 
 {- | Investigate.
 
@@ -408,6 +428,48 @@ runCustomize env spec = do
 by the time a card in play can act, so the nearest honest equivalent is to
 shuffle the card in where it would have ended up.
 -}
+
+{- | Seal chaos tokens on this card, or let the sealed ones go.
+
+Two halves of the same thing, which is why they are one step: a card that seals
+tokens nearly always says when it stops, and splitting them would leave the
+author holding the join. @tokens@ names the ones to seal; @release@ with no
+tokens lets go of everything this card is holding, which is what "release each
+token on it" means.
+
+Sealing is two messages and both are needed: the first takes the token out of
+the bag, the second records where it went -- a token taken out and not recorded
+is simply gone.
+-}
+runSeal :: (HasGameLogger m, ReverseQueue m) => Env -> Value -> m ()
+runSeal env spec = do
+  let o = specObject spec
+  iid <- stepInvestigator env
+  let
+    target = fromMaybe (stepTarget env) (decodeWith env =<< KeyMap.lookup "on" o)
+    named = KeyMap.lookup "tokens" o >>= decodeWith @[ChaosToken] env
+  if KeyMap.lookup "release" o == Just (Bool True)
+    then do
+      held <- maybe (getSealedOn target) pure named
+      pushAll [UnsealChaosToken token | token <- held]
+    else case named of
+      Nothing -> reportBadPayload env "seal" spec
+      Just tokens ->
+        pushAll
+          $ concat [[SealChaosToken token, SealedChaosToken token (Just iid) target] | token <- tokens]
+
+-- | What this card is holding sealed, so "release each token on it" needs no list.
+getSealedOn :: HasGame m => Target -> m [ChaosToken]
+getSealedOn = \case
+  AssetTarget aid -> field AssetSealedChaosTokens aid
+  EventTarget eid -> field EventSealedChaosTokens eid
+  SkillTarget sid -> field SkillSealedChaosTokens sid
+  _ -> pure []
+
+-- | The card the step belongs to, as a target.
+stepTarget :: Env -> Target
+stepTarget env = fromMaybe GameTarget (KeyMap.lookup "target" env >>= parseMaybe parseJSON)
+
 runGather :: (HasGameLogger m, ReverseQueue m) => Env -> Value -> m ()
 runGather env spec = do
   let
@@ -565,11 +627,18 @@ on the branch the player takes.
 runPlayCard :: (HasGameLogger m, ReverseQueue m) => Env -> Value -> m ()
 runPlayCard env spec = case spec of
   Object o -> do
-    iid <- stepInvestigator env
+    {- Whose play it is. Defaults to whoever is resolving this, which is nearly
+    always right -- but "that investigator may immediately play another asset"
+    hands the play to someone else, and their hand and their resources are what
+    decide what is playable. -}
+    iid <- maybe (stepInvestigator env) pure (decodeWith env =<< KeyMap.lookup "iid" o)
     -- The card this ability belongs to, which is what pays for and plays it.
     let source = fromMaybe GameSource (KeyMap.lookup "source" env >>= parseMaybe parseJSON)
     discount <- do
-      let amount = fromMaybe 0 (KeyMap.lookup "discount" o >>= parseMaybe parseJSON)
+      -- An expression, not just a number: "paying the difference between their
+      -- costs" is read off the table, and a string there used to parse as no
+      -- discount at all.
+      amount <- maybe (pure 0) (exprInt env) (KeyMap.lookup "discount" o)
       case KeyMap.lookup "discountIf" o of
         Nothing -> pure amount
         Just condition -> bool 0 amount <$> runReadCondition env condition
@@ -650,6 +719,78 @@ runActivateAbility env spec = do
           ]
       unless (null usable && null declined)
         $ Prompt.chooseOne iid ([AbilityLabel iid ab ws [] [] | ab <- usable] <> declined)
+
+{- | Resolve again whatever a card's abilities already did.
+
+"Repeat the effects of a skill committed to that test" is not a thing the engine
+can be asked for: a card's effects are whatever its abilities did, and nothing
+records them as effects. What it does record is which abilities were USED --
+`usedAbilities` keeps each one with the windows it fired in -- so this points at
+a source and pushes every recorded use of it again, windows and all. A silent
+forced ability cannot be reached by `activateAbility` (it is never performable
+on demand), which is why repeating one has to go through its use rather than
+through the ability.
+
+The uses are read across every investigator, because the card committed to your
+test may be someone else's.
+-}
+runRepeatAbilities :: (HasGameLogger m, ReverseQueue m) => Env -> Value -> m ()
+runRepeatAbilities env spec = do
+  let o = specObject spec
+  case KeyMap.lookup "source" o >>= decodeWith env of
+    Nothing -> reportBadPayload env "repeatAbilities" (substitute env spec)
+    Just source -> do
+      used <- selectAll InvestigatorUsedAbilities Anyone
+      let mine = filter ((== (source :: Source)) . abilitySource . usedAbility) used
+      pushAll
+        [ UseCardAbility
+            (usedAbilityInitiator u)
+            source
+            (abilityIndex (usedAbility u))
+            (usedAbilityWindows u)
+            NoPayment
+        | u <- mine
+        ]
+
+{- | Tell a card the test's result again, so whatever it does about the result
+happens one more time.
+
+A committed card's "if you succeed" is a handler on the test's own notification
+(@PassedSkillTest@ / @FailedSkillTest@) rather than an ability -- that is true
+of the official skills and of the ones written here -- so the only way to
+resolve such an effect an additional time is to say it an additional time. That
+is what "resolve its effects an additional time" asks for.
+
+Defaults to this card. The message is the current test's own result, so a card
+cannot be told about a success the test did not have.
+-}
+runNotifyResult :: (HasGameLogger m, ReverseQueue m) => Env -> Value -> m ()
+runNotifyResult env spec = do
+  let
+    o = specObject spec
+    target =
+      (KeyMap.lookup "target" o >>= decodeWith env)
+        <|> (KeyMap.lookup "target" env >>= parseMaybe parseJSON)
+  case target of
+    Nothing -> reportBadPayload env "notifyResult" (substitute env spec)
+    Just t -> push $ NotifyResultAgain (t :: Target)
+
+{- | Offer these steps as an option at the end of the test rather than resolving
+them now.
+
+Everything a successful test is worth is registered as an option and then
+ordered by the investigator -- a chaos token's effect, a committed card's rider,
+the investigation's own clue. A card that has something to say about the result
+belongs in that list, not ahead of it, and being in the list is also what lets
+it be resolved after the effects it talks about.
+-}
+runSkillTestOption :: (HasGameLogger m, ReverseQueue m) => Env -> Value -> m ()
+runSkillTestOption env spec = do
+  let
+    o = specObject spec
+    label = textField env o "label" "Resolve"
+    steps = maybe [] subSteps (KeyMap.lookup "steps" o)
+  additionalSkillTestOption label (runSteps env steps)
 
 {- | Put a card somewhere.
 
@@ -798,6 +939,9 @@ runSteps env0 = void . foldM step env0
       | Just spec <- KeyMap.lookup "distribute" o -> do
           runDistribute env spec
           pure env
+      | Just spec <- KeyMap.lookup "search" o -> do
+          runSearch env spec
+          pure env
       | Just spec <- KeyMap.lookup "repeat" o -> do
           runRepeat env spec
           pure env
@@ -851,11 +995,23 @@ runSteps env0 = void . foldM step env0
       | Just spec <- KeyMap.lookup "gather" o -> do
           runGather env spec
           pure env
+      | Just spec <- KeyMap.lookup "seal" o -> do
+          runSeal env spec
+          pure env
       | Just spec <- KeyMap.lookup "customize" o -> do
           runCustomize env spec
           pure env
       | Just spec <- KeyMap.lookup "activateAbility" o -> do
           runActivateAbility env spec
+          pure env
+      | Just spec <- KeyMap.lookup "repeatAbilities" o -> do
+          runRepeatAbilities env spec
+          pure env
+      | Just spec <- KeyMap.lookup "notifyResult" o -> do
+          runNotifyResult env spec
+          pure env
+      | Just spec <- KeyMap.lookup "skillTestOption" o -> do
+          runSkillTestOption env spec
           pure env
       | Just spec <- KeyMap.lookup "place" o -> do
           runPlace env spec
@@ -923,6 +1079,16 @@ editor.
 -}
 runReadCondition :: HasGame m => Env -> Value -> m Bool
 runReadCondition env condition = case condition of
+  {- A bare criterion, written where a condition is read. Nothing else here is
+  a tagged object -- a query is @kind@/@matcher@, a source test is
+  @source@/@matches@, a comparison is its operator -- so a @tag@ can only be a
+  criterion, and wrapping it in @{"criteria": ...}@ is a ceremony that is easy
+  to leave off and silent when it is: the condition falls through to an empty
+  query and reads as false. -}
+  Object o
+    | KeyMap.member "tag" o
+    , not (KeyMap.member "criteria" o) ->
+        runReadCondition env (object ["criteria" .= condition])
   Object o | Just criteria <- KeyMap.lookup "criteria" o -> case decodeWith env criteria of
     Nothing -> pure False
     Just criterion -> do
@@ -945,10 +1111,20 @@ runReadCondition env condition = case condition of
   Object o
     | Just pair <- KeyMap.lookup "eq" o -> same pair
     | Just pair <- KeyMap.lookup "ne" o -> not <$> same pair
+    {- And the orderings, for the readings that are a number rather than a
+    thing: "a card with 2 or fewer icons" is not a question any matcher asks,
+    and spelling it as three @eq@ branches says the same thing three times. -}
+    | Just pair <- KeyMap.lookup "lt" o -> compares (<) pair
+    | Just pair <- KeyMap.lookup "lte" o -> compares (<=) pair
+    | Just pair <- KeyMap.lookup "gt" o -> compares (>) pair
+    | Just pair <- KeyMap.lookup "gte" o -> compares (>=) pair
   _ -> notNull . fromMaybe [] <$> runQuery env condition
  where
   same pair = case valueList pair of
     [a, b] -> sameValue <$> evalExpr env a <*> evalExpr env b
+    _ -> pure False
+  compares f pair = case valueList pair of
+    [a, b] -> f <$> exprInt env a <*> exprInt env b
     _ -> pure False
 
 {- | Who to prompt. An ability knows (@$iid@ is bound when it resolves); a
@@ -1063,7 +1239,15 @@ asked. 'LabeledTarget' is not a real target -- it wraps one -- so the message
 still reaches the card, and the label says which of its blocks to resume.
 -}
 distributeTarget :: Env -> Value -> Target
-distributeTarget env spec =
+distributeTarget = deferredTarget
+
+{- | Where a deferred answer comes back to: this entity, labelled with the block
+that asked. 'LabeledTarget' is not a real target -- it wraps one -- so the
+message still reaches the card, and the label says which of its blocks to
+resume.
+-}
+deferredTarget :: Env -> Value -> Target
+deferredTarget env spec =
   LabeledTarget
     (distributeKey spec)
     (fromMaybe GameTarget (KeyMap.lookup "target" env >>= parseMaybe parseJSON))
@@ -1076,14 +1260,22 @@ carries. Walked from the def rather than remembered, because the answer arrives
 long after the step that asked has finished.
 -}
 distributeBlocks :: Value -> [(Text, Value)]
-distributeBlocks = go
+distributeBlocks = deferredBlocks "distribute"
+
+-- | As 'distributeBlocks', for any step that defers its answer to the card.
+deferredBlocks :: Key -> Value -> [(Text, Value)]
+deferredBlocks name = go
  where
   go = \case
     Object o ->
-      [(distributeKey spec, spec) | Just spec <- [KeyMap.lookup "distribute" o]]
+      [(distributeKey spec, spec) | Just spec <- [KeyMap.lookup name o]]
         <> concatMap go (KeyMap.elems o)
     Array xs -> concatMap go (toList xs)
     _ -> []
+
+-- | Every @search@ block written anywhere in a card. See 'deferredBlocks'.
+searchBlocks :: Value -> [(Text, Value)]
+searchBlocks = deferredBlocks "search"
 
 {- | The steps inside, run a number of times worked out from the game.
 
@@ -1147,8 +1339,19 @@ once -- "during a skill test".
 runWithSkillTest :: (HasGameLogger m, ReverseQueue m) => Env -> Value -> m ()
 runWithSkillTest env spec = case spec of
   Object o -> do
-    SkillTest.getSkillTestId >>= traverse_ \sid ->
-      runSteps (KeyMap.insert (bindingName o "skillTestId") (toJSON sid) env) (subStepsOf o)
+    SkillTest.getSkillTestId >>= traverse_ \sid -> do
+      let env' = KeyMap.insert (bindingName o "skillTestId") (toJSON sid) env
+      runSteps env' (subStepsOf o)
+      {- "If you succeed, …" on a test this card did NOT start.
+
+      The test-starting steps carry the same two keys, and they are the same
+      thing said about a different test: a card played into someone else's test
+      -- "reveal an additional token; if you succeed, deal 2 damage" -- has no
+      other way to say it. Its own steps have finished long before the result is
+      known, and the event that played them is in the discard pile by then, so a
+      handler cannot answer either. -}
+      for_ (KeyMap.lookup "onSuccess" o) (runOutcomes env' sid (stepSource env) True)
+      for_ (KeyMap.lookup "onFailure" o) (runOutcomes env' sid (stepSource env) False)
   _ -> pure ()
 
 {- | The steps inside, with the location of something bound for them.
@@ -1236,13 +1439,14 @@ runChoose env spec = case spec of
                 Just t -> targetLabel t (msgs <> continue)
                 Nothing -> Label (textField env opt "label" "Choose") (msgs <> continue)
       _ -> pure []
-    {- "You may ...": a way out of the loop, offered beside whatever is still
-    possible. Only when something is -- an ask holding nothing but "Done" is a
-    click that does nothing. -}
+    {- "You may ...": a way out, offered beside whatever is still possible. For
+    a one-at-a-time choice it ends the loop; for a single one it declines the
+    whole choice, which is what "you may" means on a card that offers one
+    thing. Only when something is possible -- an ask holding nothing but "Done"
+    is a click that does nothing. -}
     let done =
           [ Label (textField env o "done" "Done") []
-          | oneAtATime
-          , KeyMap.member "done" o
+          | KeyMap.member "done" o
           , not (all null labels)
           ]
     unless (all null labels) $ Prompt.chooseOne iid (concat labels <> done)
@@ -1370,8 +1574,11 @@ runChooseFrom env spec = case spec of
         Just (String n) -> Key.fromText n
         _ -> "chosen"
       steps = maybe [] subSteps (KeyMap.lookup "steps" o)
-      kind = case KeyMap.lookup "query" o of
-        Just (Object q) | Just (String k) <- KeyMap.lookup "kind" q -> k
+      -- An @over@ list has no query to say what is in it, so the kind can be
+      -- named beside it; otherwise the query already said.
+      kind = case (KeyMap.lookup "kind" o, KeyMap.lookup "query" o) of
+        (Just (String k), _) -> k
+        (_, Just (Object q)) | Just (String k) <- KeyMap.lookup "kind" q -> k
         _ -> ""
     -- Shown as the thing itself. Three cards all labelled "Choose" is no
     -- choice at all, the same way two events both reading "Play an event"
@@ -1429,3 +1636,105 @@ chosenTarget kind value = case kind of
   decoded = parseMaybe parseJSON value
 
 -- * Modifiers
+
+{- | Search a zone, and say here what happens to what it finds.
+
+The engine's search is already general -- which zones, what comes back out of
+each of them, and what becomes of what was found -- but all three are spelled
+out in types a card author should not have to meet. @zones@ names them the way a
+card does ("the top 2 cards of your deck", "your discard pile"), with @return@
+saying what happens to the rest.
+
+@found@ hands the result straight to one of the engine's own strategies, which
+is what nearly every printed search wants: drawing it, putting it in hand,
+playing it. Writing @onFound@ steps instead defers the whole result to the card,
+which is the only way to say anything else -- and it brings @onNoneFound@ with
+it, because a search that finds nothing is a branch a card takes, exactly as a
+test that fails is. Those steps are not reached from here: the found cards
+arrive in a later message, so they are picked up by key the way a @distribute@
+block is.
+-}
+runSearch :: (HasGameLogger m, ReverseQueue m) => Env -> Value -> m ()
+runSearch env spec = case spec of
+  Object o -> do
+    iid <- stepInvestigator env
+    let searched = whoseZones env o iid
+    zones <- traverse (searchZone env) (valueList (fromMaybe Null (KeyMap.lookup "zones" o)))
+    amount <- maybe (pure 1) (exprInt env) (KeyMap.lookup "amount" o)
+    let matcher = fromMaybe (BasicCardMatch AnyCard) (decodeWith env =<< KeyMap.lookup "matcher" o)
+    case (sequence zones, foundStrategy o iid amount, searchType o) of
+      (Just zs, Just strategy, Just sType)
+        | notNull zs ->
+            push
+              $ asSearch sType
+              $ mkSearch sType iid (stepSource env) searched zs matcher strategy
+      _ -> reportBadPayload env "search" spec
+  _ -> reportBadPayload env "search" spec
+ where
+  {- Whose zones are searched. An investigator by default -- yours unless the
+  card names someone else -- and the encounter deck when it says so, which is
+  the same machinery pointed at a different pile: "look at the top 4 cards of
+  the encounter deck" is a look like any other. -}
+  whoseZones e o iid = case KeyMap.lookup "of" o of
+    Just (String "encounterDeck") -> EncounterDeckTarget
+    other -> InvestigatorTarget (fromMaybe iid (decodeWith e =<< other))
+  {- Searching, looking and revealing are the same machinery with different
+  manners: a search shuffles and is a search as far as everything that reacts to
+  one is concerned, looking leaves the deck alone, revealing shows the card to
+  the table. The @Do@ wrapper belongs to searching only, which is where the
+  engine opens its would-search window. -}
+  searchType o = case KeyMap.lookup "how" o of
+    Nothing -> Just Searching
+    Just (String "search") -> Just Searching
+    Just (String "look") -> Just Looking
+    Just (String "reveal") -> Just Revealing
+    _ -> Nothing
+  asSearch sType = if sType == Searching then Do . Search else Search
+  {- Whether finding a card counts as drawing it, which decides what the draw
+  windows see. Asked only where the engine does not already know: every other
+  strategy answers it for itself. -}
+  isDraw o = if KeyMap.lookup "asDraw" o == Just (Bool True) then IsDraw else IsNotDraw
+  foundStrategy o who n
+    | KeyMap.member "onFound" o || KeyMap.member "onNoneFound" o = Just (deferred o)
+    | otherwise = case KeyMap.lookup "found" o of
+        Nothing -> Just ReturnCards
+        Just (String name) -> case name of
+          "draw" -> Just $ DrawFound who n
+          "drawUpTo" -> Just $ DrawFoundUpTo who n
+          "drawAll" -> Just $ DrawAllFound who
+          "hand" -> Just $ AddFoundToHand who n
+          "play" -> Just $ PlayFound who n
+          "playFree" -> Just $ PlayFoundNoCost who n
+          "handOrPlay" -> Just $ AddToHandOrPlayFound who n
+          "drawOrCommit" -> Just $ DrawOrCommitFound who n
+          "removeFromGame" -> Just $ RemoveFoundFromGame who n
+          "return" -> Just ReturnCards
+          "steps" -> Just (deferred o)
+          _ -> Nothing
+        _ -> Nothing
+  deferred o = DeferSearchedToTarget (deferredTarget env spec) (isDraw o)
+
+{- | One zone to search, and what happens to the cards left in it.
+
+The depth of a @topOfDeck@ is an expression, because a card that looks at "the
+top X cards, where X is your location's shroud" has no number to write down.
+A 'Zone' written out in full is taken as it stands, for the zones that have no
+shorthand.
+-}
+searchZone :: HasGame m => Env -> Value -> m (Maybe (Zone, ZoneReturnStrategy))
+searchZone env v = case v of
+  Object o -> do
+    depth <- maybe (pure 1) (exprInt env) (KeyMap.lookup "amount" o)
+    pure do
+      zone <- case KeyMap.lookup "zone" o of
+        Just (String name) -> case name of
+          "deck" -> Just FromDeck
+          "topOfDeck" -> Just (FromTopOfDeck depth)
+          "bottomOfDeck" -> Just (FromBottomOfDeck depth)
+          "hand" -> Just FromHand
+          "discard" -> Just FromDiscard
+          _ -> Nothing
+        other -> decodeWith env =<< other
+      let back = fromMaybe ShuffleBackIn (decodeWith env =<< KeyMap.lookup "return" o)
+      pure (zone, back)
+  _ -> pure Nothing

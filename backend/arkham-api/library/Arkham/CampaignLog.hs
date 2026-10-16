@@ -111,6 +111,17 @@ setCampaignLogKey key = recordedL %~ insertSet key
 deleteCampaignLogKey :: CampaignLogKey -> CampaignLog -> CampaignLog
 deleteCampaignLogKey key = recordedL %~ deleteSet key
 
+{- | Forget a key entirely: recorded, crossed out, counted, as a set, and in
+the recording order.
+-}
+forgetCampaignLogKey :: CampaignLogKey -> CampaignLog -> CampaignLog
+forgetCampaignLogKey key =
+  (recordedL %~ deleteSet key)
+    . (crossedOutL %~ deleteSet key)
+    . (recordedCountsL %~ deleteMap key)
+    . (recordedSetsL %~ deleteMap key)
+    . (orderedKeysL %~ filter (/= key))
+
 setCampaignLogRecorded :: CampaignLogKey -> [SomeRecorded] -> CampaignLog -> CampaignLog
 setCampaignLogRecorded key entries = recordedSetsL %~ insertMap key entries
 

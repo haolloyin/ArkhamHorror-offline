@@ -75,6 +75,16 @@ export function ultimatumEntryScope(tag: string): string {
   return `${homebrewCampaignScope(`:${parts[1]}`)}.ultimatums.${parts[2]}`
 }
 
+/* Where a homebrew campaign's own action is named for the ability button:
+"c:against-the-wendigo:010" + "WalkAlongTheRiver" ->
+"againstTheWendigo.actions.WalkAlongTheRiver". The core actions are named by a
+root-level key, so a card that is not homebrew gets null and falls back to it. */
+export function homebrewActionScope(cardCode: string | null, action: string): string | null {
+  if (!cardCode) return null
+  const ns = homebrewNamespaceOf(cardCode)
+  return ns ? `${homebrewCampaignScope(ns)}.actions.${action}` : null
+}
+
 const tokenModules = import.meta.glob('@homebrew/*/tokens.json', { eager: true }) as Record<
   string,
   { default: HomebrewTotalsToken[] }
@@ -108,6 +118,13 @@ export const homebrewCampaigns: Campaign[] = Object.values(campaignModules).map(
 export const homebrewScenarios: (Scenario & { i18n: string })[] = Object.values(
   scenarioModules,
 ).flatMap((m) => m.default)
+
+/* A homebrew box with no campaign.json: a single scenario that only ever plays
+on its own. Its cards are namespaced by the box like a campaign's are, so the
+card browser lists one group for it beside the campaigns. Gating lives on the
+scenario entry itself (`beta`/`dev`), as it does on a campaign entry. */
+export const homebrewStandaloneScenarios: (Scenario & { i18n: string })[] =
+  homebrewScenarios.filter((s) => !homebrewCampaigns.some((c) => c.id === s.campaign))
 
 /* A homebrew scenario that plays on its own -- as a standalone game, or added to
 a campaign in progress from the continuation screen -- marks itself

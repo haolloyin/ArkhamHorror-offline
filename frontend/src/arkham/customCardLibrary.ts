@@ -191,24 +191,46 @@ export async function createSet(name: string): Promise<LibrarySet> {
   return set
 }
 
-/* Rename, redescribe, relink, or any of them. `description` and `url` left out
- * keep whatever is stored, so renaming cannot wipe a blurb or a link. */
+/* Rename, redescribe, relink, mark as an expansion, or declare its tokens and
+ * keywords -- any of them. A field left out keeps whatever is stored, so
+ * renaming cannot wipe a blurb, a link, or a set's tokens. */
 export async function updateSet(
   id: string,
-  changes: { name: string; description?: string | null; url?: string | null },
+  changes: {
+    name: string
+    description?: string | null
+    url?: string | null
+    investigatorExpansion?: boolean
+    icon?: string | null
+    tokens?: Api.CustomSetToken[]
+    keywords?: Api.CustomSetKeyword[]
+  },
 ): Promise<LibrarySet> {
   const set = await Api.updateCustomCardSet(id, changes)
   upsertSet(set)
-  /* The name is stamped onto every card in the set so a card exported on its
-   * own still says where it came from; the server rewrites them, and the copies
-   * held here have to follow or an export taken before the next reload would
-   * carry the old name. The description and the link are not stamped on: they
-   * describe the set, and a card on its own is not the set. */
+  /* The name, and what the set declares, are stamped onto every card in it: a
+   * card exported on its own still says where it came from, and a card in a
+   * running game still knows what its keyword means and what its token looks
+   * like. The server rewrites them, and the copies held here have to follow or
+   * an export taken before the next reload would carry the old ones. The
+   * description, the link and the icon are not stamped on: they describe the
+   * set, and a card on its own is not the set. */
   for (const card of entries) {
-    if (card.setId === id) card.def.meta = { ...card.def.meta, set: set.name }
+    if (card.setId === id) card.def.meta = { ...card.def.meta, ...setStamp(set) }
   }
   registerCustomCards(entries.filter((c) => c.setId === id))
   return set
+}
+
+/* What a set writes into each of its cards' defs, mirroring `stampSet` on the
+ * server. An empty declaration is `undefined` rather than `[]`, so an ordinary
+ * set's cards carry nothing but its name. */
+function setStamp(set: LibrarySet): Record<string, unknown> {
+  return {
+    set: set.name,
+    setTokens: set.tokens?.length ? set.tokens : undefined,
+    setKeywords: set.keywords?.length ? set.keywords : undefined,
+  }
 }
 
 export const renameSet = (id: string, name: string) => updateSet(id, { name })
@@ -235,6 +257,10 @@ export async function importSet(payload: {
   description?: string | null
   url?: string | null
   sourceCode: string | null
+  investigatorExpansion?: boolean
+  icon?: string | null
+  tokens?: Api.CustomSetToken[]
+  keywords?: Api.CustomSetKeyword[]
   cards: CustomCard[]
 }): Promise<LibrarySet> {
   const { set, cards } = await Api.importCustomCardSet({
@@ -242,6 +268,10 @@ export async function importSet(payload: {
     description: payload.description,
     url: payload.url,
     sourceCode: payload.sourceCode,
+    investigatorExpansion: payload.investigatorExpansion,
+    icon: payload.icon,
+    tokens: payload.tokens,
+    keywords: payload.keywords,
     cards: payload.cards.map((c) => ({ def: c.def, art: c.art })),
   })
 
@@ -279,11 +309,70 @@ export async function subscribeToSet(id: string, version?: number) {
   return published
 }
 
+/* The other way to take a published set: your own copy, editable, frozen where
+ * it was. Replaces a subscribed copy of the same listing, since nobody can hold
+ * both. */
+export async function importPublishedSet(id: string, version?: number) {
+  const published = await Api.importCardSet(id, version)
+  await loadLibrary(true)
+  return published
+}
+
 export async function syncSet(id: string) {
   const published = await Api.syncCustomCardSet(id)
   await loadLibrary(true)
   return published
 }
+
+/* Take a set somebody shared the link to. Subscribing is the only way: the copy
+ * is locked, so it stays what they shared, and subscribing again is how it
+ * catches up with them.
+ *
+ * The server does the import, so the cards never round-trip through here; the
+ * library is reloaded rather than patched, because taking a set again replaces
+ * every card in it. */
+export async function subscribeToSharedSet(token: string) {
+  const shared = await Api.subscribeToSharedCardSet(token)
+  await loadLibrary(true)
+  return shared
+}
+
+/* Take a followed set into your editor. Nothing is fetched -- the cards are
+ * already here -- so the set alone is replaced rather than the library
+ * reloaded. */
+export async function unlockSet(id: string) {
+  const set = await Api.unlockCustomCardSet(id)
+  upsertSet(set)
+  return set
+}
+
+/* Whether this set is being handed to anyone by link, and to how many people.
+ * Both read off the set the server sent, so a row can say so without asking. */
+export const isShared = (set: LibrarySet) => set.shareToken !== null
+
+/* Whether this set follows somebody else's and so cannot be edited: its cards,
+ * its details, and a file imported over it are all refused by the server, and
+ * the builder hides the controls that would try. */
+export const isLocked = (set: LibrarySet) => set.locked
+
+/* Whether this set was handed to you by a link rather than taken from the
+ * marketplace, which decides what you may do with it beyond playing.
+ *
+ * A published set is public: a copy of one can be taken into your editor and
+ * exported like any set of yours. A shared one is the author's unpublished work,
+ * lent to a few people to try — so there is no editor copy and nothing to
+ * export, and passing the cards on stays the author's to do. The only ways out
+ * of one are to leave it or to delete it. */
+export const isFromShare = (set: LibrarySet) => set.sharedToken !== null
+
+/* Whether "Add to my editor" applies: a locked copy of something published. */
+export const canUnlock = (set: LibrarySet) => set.locked && !isFromShare(set)
+
+/* Whether the export controls are offered. Somebody else's unpublished work is
+ * not yours to hand on; everything else in your library is. */
+export const canExport = (set: LibrarySet) => !isFromShare(set)
+
+
 
 /* Whether a set is still following what it was published as, and whether there
  * is a newer version than the one it is on. */
@@ -346,6 +435,13 @@ export type CardExport = {
     description?: string | null
     url?: string | null
     sourceCode: string | null
+    /* What an investigator expansion brings besides cards. Written out rather
+     * than left to the copies stamped on the cards so a file can be read and
+     * edited by hand; the server falls back to the cards when it is absent. */
+    investigatorExpansion?: boolean
+    icon?: string | null
+    tokens?: Api.CustomSetToken[]
+    keywords?: Api.CustomSetKeyword[]
   }
   cards: { def: any; art: string | null }[]
 }
@@ -355,6 +451,10 @@ export type ParsedCardExport = {
   description: string | null
   url: string | null
   sourceCode: string | null
+  investigatorExpansion?: boolean
+  icon?: string | null
+  tokens?: Api.CustomSetToken[]
+  keywords?: Api.CustomSetKeyword[]
   cards: CustomCard[]
 }
 
@@ -368,10 +468,21 @@ export type ParsedCardExport = {
  * Falls back to the URL when the image cannot be read: a production asset host
  * that sends no CORS headers refuses the fetch, and half an export beats none. */
 export async function exportCards(cards: CustomCard[], set?: LibrarySet): Promise<CardExport> {
+  const inline = artInliner()
   const inlined = await Promise.all(
     cards.map(async (c) => ({
-      def: await inlineDefArt(c.def),
-      art: (await inlineArt(c.art)) ?? c.art,
+      def: await inlineDefArt(c.def, inline),
+      art: (await inline(c.art)) ?? c.art,
+    })),
+  )
+  const icon = set?.icon ? ((await inline(set.icon)) ?? set.icon) : null
+  /* Token art is inlined for the same reason a card's is: it was uploaded under
+   * the exporter's account, on a host the importer may not even be able to read,
+   * so a bare URL is worth nothing to them. */
+  const tokens = await Promise.all(
+    (set?.tokens ?? []).map(async (t) => ({
+      ...t,
+      image: t.image ? ((await inline(t.image)) ?? t.image) : null,
     })),
   )
   return {
@@ -383,6 +494,10 @@ export async function exportCards(cards: CustomCard[], set?: LibrarySet): Promis
             description: set.description,
             url: set.url,
             sourceCode: set.sourceCode,
+            investigatorExpansion: set.investigatorExpansion,
+            icon,
+            tokens,
+            keywords: set.keywords ?? [],
           },
         }
       : {}),
@@ -394,15 +509,60 @@ export async function exportCards(cards: CustomCard[], set?: LibrarySet): Promis
  * — and they live in meta rather than on the card. */
 const ART_META_KEYS = ['backArt', 'portrait', 'portraitBack']
 
-async function inlineDefArt(def: any): Promise<any> {
+async function inlineDefArt(def: any, inline: ArtInliner): Promise<any> {
   const meta = def?.meta
   if (!meta) return def
   const keys = ART_META_KEYS.filter((k) => typeof meta[k] === 'string')
-  if (!keys.length) return def
+  const tokens = await inlineSetTokenArt(meta, inline)
+  if (!keys.length && !tokens) return def
   const entries = await Promise.all(
-    keys.map(async (k) => [k, (await inlineArt(meta[k])) ?? meta[k]] as const),
+    keys.map(async (k) => [k, (await inline(meta[k])) ?? meta[k]] as const),
   )
-  return { ...def, meta: { ...meta, ...Object.fromEntries(entries) } }
+  return {
+    ...def,
+    meta: {
+      ...meta,
+      ...Object.fromEntries(entries),
+      ...(tokens ? { setTokens: tokens } : {}),
+    },
+  }
+}
+
+/* The tokens a set declares are stamped onto every card in it, and that copy is
+ * what an import reads the set back off when the file names no set at all — a
+ * card pasted on its own, or a selection exported out of the builder, neither of
+ * which has a set to carry the declaration. Inlined for the same reason the
+ * set's own copy is: a bare URL is a path into the exporter's library, and on
+ * another host it is a broken image rather than a token.
+ *
+ * Falls back to the URL like everything else here: half a token beats none, and
+ * the server drops an image it cannot serve rather than storing one. */
+async function inlineSetTokenArt(meta: any, inline: ArtInliner) {
+  if (!Array.isArray(meta.setTokens)) return null
+  return await Promise.all(
+    meta.setTokens.map(async (token: any) =>
+      token && typeof token.image === 'string'
+        ? { ...token, image: (await inline(token.image)) ?? token.image }
+        : token,
+    ),
+  )
+}
+
+/* One export, one fetch per image. A set's token art is stamped onto every card
+ * in it, so without this a selection of fifty cards would fetch the same marker
+ * fifty times and embed fifty copies of it. */
+type ArtInliner = (art: string | null) => Promise<string | null>
+
+function artInliner(): ArtInliner {
+  const seen = new Map<string, Promise<string | null>>()
+  return (art) => {
+    if (!art) return Promise.resolve(art)
+    const held = seen.get(art)
+    if (held) return held
+    const inflight = inlineArt(art)
+    seen.set(art, inflight)
+    return inflight
+  }
 }
 
 async function inlineArt(art: string | null): Promise<string | null> {
@@ -448,6 +608,13 @@ export function parseCardExport(raw: string, fallbackName = 'Imported cards'): P
     description: described || null,
     url: linked || null,
     sourceCode: parsed?.set?.sourceCode ?? null,
+    /* Left undefined rather than defaulted when the file does not say: the
+     * server then reads the copies stamped on the cards, which is the only
+     * thing a file written before expansions existed has. */
+    investigatorExpansion: parsed?.set?.investigatorExpansion,
+    icon: parsed?.set?.icon,
+    tokens: parsed?.set?.tokens,
+    keywords: parsed?.set?.keywords,
     cards,
   }
 }

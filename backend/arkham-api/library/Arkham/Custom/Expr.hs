@@ -55,7 +55,10 @@ import Arkham.Helpers.SkillTest (
   getSkillTestDifficulty,
   getSkillTestInvestigator,
   getSkillTestMatchingSkillIcons,
+  getSkillTestSkillTypes,
  )
+import Arkham.Helpers.SkillTest.Target (getSkillTestTarget)
+import Arkham.Homebrew.Defs (allTraits)
 import Arkham.Id
 import Arkham.Investigator.Types (Investigator)
 import Arkham.Location.Types (Location)
@@ -64,7 +67,16 @@ import Arkham.Name (toTitle)
 import Arkham.Prelude
 import Arkham.Projection
 import Arkham.Query (QueryElement)
-import Arkham.SkillTest.Base (skillTestCommittedCards, skillTestIconValues, skillTestId)
+import Arkham.Skill.Types (Skill)
+import Arkham.SkillTest.Base (
+  skillTestAdditionalRevealedChaosTokens,
+  skillTestCommittedCards,
+  skillTestIconValues,
+  skillTestId,
+  skillTestResult,
+  skillTestRevealedChaosTokens,
+ )
+import Arkham.SkillTestResult
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (parseMaybe)
@@ -78,7 +90,24 @@ evalExpr env v0 = case substituteExpr env v0 of
     | Just prop <- str =<< KeyMap.lookup "map" o -> withOf o (getProp (kindOf o) prop)
     | Just p <- KeyMap.lookup "filter" o -> do
         p' <- evalPredicate p
-        listOp o (filter (matches p'))
+        {- Keeping the elements rather than what was read off them. A plain
+        filter compares each element itself, which is no use for a list of
+        things with a property worth testing -- "the tokens that are not the
+        {auto_fail}" is a question about each token's face, and the answer
+        wanted is the tokens. @by@ says which property to read; without it the
+        element IS the value, as before. -}
+        case str =<< KeyMap.lookup "by" o of
+          Nothing -> listOp o (filter (matches p'))
+          Just prop -> case KeyMap.lookup "of" o of
+            Nothing -> pure Null
+            Just e -> do
+              xs <- valueList <$> evalExpr env e
+              -- With a `kind` it is a property the game is asked for; without
+              -- one it is a field of the element's own JSON, which is how a
+              -- chaos token's face is reached.
+              let readKey = if null (kindOf o) then pure . jsonField prop else getProp (kindOf o) prop
+              read' <- traverse readKey xs
+              pure $ toJSON [x | (x, k) <- zip xs read', matches p' k]
     | Just prop <- str =<< KeyMap.lookup "skillTest" o -> skillTestProp prop
     {- A field of the JSON itself, rather than a property the game has to be
        asked for. An entity's own serialized values are bound whole -- @$placement@
@@ -111,9 +140,27 @@ evalExpr env v0 = case substituteExpr env v0 of
         values <- maybe mempty skillTestIconValues <$> getSkillTest
         let valueOf v = maybe 0 (\i -> findWithDefault 0 i values) (parseMaybe parseJSON v)
         pure $ toJSON (sum (map valueOf icons))
+    {- The same value, a worked-out number of times. Nothing else in the
+    language builds a list of a given length, and several cards need one: "gains
+    one {wild} for every 2 clues you control" is a list of icons whose length the
+    game decides, and the modifier that takes it wants the list, not the count. -}
+    {- Every trait there is, so "name a [[Trait]]" is a choice over a list like
+    any other rather than a step of its own. Homebrew traits are included: the
+    list is the one the engine itself offers. -}
+    | Just _ <- KeyMap.lookup "traits" o -> pure $ toJSON allTraits
+    | Just e <- KeyMap.lookup "replicate" o -> do
+        n <- maybe (pure 0) (exprInt env) (KeyMap.lookup "times" o)
+        x <- evalExpr env e
+        pure $ toJSON (List.replicate (max 0 n) x)
     | Just e <- KeyMap.lookup "unique" o -> unary e (List.nub . valueList)
     | Just e <- KeyMap.lookup "concat" o -> unary e (concatMap valueList . valueList)
     | Just e <- KeyMap.lookup "reverse" o -> unary e (reverse . valueList)
+    {- The first @n@, for the readings that are "4 of them" rather than "all of
+    them": a card that seals four random tokens draws more than four and keeps
+    the first four it may have. -}
+    | Just e <- KeyMap.lookup "take" o -> do
+        n <- maybe (pure 0) (exprInt env) (KeyMap.lookup "times" o)
+        unary e (List.take (max 0 n) . valueList)
     | Just e <- KeyMap.lookup "count" o -> number e (length . valueList)
     | Just e <- KeyMap.lookup "sum" o -> number e (sum . nums)
     | Just e <- KeyMap.lookup "max" o -> number e (safely List.maximum . nums)
@@ -196,11 +243,27 @@ exprInt env = fmap toInt . evalExpr env
 {- | What @field@ reads: a key of an object, or -- when the key is a number --
 that position in a list.
 -}
+
+{- | A field of a serialized value, by the name a card author would write.
+
+Every Haskell record prefixes its fields with its own type -- a chaos token's
+face is @chaosTokenFace@, not @face@ -- which is a name nobody writing a card
+knows. So a miss falls back to the one field whose name ends with the key: one
+and only one, because two would be a guess rather than a reading.
+-}
 jsonField :: Text -> Value -> Value
 jsonField key = \case
-  Object o -> fromMaybe Null (KeyMap.lookup (Key.fromText key) o)
+  Object o -> case KeyMap.lookup (Key.fromText key) o of
+    Just v -> v
+    Nothing -> case [v | (k, v) <- KeyMap.toList o, Key.toText k `endsWithKey` key] of
+      [v] -> v
+      _ -> Null
   Array xs | Just i <- readMay (T.unpack key) -> fromMaybe Null (toList xs !!? i)
   _ -> Null
+ where
+  endsWithKey candidate k = case T.uncons k of
+    Just (c, rest) -> (T.toUpper (T.singleton c) <> rest) `T.isSuffixOf` candidate
+    Nothing -> False
 
 valueList :: Value -> [Value]
 valueList = \case
@@ -326,10 +389,37 @@ icons or "succeed by" is talking about it.
 skillTestProp :: HasGame m => Text -> m Value
 skillTestProp prop = case prop of
   "matchingIcons" -> toJSON . toList <$> getSkillTestMatchingSkillIcons
+  {- By how much it went, as a plain number: positive for a success, negative
+  for a failure, zero for a test that has not been resolved. "For every 2 points
+  you succeed by" has no other way to count. -}
+  "margin" ->
+    getSkillTest <&> \case
+      Just st -> toJSON $ case skillTestResult st of
+        SucceededBy _ n -> n
+        FailedBy _ n -> negate n
+        Unrun -> 0
+      Nothing -> toJSON (0 :: Int)
   "difficulty" -> toJSON <$> getSkillTestDifficulty
   "action" -> toJSON <$> getSkillTestAction
   "investigator" -> toJSON <$> getSkillTestInvestigator
   "committedCards" -> maybe Null (toJSON . concat . toList . skillTestCommittedCards) <$> getSkillTest
+  {- What the test is ABOUT -- the enemy being fought, the location being
+  investigated -- as the target it is. A card that reads something off the thing
+  it is testing against ("draw 1 card for each keyword on the target card") has
+  no other way to name it. -}
+  "target" -> maybe Null toJSON <$> getSkillTestTarget
+  {- Which skills the test uses. A card that says "the same skill" -- the next
+  test another investigator takes using it -- has to read one off the test it
+  is talking about; a test may use more than one, so this is a list. -}
+  "skills" -> toJSON <$> getSkillTestSkillTypes
+  {- Every token the test has turned over, additional reveals included. A card
+  that does something with "each token revealed during this test" has nowhere
+  else to read them from. -}
+  "revealedTokens" ->
+    getSkillTest <&> \case
+      Just st ->
+        toJSON (skillTestRevealedChaosTokens st <> skillTestAdditionalRevealedChaosTokens st)
+      Nothing -> toJSON ([] :: [Value])
   "id" -> maybe Null (toJSON . skillTestId) <$> getSkillTest
   _ -> pure Null
 
@@ -352,6 +442,9 @@ getProp kind prop v = case kind of
   "location" -> entityProp @Location prop v
   "investigator" -> entityProp @Investigator prop v
   "asset" -> entityProp @Asset prop v
+  -- A skill is an entity like the rest once it is on the table rather than in
+  -- a hand: attached to a location, or sitting on a test.
+  "skill" -> entityProp @Skill prop v
   "act" -> entityProp @Act prop v
   -- The cost as it stands, discounts and all -- what a card means when it talks
   -- about "this card's resource cost" rather than the number printed on it.

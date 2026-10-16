@@ -30,7 +30,7 @@ import Arkham.Target as X
 import Arkham.Action qualified as Action
 import Arkham.Capability
 import Arkham.Card
-import Arkham.ChaosToken.Types (ChaosToken (..))
+import Arkham.ChaosToken.Types (ChaosToken (..), addSealedChaosToken)
 import Arkham.Classes.HasGame
 import Arkham.Constants
 import Arkham.Direction
@@ -142,7 +142,7 @@ instance RunMessage LocationAttrs where
       -- TODO: we may want life cycles around this, generally this might just be a bad idea
       pure $ updateLocation [upd] a
     SealedChaosToken token _ (isTarget a -> True) -> do
-      pure $ a & sealedChaosTokensL %~ (token :)
+      pure $ a & sealedChaosTokensL %~ addSealedChaosToken token
     SealedChaosToken token _ _ -> do
       pure $ a & sealedChaosTokensL %~ filter (/= token)
     PlacedChaosToken token lid | lid == locationId -> do
@@ -633,18 +633,35 @@ locationInvestigatorsWithClues :: HasGame m => LocationAttrs -> m [InvestigatorI
 locationInvestigatorsWithClues attrs =
   filterM (fieldMap InvestigatorClues (> 0)) =<< select (investigatorAt $ toId attrs)
 
+applyBaseShroud :: ModifierType -> Int -> Int
+applyBaseShroud (BaseShroud m) _ = m
+applyBaseShroud _ n = n
+
+-- | The printed shroud, which for an "X" shroud location is whatever X works out to.
+getPrintedShroudValueFor :: (HasCallStack, HasGame m) => LocationAttrs -> m Int
+getPrintedShroudValueFor attrs = do
+  modifiers' <- getModifiers (toTarget attrs)
+  base <- getGameValue (fromJustNote "Missing shroud" $ locationShroud attrs)
+  pure $ max 0 $ foldr applyBaseShroud base modifiers'
+
 getModifiedShroudValueFor :: (HasCallStack, HasGame m) => LocationAttrs -> m Int
 getModifiedShroudValueFor attrs = do
   modifiers' <- getModifiers (toTarget attrs)
   base <- getGameValue (fromJustNote "Missing shroud" $ locationShroud attrs)
-  let modifiedBase = foldr applyBaseModifier base modifiers'
+  let modifiedBase = foldr applyBaseShroud base modifiers'
   -- SetShroud is the "set the shroud value to X" effect, which overrides every
   -- other modifier, so it has to be applied last. BaseShroud only replaces the
   -- printed value and can still be modified afterwards.
-  pure $ max 0 $ foldr applySetModifier (foldr applyModifier modifiedBase modifiers') modifiers'
+  -- "This location's shroud cannot be reduced" floors the ShroudModifier fold at
+  -- the base value, so a Flashlight (or any other -shroud effect) cannot lower
+  -- it while a +shroud effect still can raise it.
+  let shroudAfterModifiers = foldr applyModifier modifiedBase modifiers'
+      floored =
+        if ShroudCannotBeReduced `elem` modifiers'
+          then max modifiedBase shroudAfterModifiers
+          else shroudAfterModifiers
+  pure $ max 0 $ foldr applySetModifier floored modifiers'
  where
-  applyBaseModifier (BaseShroud m) _ = m
-  applyBaseModifier _ n = n
   applyModifier (ShroudModifier m) n = n + m
   applyModifier _ n = n
   applySetModifier (SetShroud m) _ = m

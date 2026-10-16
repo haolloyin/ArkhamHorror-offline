@@ -41,6 +41,7 @@ import Act from '@/arkham/components/Act.vue';
 import CardView from '@/arkham/components/Card.vue';
 import Draggable from '@/components/Draggable.vue';
 import ChaosBag from '@/arkham/components/ChaosBag.vue'
+import SandboxReveal from '@/arkham/components/debug/SandboxReveal.vue'
 import DebugCardDropHint from '@/arkham/components/DebugCardDropHint.vue';
 import DebugTokenPanel from '@/arkham/components/DebugTokenPanel.vue';
 import { cardDropHandlers, scenarioTarget } from '@/arkham/debugCardDrop';
@@ -78,6 +79,7 @@ import { useGameChoices } from '@/arkham/composables/useGameChoices';
 import { setLocationOffset, resetLocationOffsets, updateGameRaw } from '@/arkham/api';
 import { useDebug, scenarioHasDebugOptions } from '@/arkham/debug'
 import * as DebugMove from '@/arkham/debugCardMove'
+import * as DebugInPlay from '@/arkham/debugInPlay'
 import { useCardStore } from '@/stores/cards'
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
@@ -1102,6 +1104,7 @@ addEntry({
   content: t('gameBar.viewChaosBag'),
   binding: "viewChaosBag",
   nested: 'view',
+  section: 'panels',
   action: () => showChaosBag.value = !showChaosBag.value
 })
 
@@ -1110,14 +1113,16 @@ addEntry({
   icon: ViewColumnsIcon,
   content: t('gameBar.splitView'),
   nested: 'view',
+  section: 'layout',
   action: toggleSplitView
 })
 
 addEntry({
   id: "viewRemovedFromPlay",
   icon: ArchiveBoxXMarkIcon,
-  content: "View removed from Play",
+  content: t('gameBar.viewRemovedFromPlay'),
   nested: 'view',
+  section: 'panels',
   action: () => showRemovedFromPlay()
 })
 
@@ -1127,6 +1132,7 @@ addEntry({
   content: t('gameBar.rotateLayout'),
   binding: "rotateLayout",
   nested: 'view',
+  section: 'layout',
   action: () => {
     rotationSteps.value = (rotationSteps.value + 1) % 4
   }
@@ -1623,6 +1629,13 @@ function onDragOverEncounterDiscard(event: DragEvent) {
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'
     return
   }
+  // An asset dragged out of play discards through the engine, which picks the
+  // pile itself (Draw.vue's discard is where that drop lives); this zone only
+  // moves cards, so refuse rather than advertise a drop it would ignore.
+  if (DebugInPlay.draggedInPlay.value) {
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'
+    return
+  }
   encounterDiscardDraggedOver.value = true
   if (event.dataTransfer) {
     event.dataTransfer.dropEffect = encounterDiscardAccepts.value === false ? 'none' : 'copy'
@@ -1841,6 +1854,7 @@ watchEffect(() => {
       icon: EyeIcon,
       content: t('gameBar.showOutOfPlay'),
       nested: 'view',
+      section: 'panels',
       binding: 'showOutOfPlay',
       action: () => showOutOfPlay.value = !showOutOfPlay.value
     })
@@ -2485,6 +2499,12 @@ async function addChaosToken(face: any){
             <button class="button" @click="addChaosToken(token.face)">+</button>
           </div>
         </div>
+        <SandboxReveal
+          v-if="debug.active || scenario.chaosBag.debugRevealedChaosTokens.length > 0"
+          :game="game"
+          :chaosBag="scenario.chaosBag"
+          :playerId="playerId"
+        />
       </ChaosBagWindow>
       <CardRow
         v-if="showCards.ref.length > 0"

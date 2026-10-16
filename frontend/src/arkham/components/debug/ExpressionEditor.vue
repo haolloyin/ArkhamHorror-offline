@@ -293,6 +293,12 @@ const patchStage = (at: number, changes: Record<string, any>) =>
 const setStageProp = (at: number, prop: string) =>
   patchStage(at, { get: prop, kind: stageAt(at)?.kind ?? 'card' })
 
+/* How many times a `replicate` repeats, or how many a `take` keeps. Beside the
+ * stage rather than inside it,
+ * as `get` keeps its `kind`: the value being repeated is what came down the
+ * chain, and this is only how long the list is. */
+const setStageTimes = (at: number, value: any) => patchStage(at, { times: value })
+
 const stagePredicateKey = (at: number) => {
   const f = stageAt(at)?.filter
   if (!f || typeof f !== 'object') return 'eq'
@@ -600,6 +606,19 @@ const propsFor = computed(() => propOptionsFor(source.value?.kind ?? 'card') ?? 
           {{ problem }}.
         </p>
 
+        <!-- How many times, which is beside the stage rather than inside it:
+             the value being repeated is what came down the chain. -->
+        <div v-if="keyAt(at) === 'replicate' || keyAt(at) === 'take'" class="pipe-operand">
+          <ExpressionEditor
+            :modelValue="stageAt(at)?.times ?? 1"
+            :bindings="bindings"
+            :queryKinds="queryKinds"
+            expect="Int"
+            label="how many times"
+            @update:modelValue="setStageTimes(at, $event)"
+          />
+        </div>
+
         <div v-if="keyAt(at) === 'filter'" class="pipe-operand">
           <ExpressionEditor
             :modelValue="stagePredicateOperand(at)"
@@ -607,6 +626,18 @@ const propsFor = computed(() => propOptionsFor(source.value?.kind ?? 'card') ?? 
             label="compared with"
             @update:modelValue="setStagePredicateOperand(at, $event)"
           />
+          <!-- What is compared. Without this the element itself is compared,
+               which is no use for a list of things with a property worth
+               testing: the answer wanted is the things, not the property. -->
+          <label class="cap">
+            comparing
+            <input
+              :value="stageAt(at)?.by ?? ''"
+              placeholder="each one itself"
+              @input="patchStage(at, { by: ($event.target as HTMLInputElement).value || undefined })"
+              @keydown.stop
+            />
+          </label>
         </div>
 
         <!-- What it is added to, divided by, joined with. The value handed down the

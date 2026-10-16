@@ -774,6 +774,9 @@ body.log-open { padding-right:min(360px, 90vw); }
 .log-result.pass .log-badge { background:var(--ok); } .log-result.fail .log-badge { background:var(--doom); }
 .log-clue { border-left-color:var(--clue); }
 .log-doom { border-left-color:var(--doom); }
+.log-harm { border-left-color:var(--doom); }
+.log-heal { border-left-color:var(--ok); }
+.log-defeat { border-left-color:var(--doom); background:color-mix(in srgb, var(--doom) 16%, var(--bg)); font-weight:600; }
 .log-codex { border-left-color:var(--accent); font-weight:600; }
 .log-inv { border-left-color:#2e7d32; font-weight:600; }
 .log-warn { border-left-color:#e6a100; color:var(--muted); font-size:12px; }
@@ -926,6 +929,8 @@ details pre { max-height:400px; overflow:auto; font-size:11px; }
 .lobby-hero { display:flex; align-items:center; gap:16px; margin:0 0 20px; flex-wrap:wrap; }
 .lobby-hero h2 { margin:0; font-size:28px; letter-spacing:-.01em; }
 .lobby-start { margin:0 0 0 auto; padding:12px 22px; font-size:15px; }
+.lobby-hero-buttons { margin-left:auto; display:flex; align-items:center; gap:8px; }
+.lobby-hero-buttons button { margin:0; padding:12px 22px; font-size:15px; }
 .lobby-section { margin-bottom:16px; padding:14px 16px; }
 .lobby-new { margin-bottom:16px; }
 .table-list { list-style:none; margin:0; padding:0; display:grid; gap:10px; }
@@ -950,3 +955,25 @@ details pre { max-height:400px; overflow:auto; font-size:11px; }
 .button-like { display:inline-block; font:inherit; border:1px solid var(--line); padding:10px 18px; border-radius:6px; }
 .button-like.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
 .lobby-section h2 { font-size:15px; text-transform:none; letter-spacing:0; color:var(--ink); margin-bottom:10px; }
+
+/* filing a bug: a modal form over the table, backed by the browser's own dialog */
+.bug-dialog { border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--ink); padding:18px 20px; max-width:min(520px, 92vw); }
+.bug-dialog::backdrop { background:rgba(0,0,0,.6); }
+.bug-dialog h2 { margin:0 0 8px; font-size:20px; }
+.bug-dialog p { margin:0 0 8px; color:var(--muted); font-size:13px; }
+.bug-dialog input, .bug-dialog textarea { font:inherit; width:100%; box-sizing:border-box; margin-bottom:8px; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); }
+.bug-buttons { display:flex; justify-content:flex-end; }
+.bug-buttons button { margin:0 0 0 6px; }
+
+/* a doom or clue landing on the map: it drops in and glows where it appeared, so
+the mythos phase does not place tokens somewhere nobody is looking */
+.anchor .tok.placed { animation:tokPlace 1.2s ease-out; }
+.anchor .tok.placed.doom-glow { --glow:var(--doom); }
+.anchor .tok.placed.clue-glow { --glow:var(--clue); }
+@keyframes tokPlace {
+  0% { transform:scale(.3); filter:drop-shadow(0 0 0 var(--glow)); }
+  30% { transform:scale(1.5); filter:drop-shadow(0 0 9px var(--glow)) drop-shadow(0 0 20px var(--glow)); }
+  70% { transform:scale(1); filter:drop-shadow(0 0 7px var(--glow)) drop-shadow(0 0 16px var(--glow)); }
+  100% { transform:scale(1); filter:none; }
+}
+@media (prefers-reduced-motion: reduce) { .anchor .tok.placed { animation:none; } }

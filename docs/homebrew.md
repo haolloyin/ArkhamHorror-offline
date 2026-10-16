@@ -136,6 +136,34 @@ signature is what discovery reads.
 Everything below is a door. Pick the one that matches what you want, and mirror
 the shape from Dark Matter or Circus Ex Mortis.
 
+### An investigator
+
+An investigator is a card like any other, with one wrinkle: the printed side goes
+in `CardDefs/Investigators.hs` and imports the builder from
+`Arkham.Investigator.Cards.Base`, **not** from `Arkham.Investigator.Cards`. The
+latter is the aggregate table, and it now folds your campaign in — importing it
+from your folder would close a loop through your own cards.
+
+```haskell
+yourOtherHalf :: CardDef
+yourOtherHalf =
+  (investigator ":your-campaign:035" ("Your Other Half" <:> "The Id Unleashed") Neutral [Lunatic])
+    { cdEncounterSet = Just Set.YourCampaign
+    }
+```
+
+The behavior goes in `Investigators/YourOtherHalf.hs` as
+`yourOtherHalf :: InvestigatorCard YourOtherHalf`, exactly like an enemy or an
+asset, and is discovered the same way. Nothing is registered centrally: the
+engine resolves your card code wherever it resolves an official one — building
+the investigator, reading it back out of a save, and answering "which
+investigator is this" for a transfigured form.
+
+Because it is a real investigator card code it is also deck-legal, which is
+usually not what a story investigator wants. One that replaces a player's own
+card mid-scenario is put into play with `SetInvestigatorForm` rather than chosen
+at setup.
+
 ### A new trait
 
 Say your locations need a `NewMoonCircus` trait. List your traits in
@@ -200,6 +228,45 @@ declareHomebrewScenarioDeckKeys ["ScanningDeck"]
 ```
 
 Now use `ScanningDeck` anywhere the engine wants a deck key. Nothing else to wire.
+
+### A concealed mini-card kind
+
+The Scarlet Keys' concealed mini-cards are an engine mechanic, not a Scarlet
+Keys one, so your box can bring its own kinds. Name them in `Kinds.hs`:
+
+```haskell
+{-# LANGUAGE TemplateHaskell #-}
+module Arkham.Homebrew.YourCampaign.Kinds (module Arkham.Homebrew.YourCampaign.Kinds) where
+
+import Arkham.Homebrew.TH (declareHomebrewConcealedCardKinds)
+
+declareHomebrewConcealedCardKinds ["ThePhantom", "ChaoticMinionA"]
+```
+
+Your enemy card defs use those names the way Scarlet Keys uses its own —
+`cdKeywords = singleton $ Keyword.Concealed ThePhantom (Static 2)` — so
+`Kinds.hs` has to stay upstream of `CardDefs/`. The other half, which card each
+kind conceals, therefore goes in `Defs.hs`:
+
+```haskell
+instance IsHomebrewDefs YourCampaignDefs where
+  homebrewDefs =
+    (discoveredDefs $(generateHomebrewCardDefs))
+      { hdTraits = Traits.traits
+      , hdConcealedCardKinds =
+          [ (Kinds.ThePhantom, Enemies.thePhantom)
+          , (Kinds.ChaoticMinionA, Enemies.chaoticMinion)
+          ]
+      }
+```
+
+A decoy conceals nothing, so it gets no entry — and use the base game's `Decoy`
+rather than declaring your own; naming a kind that already exists in the base
+game fails the build, as every door does.
+
+Each kind is tagged `:your-campaign:the-phantom` — your box, read off the module
+name, then the kind, both kebab-cased — which is also where the frontend looks
+for its art: `frontend/homebrew/your-campaign/img/mini-cards/the-phantom.jpg`.
 
 ### Encounter sets
 

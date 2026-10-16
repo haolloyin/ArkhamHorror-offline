@@ -77,6 +77,7 @@ import Arkham.Location.Grid (Pos, isAdjacent)
 import Arkham.Location.Types (Field (..))
 import Arkham.Matcher qualified as Matcher
 import Arkham.Modifier
+import Arkham.Movement (Destination (ToLocation, ToLocationMatching))
 import Arkham.Name
 import Arkham.Placement
 import Arkham.Prelude
@@ -262,6 +263,15 @@ passesCriteria iid mcard source' requestor windows' ctr = case ctr of
       <$> selectCount (Matcher.ChaosTokenFaceIs #curse)
       <*> selectCount (Matcher.ChaosTokenFaceIs #bless)
   Criteria.CanMoveTo matcher -> notNull <$> getCanMoveToMatchingLocations iid source matcher
+  Criteria.MovingTo matcher ->
+    field InvestigatorMovement iid >>= \case
+      Nothing -> pure False
+      -- A matcher destination is resolved to a single location before any of the
+      -- move's windows are built (see handleMove), so nothing can ask this while
+      -- the destination is still a matcher.
+      Just movement -> case movement.destination of
+        ToLocation lid -> lid <=~> matcher
+        ToLocationMatching _ -> pure False
   Criteria.AccessibleToYou matcher -> do
     -- getAccessibleLocations injects the mover's own as-if connections before asking
     -- the board, and already limits the answer to locations they may enter.
@@ -327,12 +337,14 @@ passesCriteria iid mcard source' requestor windows' ctr = case ctr of
     -- way), so an in-play copy of the same card -- whose id is random -- never
     -- answers true here.
     committed <- fieldMap InvestigatorCommittedCards (map toCardId) iid
-    pure $ case source of
-      AssetSource aid -> unsafeToCardId aid `elem` committed
-      EventSource eid -> unsafeToCardId eid `elem` committed
-      SkillSource sid -> unsafeToCardId sid `elem` committed
-      TreacherySource tid -> unsafeToCardId tid `elem` committed
-      _ -> False
+    case source of
+      AssetSource aid -> pure $ unsafeToCardId aid `elem` committed
+      EventSource eid -> pure $ unsafeToCardId eid `elem` committed
+      TreacherySource tid -> pure $ unsafeToCardId tid `elem` committed
+      -- A committed skill is the one kind that gets a real entity, with an id
+      -- of its own, so the card has to be read off it rather than out of it.
+      SkillSource sid -> maybe False ((`elem` committed) . toCardId) <$> fieldMay SkillCard sid
+      _ -> pure False
   Criteria.InYourHand -> do
     hand <-
       liftA2
@@ -481,10 +493,22 @@ passesCriteria iid mcard source' requestor windows' ctr = case ctr of
     getSkillTest >>= \case
       Nothing -> pure False
       Just skillTest -> skillTestMatches iid source skillTest skillTestMatcher
-  Criteria.TokensOnThis tokenKind valueMatcher -> case source of
-    TreacherySource tid ->
-      (`gameValueMatches` valueMatcher) . Token.countTokens tokenKind =<< field TreacheryTokens tid
-    _ -> error "missing TokensOnThis check"
+  {- Every entity that holds tokens answers this, not just a treachery. A custom
+  card asking whether its own marker is on it yet -- which is how a keyword like
+  Tension knows it has already activated -- is an asset far more often than a
+  treachery, and used to hit the error below. -}
+  Criteria.TokensOnThis tokenKind valueMatcher ->
+    let counted = (`gameValueMatches` valueMatcher) . Token.countTokens tokenKind
+     in case source of
+          TreacherySource tid -> counted =<< field TreacheryTokens tid
+          AssetSource aid -> counted =<< field AssetTokens aid
+          EventSource eid -> counted =<< field EventTokens eid
+          LocationSource lid -> counted =<< field LocationTokens lid
+          EnemySource eid -> counted =<< field EnemyTokens eid
+          InvestigatorSource iid' -> counted =<< field InvestigatorTokens iid'
+          StorySource sid -> counted =<< field StoryTokens sid
+          ActSource aid -> counted =<< field ActTokens aid
+          _ -> error $ "missing TokensOnThis check: " <> show source
   Criteria.ChargesOnThis valueMatcher -> passesCriteria iid mcard source' requestor windows' $ Criteria.TokensOnThis #charge valueMatcher
   Criteria.ResourcesOnThis valueMatcher -> case source of
     TreacherySource tid -> (`gameValueMatches` valueMatcher) =<< field TreacheryResources tid
@@ -528,6 +552,7 @@ passesCriteria iid mcard source' requestor windows' ctr = case ctr of
             StorySource sid -> maybe (pure False) (onSameLocation iid) =<< fieldMay StoryPlacement sid
             AssetSource aid -> maybe (pure False) (onSameLocation iid) =<< fieldMay AssetPlacement aid
             EnemySource eid -> maybe (pure False) (onSameLocation iid) =<< fieldMay EnemyPlacement eid
+            EventSource eid -> maybe (pure False) (onSameLocation iid) =<< fieldMay EventPlacement eid
             ConcealedCardSource cid -> maybe (pure False) (onSameLocation iid) =<< fieldMay ConcealedCardPlacement cid
             TreacherySource tid -> maybe (pure False) (onSameLocation iid) =<< fieldMay TreacheryPlacement tid
             LocationSource lid -> maybe (pure False) (onSameLocation iid) (Just $ AtLocation lid)

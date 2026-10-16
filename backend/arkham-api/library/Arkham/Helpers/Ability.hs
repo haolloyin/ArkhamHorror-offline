@@ -22,7 +22,7 @@ import Arkham.Helpers.Location (getLocationOf)
 import Arkham.Helpers.Modifiers (getModifiers, withoutModifier)
 import Arkham.Helpers.Query (allInvestigators, getActiveInvestigatorId)
 import Arkham.Helpers.Scenario (getScenarioDeck)
-import Arkham.Helpers.Window (getThatEnemy, getThatInvestigator, windowMatches)
+import Arkham.Helpers.Window (getThatEnemy, getThatInvestigator, windowInvestigator, windowMatches)
 import Arkham.Homebrew.Defs (homebrewActionAffordability)
 import Arkham.I18n (cardNameVar, ikey', varStr, withI18n)
 import Arkham.Id
@@ -36,7 +36,6 @@ import Arkham.Scenario.Deck
 import Arkham.Source
 import Arkham.Target
 import Arkham.Window (Window (..))
-import Arkham.Window qualified as Window
 
 getAbility :: HasGame m => AbilityRef -> m (Maybe Ability)
 getAbility ref = selectOne (Matcher.AbilityIs ref.source ref.index)
@@ -94,6 +93,19 @@ abilityCostIsInFlight ability = any isThisAbility <$> getActiveCosts
     ForAbility a -> a.ref == ability.ref
     _ -> False
 
+{- | Fold over an ability's modifiers to apply any 'SetAbilityCriteria' override
+to its printed criteria.
+
+Shared rather than inlined because 'getPreventedActions' reports the abilities
+'getCanPerformAbility' rejected, so the two have to test the same criteria. An
+override visible to only one of them has the log announce an ability that was
+never going to fire.
+-}
+applyCriteriaOverride :: ModifierType -> Criterion -> Criterion
+applyCriteriaOverride = \case
+  SetAbilityCriteria (CriteriaOverride c) -> const c
+  _ -> id
+
 getCanPerformAbility
   :: (HasCallStack, HasGame m) => InvestigatorId -> [Window] -> Ability -> m Bool
 getCanPerformAbility !iid !ws !ability = do
@@ -104,11 +116,7 @@ getCanPerformAbility !iid !ws !ability = do
   abilityModifiers <- getModifiers (AbilityTarget iid ability.ref)
 
   let
-    criteria = foldr setCriteria (abilityCriteria ability) abilityModifiers
-    setCriteria :: ModifierType -> Criterion -> Criterion
-    setCriteria = \case
-      SetAbilityCriteria (CriteriaOverride c) -> const c
-      _ -> id
+    criteria = foldr applyCriteriaOverride (abilityCriteria ability) abilityModifiers
     abWindow = abilityWindowFor ability
 
   runValidT do
@@ -208,7 +216,7 @@ explicitlyTargetsForcedAbilities = \case
 
 meetsActionRestrictions
   :: HasGame m => InvestigatorId -> [Window] -> Ability -> m Bool
-meetsActionRestrictions iid _ ab@Ability {..} = go abilityType
+meetsActionRestrictions iid ws ab@Ability {..} = go abilityType
  where
   go = \case
     Haunted -> pure False
@@ -218,13 +226,13 @@ meetsActionRestrictions iid _ ab@Ability {..} = go abilityType
     ForcedWhen _ aType -> go aType
     ActionAbility {actions} ->
       let as = actionsToList actions
-       in if null as then pure True else anyM (canDoAction iid ab) as
+       in if null as then pure True else anyM (canDoAction iid ws ab) as
     FastAbility' _ (AndActions []) -> pure True
-    FastAbility' _ actions -> anyM (canDoAction iid ab) (actionsToList actions)
+    FastAbility' _ actions -> anyM (canDoAction iid ws ab) (actionsToList actions)
     CustomizationReaction {} -> pure True
     ConstantReaction {} -> pure True
     ReactionAbility _ _ actions | null (actionsToList actions) -> pure True
-    ReactionAbility _ _ actions -> anyM (canDoAction iid ab) (actionsToList actions)
+    ReactionAbility _ _ actions -> anyM (canDoAction iid ws ab) (actionsToList actions)
     ForcedAbility _ -> pure True
     SilentForcedAbility _ -> pure True
     ForcedAbilityWithCost _ _ -> pure True
@@ -232,12 +240,13 @@ meetsActionRestrictions iid _ ab@Ability {..} = go abilityType
     ServitorAbility _ -> pure True
     ConstantAbility -> pure False
 
-canDoAction :: (HasCallStack, HasGame m) => InvestigatorId -> Ability -> Action -> m Bool
-canDoAction iid ab a = canDoAction' iid ab a
+canDoAction
+  :: (HasCallStack, HasGame m) => InvestigatorId -> [Window] -> Ability -> Action -> m Bool
+canDoAction iid ws ab a = canDoAction' iid ws ab a
 
 canDoAction'
-  :: (HasCallStack, HasGame m) => InvestigatorId -> Ability -> Action -> m Bool
-canDoAction' iid ab@Ability {abilitySource, abilityIndex, abilityCardCode} = \case
+  :: (HasCallStack, HasGame m) => InvestigatorId -> [Window] -> Ability -> Action -> m Bool
+canDoAction' iid ws ab@Ability {abilitySource, abilityIndex, abilityCardCode} = \case
   Action.Fight -> case abilitySource of
     LocationSource _lid -> pure True
     ConcealedCardSource _ -> pure True
@@ -359,8 +368,10 @@ canDoAction' iid ab@Ability {abilitySource, abilityIndex, abilityCardCode} = \ca
       , notNull <$> getScenarioDeck ExplorationDeck
       ]
   Action.Circle -> pure True
+  -- The ability's own windows, not [] -- a window-driven criterion such as
+  -- 'OnLocation' reads them and is unconditionally False without them.
   Action.HomebrewAction t ->
-    maybe (pure True) (passesCriteria iid Nothing abilitySource abilitySource [])
+    maybe (pure True) (passesCriteria iid Nothing abilitySource abilitySource ws)
       $ lookup (Action.HomebrewAction t) homebrewActionAffordability
 
 getCanAffordAbility
@@ -637,6 +648,26 @@ getCanAffordUseWith f canIgnoreAbilityLimit iid ability ws = do
           $ filter
             ((Just cardDef.title ==) . fmap toTitle . abilityCardDef . abilityLimit . usedAbility)
             usedAbilities'
+      MaxPer cardDef PerWindow n -> do
+        -- scoped to the current windows like GroupLimit PerWindow, but the bucket is the
+        -- card def rather than the ability, so every copy of the card shares it. Without
+        -- the `ws` intersection this would be a once-per-game limit, since EndCheckWindow
+        -- only prunes the Player/Group PerWindow records.
+        let
+          abilityCardDef = \case
+            MaxPer cDef _ _ -> Just cDef
+            _ -> Nothing
+        usedAbilities' <-
+          filterDepthSpecificAbilities
+            =<< concatMapM (field InvestigatorUsedAbilities)
+            =<< allInvestigators
+        let
+          matching =
+            filter
+              ((Just cardDef.title ==) . fmap toTitle . abilityCardDef . abilityLimit . usedAbility)
+              usedAbilities'
+        let countInWs u = length (filter (`elem` ws) (usedAbilityWindows u))
+        pure $ sum (map countInWs matching) < n
       MaxPer cardDef _ n -> do
         let
           abilityCardDef = \case
@@ -665,22 +696,22 @@ getCanAffordUseWith f canIgnoreAbilityLimit iid ability ws = do
             ((Just cardDef.title ==) . fmap toTitle . abilityCardDef . abilityLimit . usedAbility)
             usedAbilities'
       PerInvestigatorLimit _ n -> do
-        -- This is difficult and based on the window, so we need to match out the
-        -- relevant investigator ids from the window. If this becomes more prevalent
-        -- we may want a method from `Window -> Maybe InvestigatorId`
+        {- Which investigator the bucket belongs to comes from the window, via
+        `windowInvestigator`. Only `CommittedCard` was read before, so this
+        limit on any other window answered False and the ability was never
+        performable -- an ability silently switched off by the limit meant to
+        meter it. -}
         anyM
           ( \window ->
-              case windowType window of
-                Window.CommittedCard iid' _ -> do
+              case windowInvestigator (windowType window) of
+                Nothing -> pure False
+                Just iid' -> do
                   let
-                    matchingPerInvestigatorCount =
-                      flip count usedAbilities $ \usedAbility' ->
-                        flip any (usedAbilityWindows usedAbility') $ \case
-                          (windowType -> Window.CommittedCard iid'' _) ->
-                            usedAbility usedAbility' == ability && iid' == iid''
-                          _ -> False
-                  pure $ matchingPerInvestigatorCount < n
-                _ -> pure False
+                    sameSeat used =
+                      usedAbility used
+                        == ability
+                        && any ((== Just iid') . windowInvestigator . windowType) (usedAbilityWindows used)
+                  pure $ count sameSeat usedAbilities < n
           )
           ws
       GroupLimit PerCampaign n -> do

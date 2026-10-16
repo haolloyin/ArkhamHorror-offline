@@ -19,6 +19,7 @@ import Arkham.Story.Types as X
 import Arkham.Target as X
 
 import Arkham.Card.CardCode
+import Arkham.ChaosToken.Types (addSealedChaosToken)
 import Arkham.Classes.HasGame
 import Arkham.Helpers.Scenario
 import Arkham.Metrics (withMetric)
@@ -31,10 +32,10 @@ afterStoryResolution :: HasQueue Message m => StoryAttrs -> [Message] -> m ()
 afterStoryResolution (toId -> storyId) = traverse_ (pushAfter isResolution) . reverse
  where
   isResolution = \case
-    StoryMessage (ResolvedStory _ story') -> story' == storyId
+    StoryMessage (ResolvedStory _ _ story') -> story' == storyId
     -- ReadStoryWithPlacement queues the ResolvedStory wrapped in MoveWithSkillTest,
     -- so match that form too or pushAfter silently drops the follow-up messages.
-    MoveWithSkillTest (StoryMessage (ResolvedStory _ story')) -> story' == storyId
+    MoveWithSkillTest (StoryMessage (ResolvedStory _ _ story')) -> story' == storyId
     _ -> False
 
 getAlreadyResolved :: HasGame m => StoryAttrs -> m Bool
@@ -51,7 +52,7 @@ instance RunMessage StoryAttrs where
       updated <- editTokenBag choice (storyMeta attrs)
       pure $ maybe attrs (\meta -> attrs & metaL .~ meta) updated
     StoryMessage smsg -> case smsg of
-      ResolvedStory _ story' | story' == toId attrs -> do
+      ResolvedStory _ _ story' | story' == toId attrs -> do
         pushWhen (storyRemoveAfterResolution attrs) $ RemoveStory (toId attrs)
         pure attrs
       ResolveStory iid DoNotResolveIt story' | story' == toId attrs -> do
@@ -81,7 +82,7 @@ instance RunMessage StoryAttrs where
     RemoveTokens _ target tType n | isTarget attrs target -> do
       pure $ attrs & tokensL %~ subtractTokens tType n
     SealedChaosToken token _ (isTarget attrs -> True) -> do
-      pure $ attrs & sealedChaosTokensL %~ (\ts -> if token `elem` ts then ts else token : ts)
+      pure $ attrs & sealedChaosTokensL %~ addSealedChaosToken token
     SealedChaosToken token _ _ -> do
       pure $ attrs & sealedChaosTokensL %~ filter (/= token)
     UnsealChaosToken token -> pure $ attrs & sealedChaosTokensL %~ filter (/= token)

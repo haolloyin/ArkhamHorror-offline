@@ -1,7 +1,8 @@
 <script lang="ts" setup>
 import { computed, ref } from 'vue'
 import { imgsrc } from '@/arkham/helpers'
-import { formatKey, logKeyTitle } from '@/arkham/types/Log'
+import { formatKey, logKeyTitle, withHomebrewScope } from '@/arkham/types/Log'
+import { customLogText } from '@/arkham/debugPlayer'
 import type { LogKey } from '@/arkham/types/Log'
 import type { RecordCountChange } from '@/arkham/types/Campaign'
 import { campaignStepIcon, campaignStepName } from '@/arkham/types/CampaignStep'
@@ -24,8 +25,12 @@ const props = defineProps<{
 const keyPath = (k: LogKey) => formatKey(k, props.homebrewScope)
 
 /* A homebrew key from a custom card has no locale entry, so its path would show
- * as the title. See `logKeyTitle`. */
-const title = (path: string) => logKeyTitle(path, t)
+ * as the title. See `logKeyTitle`. A recorded set's key arrives already
+ * formatted, and without the campaign to fall back on, so it is re-scoped first. */
+const title = (path: string) => logKeyTitle(withHomebrewScope(path, props.homebrewScope), t)
+
+// A player-typed count reads exactly as it was typed.
+const countTitle = (k: LogKey) => customLogText(k.raw) ?? title(keyPath(k))
 
 const { t } = useI18n()
 
@@ -131,7 +136,7 @@ const setValueKey = (setKey: string, setValue: any, idx: number): string => {
         :class="{ expandable: histories[keyPath(k)] }"
         @click="histories[keyPath(k)] && toggle(keyPath(k))"
       >
-        {{ title(keyPath(k)) }}
+        {{ countTitle(k) }}
         <svg
           v-if="histories[keyPath(k)]"
           class="chevron"

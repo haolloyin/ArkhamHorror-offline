@@ -83,6 +83,7 @@ import Arkham.Investigator.Types (Field (..))
 import Arkham.Keyword qualified as Keyword
 import Arkham.Location.Grid
 import Arkham.Location.Types (Field (..))
+import Arkham.Log.Refs (placeConcealedBlockKey)
 import Arkham.Matcher qualified as Matcher
 import Arkham.Message.Lifted hiding (discard)
 import Arkham.Message.Lifted.Choose
@@ -965,9 +966,12 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
   Discarded (TreacheryTarget _) _ card -> do
     case card of
       PlayerCard _ -> pure a
-      EncounterCard ec -> do
-        handler <- getEncounterDeckHandler $ toCardId card
-        pure $ a & discardLens handler %~ (ec :) . filter (/= ec)
+      -- only single sided encounter cards should end up in discard
+      EncounterCard ec
+        | card.singleSided -> do
+            handler <- getEncounterDeckHandler $ toCardId card
+            pure $ a & discardLens handler %~ (ec :) . filter (/= ec)
+        | otherwise -> pure a
       VengeanceCard _ -> error "vengeance card"
   DrewCards iid drew | isNothing drew.target -> do
     for_ (toList drew.rules) \case
@@ -1805,11 +1809,40 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
       $ if isStandalone
         then a & standaloneCampaignLogL . recordedL %~ insertSet key
         else a
+  CrossOutRecord key -> do
+    isStandalone <- getIsStandalone
+    pure
+      $ if isStandalone
+        then
+          let wasRecorded = key `member` (a ^. standaloneCampaignLogL . recordedL)
+           in a
+                & standaloneCampaignLogL
+                . recordedL
+                %~ deleteSet key
+                & standaloneCampaignLogL
+                . crossedOutL
+                %~ (if wasRecorded then insertSet key else id)
+                & standaloneCampaignLogL
+                . recordedSetsL
+                %~ deleteMap key
+                & standaloneCampaignLogL
+                . recordedCountsL
+                %~ deleteMap key
+                & standaloneCampaignLogL
+                . orderedKeysL
+                %~ (if wasRecorded then filter (/= key) else id)
+        else a
   RecordCount key n -> do
     isStandalone <- getIsStandalone
     pure
       $ if isStandalone
         then a & standaloneCampaignLogL . recordedCountsL %~ insertMap key n
+        else a
+  ForgetRecord key -> do
+    isStandalone <- getIsStandalone
+    pure
+      $ if isStandalone
+        then a & standaloneCampaignLogL %~ forgetCampaignLogKey key
         else a
   IncrementRecordCount key n -> do
     isStandalone <- getIsStandalone
@@ -2151,8 +2184,28 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
     pure $ a & setAsideCardsL %~ filter (/= card)
   SetDecksLayout layout -> do
     pure $ a & decksLayoutL .~ layout
-  PlaceConcealedCards _iid _cards lids -> do
+  PlaceConcealedCards iid cards lids -> do
+    {- A log block around the whole batch, so the placements read as one unit.
+
+    It has to live in game state rather than in the narrator: a batch of more
+    than one card asks for a location per card, and the narrator ref is rebuilt
+    every action. See 'Arkham.Log.Refs.placeConcealedBlockKey' for what the key
+    carries and why.
+
+    Only for more than one card -- a single placement is one line and a block
+    around it would be two rows saying the same thing. -}
+    mLogBlock <-
+      if length cards > 1
+        then do
+          token <- getRandom
+          let key = placeConcealedBlockKey iid (length cards) token
+          push $ OpenLogBlock key
+          pure (Just key)
+        else pure Nothing
     forTargets lids msg
+    -- Queued last, so it resolves behind every placement the chain queues
+    -- ahead of it, which is what makes it the end of the batch.
+    for_ mLogBlock $ push . CloseLogBlock
     pure a
   ForTargets ls (PlaceConcealedCards iid (card : cards) lids) -> do
     let

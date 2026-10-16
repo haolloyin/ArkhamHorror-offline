@@ -231,6 +231,49 @@ export function customCardDef(code: string): CardDef | undefined {
   return registry.get(stripCardCodePrefix(code))?.def
 }
 
+/* ------------------------------------------------------- set declarations ---
+
+   What an investigator expansion brings besides cards: the tokens its cards
+   place on themselves, and the keywords they print.
+
+   Read off the cards rather than fetched: a set stamps a copy onto every card
+   in it, which is the only form that reaches a running game -- the engine sends
+   defs, not sets. Any card of the set answers for it, and the first one that
+   says anything wins, so registering one card is enough to draw its tokens. */
+
+export type CustomSetTokenDef = { slug: string; name: string; image?: string | null }
+export type CustomSetKeywordDef = {
+  name: string
+  description: string
+  token?: string | null
+  shape: 'plain' | 'conditional'
+}
+
+const asArray = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : [])
+
+/* Every token any registered card's set declares, by slug. Built on read rather
+ * than maintained alongside the registry: the registry is reactive, cards
+ * arrive in several batches, and a token looked up while drawing a card has to
+ * see the ones that came in after it. */
+export function customSetTokens(): Map<string, CustomSetTokenDef> {
+  const found = new Map<string, CustomSetTokenDef>()
+  for (const { def } of registry.values()) {
+    for (const token of asArray<CustomSetTokenDef>(def.meta?.setTokens)) {
+      if (token?.slug && !found.has(token.slug)) found.set(token.slug, token)
+    }
+  }
+  return found
+}
+
+export const customSetToken = (slug: string): CustomSetTokenDef | undefined =>
+  customSetTokens().get(slug)
+
+/* The keywords a card's own set declares, so a card printing one can be shown
+ * what it means. */
+export function customSetKeywords(def: CardDef | undefined): CustomSetKeywordDef[] {
+  return asArray<CustomSetKeywordDef>(def?.meta?.setKeywords).filter((k) => k?.name)
+}
+
 /* An art field may name a printed card instead of carrying an image of its own,
  * so a custom investigator can reuse an existing face, back, or portrait rather
  * than re-uploading one. It is stored as the bare card code, never as a URL: the
@@ -349,3 +392,26 @@ export function renderMissingCard(code: string): string {
   </svg>`
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
 }
+
+/* Every kind of card the builder can make, in the order the type picker offers
+ * them. The long label is what the picker asks with -- it has to say which back
+ * a card has -- and the short one is what a chip or a filter says, where the
+ * column it sits in is a few characters wide. */
+export const CARD_TYPES = [
+  { value: 'AssetType', label: 'Asset (player back)', short: 'Asset' },
+  { value: 'EventType', label: 'Event', short: 'Event' },
+  { value: 'SkillType', label: 'Skill', short: 'Skill' },
+  { value: 'PlayerTreacheryType', label: 'Treachery (weakness)', short: 'Weakness' },
+  { value: 'PlayerEnemyType', label: 'Enemy (weakness)', short: 'Enemy weakness' },
+  { value: 'EnemyType', label: 'Enemy (encounter)', short: 'Enemy' },
+  { value: 'TreacheryType', label: 'Treachery (encounter)', short: 'Treachery' },
+  { value: 'EncounterAssetType', label: 'Asset (encounter back)', short: 'Encounter asset' },
+  { value: 'LocationType', label: 'Location', short: 'Location' },
+  { value: 'StoryType', label: 'Story', short: 'Story' },
+  { value: 'InvestigatorType', label: 'Investigator', short: 'Investigator' },
+] as const
+
+/* A card type as a chip says it. A type the list does not know -- one written
+ * through the raw block -- keeps its own name without the suffix. */
+export const cardTypeLabel = (cardType: string): string =>
+  CARD_TYPES.find((t) => t.value === cardType)?.short ?? cardType.replace(/Type$/, '')

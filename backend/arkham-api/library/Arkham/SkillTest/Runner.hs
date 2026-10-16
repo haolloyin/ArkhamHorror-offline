@@ -131,23 +131,40 @@ instance RunMessage SkillTest where
       -- A repeat is not the declaring card's own test, so it is deferred here rather than
       -- by 'handleSkillTestNesting': the card's tail must not ride along with it, or an
       -- event that repeats a test (Live and Learn) discards only after the repeat ends.
+      --
+      -- The window it was declared in is after ST.8, outside the test's own steps, so the
+      -- repeat nests inside that window: it runs to completion and then the window
+      -- continues, where a second copy can answer the same failure again. Carry the ask
+      -- across rather than re-emitting it, and re-seat this test for its duration -- it has
+      -- torn down by then, and the window's cards still read it.
+      let
+        isThisWindowAsk = \case
+          Do (CheckWindows ws) -> flip any ws \w -> case windowType w of
+            Window.SkillTestEnded st -> st.id == skillTestId
+            _ -> False
+          _ -> False
+      let
+        -- the declaring card still has a tail in the queue, so the repeat goes where the
+        -- ask sat (after that tail) and the window resumes behind it
+        withResume windowAsk =
+          BeginSkillTestWithPreMessages' [] repeated
+            : concat
+              [ [RestoreSkillTestForWindow (Just s), a, RestoreSkillTestForWindow Nothing]
+              | a <- windowAsk
+              ]
       inSkillTestWindow <- fromQueue $ elem EndSkillTestWindow
       if inSkillTestWindow
         then do
-          -- the test is performed again, not responded to twice, so the window it was
-          -- declared in is over: drop the re-check 'WindowAsk' queued behind the ask, or a
-          -- second Live and Learn is offered against a test that is already being repeated
-          let
-            endedThisTest w = case windowType w of
-              Window.SkillTestEnded st -> st.id == skillTestId
-              _ -> False
-          removeAllMessagesMatching \case
-            Do (CheckWindows ws) -> any endedThisTest ws
-            _ -> False
+          windowAsk <- popMessagesMatching isThisWindowAsk
           -- while this test is still current, so 'EffectNextSkillTestWindow' re-points
           push $ NextSkillTest sid
-          insertAfterMatching [BeginSkillTestWithPreMessages' [] repeated] (== EndSkillTestWindow)
-        else push $ BeginSkillTestWithPreMessages' [] repeated
+          insertAfterMatching (withResume windowAsk) (== EndSkillTestWindow)
+        else
+          -- this test has already torn down and been re-seated for its own window, so there
+          -- is no sentinel left to defer behind
+          findFromQueue isThisWindowAsk >>= \case
+            Just _ -> replaceMessageMatching isThisWindowAsk (withResume . pure)
+            Nothing -> push $ BeginSkillTestWithPreMessages' [] repeated
       pure s
     IncreaseSkillTestDifficulty n -> do
       -- see: faqs/drawing-thin
@@ -298,23 +315,21 @@ instance RunMessage SkillTest where
                   t <- getRandom
                   pushAll
                     $ resolve (RevealChaosToken (toSource s) iid (ChaosToken t chaosTokenFace (Just iid) False False))
+        -- Scrying Mirror performed ST.3 back in the test's "after it begins" window, so
+        -- the tokens are already in hand. Resolve those instead of drawing again.
+        | RevealChaosTokensBeforeCommittingCards `elem` modifiers''
+        , notNull skillTestSetAsideChaosTokens -> do
+            hasRun <- fromQueue (elem (RunSkillTest iid))
+            pushAll $ RevealSkillTestChaosTokens iid : [RunSkillTest iid | not hasRun]
         | otherwise -> do
             revealStrategy <- getSkillTestRevealStrategy s
             hasRun <- fromQueue (elem (RunSkillTest iid))
-            lockCommits <-
-              if RevealChaosTokensBeforeCommittingCards `notElem` modifiers''
-                then for (concat $ Map.elems skillTestCommittedCards) \card ->
-                  skillTestModifier s.id (SkillTestSource s.id) card MustBeCommitted
-                else pure []
+            lockCommits <- for (concat $ Map.elems skillTestCommittedCards) \card ->
+              skillTestModifier s.id (SkillTestSource s.id) card MustBeCommitted
             pushAll
-              $ [ RequestChaosTokens (toSource s) (Just iid) revealStrategy SetAside
-                ]
-              <> ( guard (RevealChaosTokensBeforeCommittingCards `notElem` modifiers'')
-                     *> ( lockCommits
-                            <> [ DoStep 3 (CommitToSkillTest s.id (Label "$label.doneCommitting" [CheckAllAdditionalCommitCosts]))
-                               ]
-                        )
-                 )
+              $ [RequestChaosTokens (toSource s) (Just iid) revealStrategy SetAside]
+              <> lockCommits
+              <> [DoStep 3 (CommitToSkillTest s.id (Label "$label.doneCommitting" [CheckAllAdditionalCommitCosts]))]
               <> [RunSkillTest iid | not hasRun]
       pure s
     DrawAnotherChaosToken iid -> do
@@ -348,20 +363,17 @@ instance RunMessage SkillTest where
       pure s
     RequestedChaosTokens (SkillTestSource sid) (Just iid) chaosTokens -> do
       skillTestModifiers' <- getModifiers (SkillTestTarget sid)
-      windowMsg <- checkWindows [mkWhen Window.FastPlayerWindow]
+      -- Scrying Mirror's early ST.3: the tokens are revealed now, but they are not
+      -- resolved until cards have been committed, so leave that to TriggerSkillTest. The
+      -- step guard keeps a later DrawAnotherChaosToken on the normal path.
+      let
+        earlyReveal =
+          (RevealChaosTokensBeforeCommittingCards `elem` skillTestModifiers')
+            && (skillTestStep < CommitCardsFromHandToSkillTestStep)
       popMessageMatching_ $ \case
         RevealSkillTestChaosTokens _ -> True
         _ -> False
-      push
-        $ if RevealChaosTokensBeforeCommittingCards `elem` skillTestModifiers'
-          then
-            CommitToSkillTest
-              s.id
-              ( Label
-                  "$label.doneCommitting"
-                  [CheckAllAdditionalCommitCosts, windowMsg, RevealSkillTestChaosTokens iid]
-              )
-          else RevealSkillTestChaosTokens iid
+      unless earlyReveal $ push (RevealSkillTestChaosTokens iid)
       for_ chaosTokens $ \chaosToken -> do
         let revealMsg = RevealChaosToken (SkillTestSource sid) iid chaosToken
         if chaosToken.cancelled
@@ -978,6 +990,18 @@ instance RunMessage SkillTest where
         Unrun -> pure ()
 
       pure $ s & stepL .~ ApplySkillTestResultsStep
+    {- A second telling of the result, asked for by a card that resolves at ST.7
+    ("resolve its effects an additional time"). The result is read here rather
+    than where the ask was built: an option is captured before the result is
+    settled, so a message carrying it would carry @Unrun@. -}
+    NotifyResultAgain target -> do
+      result <- fromMaybe skillTestResult <$> getSkillTestResultWithResultModifiers
+      let tell f n = f skillTestInvestigator skillTestAction skillTestSource target skillTestType n
+      case result of
+        SucceededBy _ n -> push $ Priority $ tell PassedSkillTest n
+        FailedBy _ n -> push $ Priority $ tell FailedSkillTest n
+        Unrun -> pure ()
+      pure s
     SkillTestApplyResults -> do
       -- ST.6 Determine Success
       push SkillTestApplyResultsAfter

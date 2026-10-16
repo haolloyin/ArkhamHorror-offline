@@ -2,7 +2,7 @@ import { useSiteSettingsStore } from '@/stores/site_settings'
 import { useSettings } from '@/stores/settings'
 import { reprintedArt, variantArt } from '@/arkham/artVariants'
 import { replaceHomebrewIcons } from '@/arkham/homebrewAssets'
-import { iconClasses, runePlaceholder } from '@/arkham/icons'
+import { iconClasses, runePlaceholder, runeSegmentPattern, runeTokenPlaceholder } from '@/arkham/icons'
 import { ref, type Ref } from 'vue';
 import {
   cardArtReference,
@@ -221,6 +221,9 @@ export function formatContent(body: string) {
   return replaceIcons(body).
     replace(/_([^_]*)_/g, '<strong>$1</strong>').
     replace(/\*([^\*]*)\*/g, '<i>$1</i>').
+    // A footnote marker, pointing at the numbered note a `FootnoteEntry` prints
+    // at the foot of the same panel.
+    replace(/\[\^(\d+)\]/g, '<sup class="footnote-ref">$1</sup>').
     replace(/{asterisk}/g, '*').
     replace(/{underscore}/g, '_')
 }
@@ -230,6 +233,29 @@ export function replaceIcons(body: string) {
     (acc, [key, cls]) => acc.replaceAll(`{${key}}`, `<span class="${cls}"></span>`),
     replaceHomebrewIcons(body),
   ).replace(runePlaceholder, '<span class="rune-$1"></span>')
+    .replace(runeTokenPlaceholder, (_, letter: string) => `<span class="rune-${letter.toUpperCase()}"></span>`)
+}
+
+export type RuneSegment = { text: string; rune?: never } | { rune: string; text?: never }
+
+/* Split a string into plain-text and rune segments.
+ *
+ * For the renderers that cannot use `formatContent`: the game log builds nodes
+ * rather than HTML, so it has no `v-html` to put a <span> through, and a rune in
+ * a card name would otherwise print as the raw "[tdc_rune_m]". Returning
+ * segments keeps the text escaped -- card names reach the log from card data, so
+ * handing them to `v-html` would be the wrong trade for one glyph. */
+export function splitRunes(body: string): RuneSegment[] {
+  const segments: RuneSegment[] = []
+  let cursor = 0
+  for (const match of body.matchAll(runeSegmentPattern)) {
+    const at = match.index ?? 0
+    if (at > cursor) segments.push({ text: body.slice(cursor, at) })
+    segments.push({ rune: (match[1] ?? match[2]).toUpperCase() })
+    cursor = at + match[0].length
+  }
+  if (cursor < body.length) segments.push({ text: body.slice(cursor) })
+  return segments
 }
 
 export type InvestigatorClass =

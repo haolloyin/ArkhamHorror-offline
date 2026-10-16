@@ -30,13 +30,13 @@ import Arkham.Helpers.Cost
 import Arkham.Helpers.GameValue
 import Arkham.Helpers.Investigator hiding (investigator)
 import Arkham.Helpers.Modifiers
-import Arkham.Helpers.Ref (sourceToCard)
+import Arkham.Helpers.Ref (sourceToCard, sourceToMaybeCard)
 import Arkham.Helpers.Scenario (scenarioFieldMaybe)
 import Arkham.Helpers.Source
 import Arkham.Helpers.Target
 import Arkham.Id
 import Arkham.Investigator.Types (Field (..))
-import Arkham.Keyword (Keyword (Peril))
+import Arkham.Keyword (Keyword (Hidden, Peril))
 import Arkham.Location.Types (Field (..))
 import Arkham.Matcher hiding (IgnoreChaosToken)
 import Arkham.Matcher qualified as Matcher
@@ -49,7 +49,11 @@ import Arkham.Message (
   pattern SkillTestEnds,
  )
 import Arkham.Modifier
-import Arkham.ModifierData (ChaosTokenValueEntry (..), SkillTestValueBreakdown (..))
+import Arkham.ModifierData (
+  ChaosTokenFaceEffect (..),
+  ChaosTokenValueEntry (..),
+  SkillTestValueBreakdown (..),
+ )
 import Arkham.Name
 import Arkham.Prelude
 import Arkham.Projection
@@ -552,14 +556,18 @@ skillIconCount SkillTest {..} = do
     addedIcons = foldMap (Sum . toValue) . filter matches $ flip concatMap mods \case
       AddSkillIcons icons -> icons
       _ -> []
-  cardIcons <- flip foldMapM (mapToList skillTestCommittedCards) \(iid, cards) -> do
-    flip foldMapM cards \card -> do
+  cardIcons <- flip concatMapM (mapToList skillTestCommittedCards) \(iid, cards) -> do
+    imods <- getModifiers iid
+    let less = sum [n | FewerMatchingIconsPerCard n <- imods]
+    flip concatMapM cards \card -> do
       icons <- sort . map toValue . filter matches <$> iconsForCard card
-      imods <- getModifiers iid
-      let less = sum [n | FewerMatchingIconsPerCard n <- imods]
-      pure $ foldMap Sum $ drop less icons
+      pure $ drop less icons
 
-  let totalIcons = getSum (cardIcons <> addedIcons)
+  -- "Ignore the first skill icon committed to all skill tests you perform" is
+  -- reckoned once over the whole test, so it reads the performer's modifiers.
+  performerMods <- getModifiers skillTestInvestigator
+  let ignored = sum [n | FewerMatchingIcons n <- performerMods]
+  let totalIcons = getSum (foldMap Sum (drop ignored (sort cardIcons)) <> addedIcons)
 
   case skillTestType of
     SkillSkillTest sType -> do
@@ -668,6 +676,14 @@ getIsCommittable a c = runValidT do
     onlyCardComittedToTestCommitted = any onlyCardCommittedToTest allCommittedCards
   let cannotCommitCards = CannotCommitCards AnyCard `elem` modifiers'
   guard $ not $ c `elem` allCommittedCards || cannotCommitCards || onlyCardComittedToTestCommitted
+  -- A hidden card "cannot leave your hand by any means except those described on the
+  -- card", so committing it is out unless its own text allows it (Possession
+  -- (Traitorous)). Watcher from Another Dimension handed a wild icon by Friends in Low
+  -- Places (Bolstering) is otherwise committable on icons alone.
+  let cdef = toCardDef c
+  let isHidden = Hidden `elem` cdKeywords cdef
+  let committableByOwnText = CommittableTreachery `elem` cdCommitRestrictions cdef
+  guard $ not isHidden || committableByOwnText
   case c of
     PlayerCard card -> do
       let
@@ -850,6 +866,9 @@ skillTestMatches iid source st mtchr = case Matcher.replaceYouMatcher iid mtchr 
     pure $ null $ skillTestRevealedChaosTokens st
   Matcher.SkillTestWithCommittedCards cardListMatcher ->
     cardListMatches (concat $ Map.elems $ skillTestCommittedCards st) cardListMatcher
+  Matcher.SkillTestWithCommittedIcons icons valueMatcher -> do
+    committed <- concatMapM iconsForCard (concat $ Map.elems $ skillTestCommittedCards st)
+    gameValueMatches (count (`elem` icons) committed) valueMatcher
   Matcher.SkillTestWithRevealedChaosToken matcher ->
     anyM (`Query.matches` Matcher.IncludeSealed matcher)
       $ skillTestRevealedChaosTokens st
@@ -1077,29 +1096,131 @@ getModifiedChaosTokenValue s t = do
     ChaosTokenValue token (NegativeModifier (max 0 (n - m)))
   applyModifier _ currentChaosTokenValue = currentChaosTokenValue
 
+{- | How a card is named in the skill test window. Total: a source with no card
+behind it (the scenario, the game) is reported nameless rather than guessed at.
+-}
+chaosTokenEffectAttribution :: HasGame m => Source -> m (Maybe Text, Maybe CardCode)
+chaosTokenEffectAttribution source = do
+  mcard <- sourceToMaybeCard source
+  pure (toTitle <$> mcard, toCardCode <$> mcard)
+
+{- | Every card effect on a chaos token face that the investigator taking the
+test would feel, paired with the face it is on.
+
+Two origins, which look the same to a player:
+
+  * an 'AddChaosTokenValue' modifier already on the test. The engine really will
+    add it ('getAdditionalChaosTokenValues' reads the same modifiers), so it is
+    reported @applied@ and its value belongs in the face's total.
+  * an ability that declared the effect with 'affectsChaosTokens' and has not
+    resolved. Nothing is added yet, but it will be when that face is revealed,
+    so the breakdown reports it as the prediction it is.
+
+INVARIANT: a card is listed at most once per face. When a card has both -- the
+usual shape, since the declaring ability is what pushes the modifier -- the
+applied modifier wins and inherits the declaration's prose, so resolving the
+ability never double counts the value.
+
+Declaration scope is the rule the ability DSL already uses for "on your
+location": an ability declares for the investigator taking the test if it sits
+on that investigator or on their location, matcher-source proxies included
+(@getGameAbilities@ resolves those before matching).
+-}
+getChaosTokenFaceEffects
+  :: HasGame m => SkillTest -> [Modifier] -> m [(ChaosTokenFace, ChaosTokenFaceEffect)]
+getChaosTokenFaceEffects s testModifiers = do
+  mlid <- selectOne $ locationWithInvestigator s.investigator
+  abilities <-
+    select
+      $ AbilityOneOf
+      $ AbilityOnInvestigator (InvestigatorWithId s.investigator)
+      : [AbilityOnLocation (LocationWithId lid) | lid <- maybeToList mlid]
+  declared <- concatMapM declaredBy $ filter (notNull . abilityChaosTokenEffects) abilities
+  applied <- for appliedValues \(source, ChaosTokenValue face modifier) -> do
+    (name, code) <- chaosTokenEffectAttribution source
+    value <- chaosTokenModifierToInt modifier
+    pure
+      ( face
+      , ChaosTokenFaceEffect
+          { ctfeName = name
+          , ctfeCardCode = code
+          , ctfeValue = value
+          , ctfeText =
+              listToMaybe [t | (f, e) <- declared, f == face, e.ctfeCardCode == code, Just t <- [e.ctfeText]]
+          , ctfeApplied = True
+          }
+      )
+  let appliedKeys = [(face, e.ctfeCardCode) | (face, e) <- applied]
+  pure $ applied <> [d | d@(face, e) <- declared, (face, e.ctfeCardCode) `notElem` appliedKeys]
+ where
+  appliedValues = [(m.source, v) | m <- testModifiers, AddChaosTokenValue v <- [m.kind]]
+  declaredBy ab = do
+    (name, code) <- chaosTokenEffectAttribution ab.source
+    for (abilityChaosTokenEffects ab) \(ChaosTokenValue face modifier) -> do
+      {- A declaration with no numeric part means "this card acts on the face, but
+      what it is worth is only known when it resolves" -- Grand Ballroom's "-1 for
+      every 2 revealed Manor locations" is computed. That is not the same as an
+      applied 0, which really does contribute nothing, so it is reported as no
+      value rather than as zero. -}
+      value <- case modifier of
+        NoModifier -> pure Nothing
+        _ -> chaosTokenModifierToInt modifier
+      pure
+        ( face
+        , ChaosTokenFaceEffect
+            { ctfeName = name
+            , ctfeCardCode = code
+            , ctfeValue = value
+            , ctfeText = abilityTooltip ab
+            , ctfeApplied = False
+            }
+        )
+
+{- | The per-face value table the skill test window draws.
+
+INVARIANT: @ctveValue@ is everything the test gains when that face is revealed
+-- the token's own modified value plus every 'ChaosTokenFaceEffect' value on it.
+Before this, an 'AddChaosTokenValue' reached the test total but no row, so a
+@[skull]@ worth -2 was still displayed as -1.
+-}
 getSkillTestValueBreakdown :: HasGame m => SkillTest -> m (Maybe SkillTestValueBreakdown)
 getSkillTestValueBreakdown s = do
   mBag <- scenarioFieldMaybe ScenarioChaosBag
   for mBag \bag -> do
+    -- the attributed form, so the breakdown can name the card behind each modifier
+    fullModifiers <- getFullModifiers (SkillTestTarget s.id)
+    faceEffects <- getChaosTokenFaceEffects s fullModifiers
+    let modifiers' = map modifierType fullModifiers
     let tokens = chaosBagChaosTokens bag
-    entries <- for tokens.uniqueByFace \tok -> do
+    {- A revealed token has left the bag, but the window still draws a band for its
+    face, so that face gets an entry of its own -- counted 0, since it is no longer
+    drawable, which leaves the odds untouched. -}
+    let revealed = skillTestResolvedChaosTokens s <> s.revealedChaosTokens
+    let drawn = uniqueTokenFaces [t | t <- revealed, t.face `notElem` map (.face) tokens]
+    entries <- for (tokens.uniqueByFace <> drawn) \tok -> do
       value <- getModifiedChaosTokenValue s tok
       ChaosTokenValue _ tokenModifier <- getChaosTokenValue s.investigator tok.face ()
+      faceModifiers <- getModifiers (ChaosTokenFaceTarget tok.face)
       -- TODO: need some way for homebrew to  hook into these
       let autoFail = tokenModifier == AutoFailModifier
           autoSuccess = tokenModifier == AutoSuccessModifier
           revealsAnother = tok.face `elem` [#curse, #bless, #frost]
+          printed = [e | (face, e) <- faceEffects, face == tok.face]
+          gained = [f | GainsChaosTokenEffectsOf f <- faceModifiers]
+          effects =
+            printed <> [e | (face, e) <- faceEffects, face `elem` gained, e `notElem` printed]
+          effectValue = sum $ mapMaybe ctfeValue effects
       pure
         $ ChaosTokenValueEntry
           { ctveFace = tok.face
           , ctveCount = count ((== tok.face) . (.face)) tokens
-          , ctveValue = value <$ guard (not $ autoFail || autoSuccess)
+          , ctveValue = (value + effectValue) <$ guard (not $ autoFail || autoSuccess)
           , ctveAutoFail = autoFail
           , ctveAutoSuccess = autoSuccess
           , ctveRevealsAnother = revealsAnother
+          , ctveEffects = effects
           }
 
-    modifiers' <- getModifiers (SkillTestTarget s.id)
     skillValue <- getSkillTestModifiedSkillValue
     difficulty <- getModifiedSkillTestDifficulty s
     pure

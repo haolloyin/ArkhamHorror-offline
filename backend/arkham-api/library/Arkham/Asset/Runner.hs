@@ -193,7 +193,11 @@ instance RunMessage AssetAttrs where
             extraSanity = sum [x | SanityModifier x <- mods]
             remainingHealth = maybe 0 (max 0 . subtract (assetDamage a) . (+ extraHealth)) assetHealth
             remainingSanity = maybe 0 (max 0 . subtract (assetHorror a) . (+ extraSanity)) assetSanity
-            damage' = min (max 0 $ damage + n) remainingHealth
+            -- See the note on Investigator/Runner.hs's InvestigatorDamage: a
+            -- damage-taken modifier has nothing to add to an assignment that
+            -- carries no damage, and damage and horror arrive as separate
+            -- messages.
+            damage' = min (max 0 $ if damage > 0 then damage + n else 0) remainingHealth
             horror' = min (max 0 horror) remainingSanity
         let
           damageEffect = case source of
@@ -247,10 +251,11 @@ instance RunMessage AssetAttrs where
             extraHealth = sum [x | HealthModifier x <- mods]
             extraSanity = sum [x | SanityModifier x <- mods]
         let clamp amount cap current extra = maybe 0 (min amount . subtract current . (+ extra)) cap
+        let n' = if damage > 0 then n else 0
         let damage' =
               if soaksDamage
-                then damage + n
-                else clamp (damage + n) assetHealth (assetDamage a) extraHealth
+                then damage + n'
+                else clamp (damage + n') assetHealth (assetDamage a) extraHealth
         let horror' =
               if soaksHorror
                 then horror
@@ -284,7 +289,7 @@ instance RunMessage AssetAttrs where
               }
     SetOriginalCardCode cardCode -> pure $ a & originalCardCodeL .~ cardCode
     SealedChaosToken token _ (isTarget a -> True) -> do
-      pure $ a & sealedChaosTokensL %~ (\ts -> if token `elem` ts then ts else token : ts)
+      pure $ a & sealedChaosTokensL %~ addSealedChaosToken token
     SealedChaosToken token _ _ -> do
       pure $ a & sealedChaosTokensL %~ filter (/= token)
     UnsealChaosToken token -> runQueueT do
@@ -667,8 +672,12 @@ instance RunMessage AssetAttrs where
       -- A card that cannot leave play and then prints its own way out --
       -- "it cannot leave play except using the ability below" -- is the one
       -- thing allowed to discard it, so a discard it sources itself is let
-      -- through. Everything else is still stopped.
-      cannotLeavePlay <- if isSource a source then pure False else a `hasModifier` CannotLeavePlay
+      -- through. Everything else is still stopped. Permanent is the same rule
+      -- as a keyword rather than a modifier (#5841).
+      cannotLeavePlay <-
+        if isSource a source
+          then pure False
+          else orM [pure (toCardDef a).permanent, a `hasModifier` CannotLeavePlay]
       if cannotLeavePlay
         then pure a
         else do

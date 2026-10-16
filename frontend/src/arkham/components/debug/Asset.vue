@@ -2,6 +2,7 @@
 import Draggable from '@/components/Draggable.vue';
 import { computed, ref } from 'vue';
 import { useDebug } from '@/arkham/debug';
+import * as DebugInPlay from '@/arkham/debugInPlay';
 import { TokenType, Token } from '@/arkham/types/Token';
 import { cardImg, imgsrc } from '@/arkham/helpers';
 import { cardImage as cardToImage, asCardCode, toCardContents, type Card as ArkhamCard } from '@/arkham/types/Card';
@@ -10,7 +11,7 @@ import type { Game } from '@/arkham/types/Game';
 import KeyToken from '@/arkham/components/Key.vue';
 import Modifier from '@/arkham/components/Modifier.vue';
 import PoolItem from '@/arkham/components/PoolItem.vue';
-import TokenView from '@/arkham/components/Token.vue';
+import SealedTokensSection from '@/arkham/components/debug/SealedTokensSection.vue';
 import * as Arkham from '@/arkham/types/Asset';
 import {isUse} from '@/arkham/types/Token';
 import { useDbCardStore } from '@/stores/dbCards'
@@ -53,6 +54,16 @@ const canFlip = computed(() => {
   return cardStore.cards.some(c => (c.cardCode === code && c.otherSide !== null) || c.otherSide === code)
 })
 
+/* Its owner's hand, falling back to the debugging player's investigator for a
+ * story or encounter asset that nobody owns. Dragging the card onto a hand says
+ * which one instead, so that path does not come through here. */
+const returnToHandInvestigator = computed(() => props.asset.owner ?? investigatorId.value)
+
+function returnToHand() {
+  const iid = returnToHandInvestigator.value
+  if (iid) debug.send(props.game.id, DebugInPlay.returnToHandMessage(iid, DebugInPlay.assetTarget(id.value)))
+}
+
 const exhausted = computed(() => props.asset.exhausted)
 const cardCode = computed(() => props.asset.cardCode)
 const image = computed(() => {
@@ -94,11 +105,11 @@ const hasPool = computed(() => {
     sanity,
     health,
     tokens,
-    sealedChaosTokens,
     keys,
   } = props.asset;
 
-  return cardCode.value == 'c07189' || (Object.values(tokens).some((v) => (v ?? 0) > 0) || sealedChaosTokens.length > 0 || keys.length > 0 || sanity || health)
+  // Sealed tokens have their own section below, where they can be released.
+  return cardCode.value == 'c07189' || (Object.values(tokens).some((v) => (v ?? 0) > 0) || keys.length > 0 || sanity || health)
 })
 </script>
 
@@ -136,10 +147,10 @@ const hasPool = computed(() => {
             />
             <PoolItem v-if="doom && doom > 0" type="doom" :amount="doom" />
             <PoolItem v-if="clues && clues > 0" type="clue" :amount="clues" />
-            <TokenView v-for="(sealedToken, index) in asset.sealedChaosTokens" :key="index" :token="sealedToken" :playerId="playerId" :game="game" />
           </div>
         </div>
       </div>
+      <div class="asset--side">
       <div v-if="placeTokens" class="buttons">
         <select v-model="placeTokenType">
           <option v-for="token in tokenTypes" :key="token" :value="token">{{ token }}</option>
@@ -178,6 +189,7 @@ const hasPool = computed(() => {
         <button v-else @click="debug.send(game.id, {tag: 'Exhaust', contents: { tag: 'AssetTarget', contents: id}})">{{ $t('debug.asset.exhaust') }}</button>
         <button v-if="asset.health || asset.sanity" @click="debug.send(game.id, {tag: 'AssetDefeated', contents: [{ tag: 'GameSource' }, id]})">{{ $t('debug.asset.defeat') }}</button>
         <button v-if="asset.owner" @click="debug.send(game.id, {tag: 'Discard', contents: [null, { tag: 'GameSource' }, { tag: 'AssetTarget', contents: id}]})">{{ $t('debug.asset.discard') }}</button>
+        <button v-if="returnToHandInvestigator" @click="returnToHand">{{ $t('debug.common.returnToHand') }}</button>
         <button v-if="canFlip" @click="debug.send(game.id, {tag: 'Flip', contents: [flipInvestigator, { tag: 'GameSource' }, { tag: 'AssetTarget', contents: id}]})">{{ $t('debug.asset.flip') }}</button>
         <button v-if="asset.spiritDeck" @click="inspectSpiritDeck = true">Inspect spirit deck</button>
         <button v-if="slots.length > 0" @click="showSlots = true">{{ $t('debug.asset.showSlots') }}</button>
@@ -190,6 +202,14 @@ const hasPool = computed(() => {
           Edit custom card
         </router-link>
         <button @click="setModifiers = true">{{ $t('debug.common.modifiers') }}</button>
+      </div>
+      <!-- Under the buttons, beside the card, rather than below the whole
+           window, so it fills space the card leaves empty. -->
+      <SealedTokensSection
+        :game="game"
+        :tokens="asset.sealedChaosTokens"
+        :target="{ tag: 'AssetTarget', contents: id }"
+      />
       </div>
 
       </div>
@@ -222,8 +242,16 @@ const hasPool = computed(() => {
   display: flex;
   flex-direction: column;
   justify-content: space-around;
-  flex: 1;
   gap: 5px;
+}
+
+/* Right of the card: whichever button panel is showing, then sealed tokens */
+.asset--side {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 10px;
 }
 
 .asset--outer {

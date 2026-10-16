@@ -133,15 +133,37 @@ export const chaosBagStepDecoder: JsonDecoder.Decoder<ChaosBagStep> = JsonDecode
 ], 'ChaosBagStep')
 
 
+/** Debug sandbox: a token out of the bag but not revealed to the game. `value`
+ * null with neither auto flag means the engine could not work it out. */
+export type DebugRevealedChaosToken = {
+  token: ChaosToken
+  value: number | null
+  autoFail: boolean
+  autoSuccess: boolean
+}
+
+export const debugRevealedChaosTokenDecoder = JsonDecoder.object<DebugRevealedChaosToken>({
+  token: chaosTokenDecoder,
+  value: withDefault<number | null>(null, JsonDecoder.number()),
+  autoFail: withDefault(false, JsonDecoder.boolean()),
+  autoSuccess: withDefault(false, JsonDecoder.boolean()),
+}, 'DebugRevealedChaosToken')
+
 export type ChaosBag = {
   chaosTokens: ChaosToken[]
   choice: ChaosBagStepState | null
   /** Debug: the faces the next draws are pinned to, in order. */
   forceDraw: TokenFace[]
+  /** Debug: tokens out of the bag for the sandbox reveal. */
+  debugRevealedChaosTokens: DebugRevealedChaosToken[]
 }
 
 export const chaosBagDecoder = JsonDecoder.object<ChaosBag>({
   chaosTokens: JsonDecoder.array<ChaosToken>(chaosTokenDecoder, 'ChaosToken[]'),
   choice: JsonDecoder.nullable(chaosBagStepStateDecoder),
   forceDraw: withDefault<TokenFace[]>([], JsonDecoder.array(JsonDecoder.string(), 'TokenFace[]')),
+  debugRevealedChaosTokens: withDefault<DebugRevealedChaosToken[]>(
+    [],
+    JsonDecoder.array(debugRevealedChaosTokenDecoder, 'DebugRevealedChaosToken[]'),
+  ),
 }, 'ChaosBag');

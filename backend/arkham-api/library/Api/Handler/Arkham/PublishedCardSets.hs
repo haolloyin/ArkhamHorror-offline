@@ -11,10 +11,16 @@ An admin publishing skips the queue: they are the person review would have waite
 for, so the version is recorded as approved by them and listed at once. It is the
 same path and the same records -- only the decision is already made.
 
-Subscribing runs the same import a file import does, and records which version it
-landed on, so the copy can be brought up to date later. Editing that copy deletes
-the record -- what is in it is then not what was published -- which is the whole
-of the "subscribed or not" rule.
+Taking a set is two different things, and the page offers both. Subscribing
+records which version you landed on and leaves the copy locked, so it stays what
+was published and taking it again brings it up to date. Importing hands you an
+ordinary set of your own: editable, frozen where it was, hearing nothing more
+from the listing. A card code is unique per account, so nobody holds both -- one
+always replaces the other -- and "Add to my editor" turns the first into the
+second without fetching anything.
+
+Either way the same import a file import does runs, and the same row records
+which set of yours is your copy of the listing; only the flag on it differs.
 -}
 module Api.Handler.Arkham.PublishedCardSets (
   getApiV1ArkhamPublishedCardSetsR,
@@ -22,6 +28,7 @@ module Api.Handler.Arkham.PublishedCardSets (
   putApiV1ArkhamPublishedCardSetR,
   deleteApiV1ArkhamPublishedCardSetR,
   postApiV1ArkhamPublishedCardSetSubscribeR,
+  postApiV1ArkhamPublishedCardSetImportR,
   postApiV1ArkhamCustomCardSetPublishR,
   postApiV1ArkhamCustomCardSetSyncR,
   postApiV1ArkhamPublishedCardSetLikeR,
@@ -30,13 +37,25 @@ module Api.Handler.Arkham.PublishedCardSets (
   versionCards,
 ) where
 
-import Api.Handler.Arkham.CustomCards (normalizeUrl, ownedCardSet, persistCard, prepareCardForSet)
+import Api.Handler.Arkham.CustomCards (
+  Source (..),
+  followOnly,
+  freeName,
+  myCopyOfListing,
+  myCopyOfSet,
+  normalizeUrl,
+  ownedCardSet,
+  persistCard,
+  prepareCardForSet,
+  printedOrder,
+  requireUnlocked,
+  setDeclarationsFromCards,
+ )
 import Arkham.Card.CustomCard (CustomCard (..))
-import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (parseEither)
-import Data.Char (isDigit)
 import Data.Text qualified as T
 import Data.Time.Clock
+import Data.Traversable (for)
 import Database.Persist qualified as DB
 import Database.Persist.Sql (SqlPersistT)
 import Import hiding ((==.))
@@ -58,6 +77,12 @@ data PublishedCardSetResponse = PublishedCardSetResponse
   it is discussed in -- for the one thing a listing cannot say for itself.
   The listing's own, like the description, and rewritable the same way.
   -}
+  , publishedCardSetResponseIcon :: Maybe Text
+  {- ^ The expansion symbol, for drawing the listing. A copy taken when the set
+  was published, so a card is never loaded to put a symbol beside a name.
+  -}
+  , publishedCardSetResponseInvestigatorExpansion :: Bool
+  -- ^ Whether this is an investigator expansion rather than a handful of cards.
   , publishedCardSetResponseAuthor :: Text
   , publishedCardSetResponseMine :: Bool
   , publishedCardSetResponseOfficial :: Bool
@@ -196,6 +221,13 @@ newtype SubscribePost = SubscribePost {subscribeVersion :: Maybe Int}
 instance FromJSON SubscribePost where
   parseJSON = genericParseJSON $ aesonOptions $ Just "subscribe"
 
+{- | Which of the two ways a set is being taken.
+
+'Following' leaves the copy locked and on a recorded version, so it stays what
+was published. 'Owned' hands over an ordinary set of the caller's.
+-}
+data Taking = Following | Owned
+
 -- | The cards of a version, or a 500 that says which version could not be read.
 versionCards :: ArkhamPublishedCardSetVersion -> Handler [CustomCard]
 versionCards row =
@@ -231,24 +263,6 @@ deleteApiV1ArkhamPublishedCardSetLikeR publishedId = do
       , ArkhamPublishedCardSetLikeUserId P.==. userId
       ]
   listingFor userId (Entity publishedId row)
-
-{- | A card's place in its set: the number printed on it, read out of its own def.
-
-Sorted on the leading digits rather than the text, so 10 follows 9. A card with no
-number sorts last, since it has said nothing about where it goes.
--}
-printedOrder :: Value -> (Int, Text)
-printedOrder value = (maybe maxBound id (readMaybe (T.unpack digits)), number)
- where
-  number = case value of
-    Object o -> case KeyMap.lookup "meta" o of
-      Just (Object m) -> case KeyMap.lookup "number" m of
-        Just (String t) -> t
-        Just (Number n) -> tshow (round n :: Int)
-        _ -> ""
-      _ -> ""
-    _ -> ""
-  digits = T.takeWhile isDigit number
 
 {- | How many cards a listing carries. Enough to fill a row at any width the
 listing is shown at; the extra are clipped by the layout rather than sent and
@@ -327,8 +341,13 @@ listingFor userId (Entity publishedId row) = do
   people have taken, the first row found is somebody else's, and stopping there
   would report you as not subscribed and take your update away. -}
   subscriptions <-
-    runDB $ P.selectList [ArkhamCardSetSubscriptionPublishedCardSetId P.==. publishedId] []
-  subscribed <- fmap (listToMaybe . catMaybes) $ forM subscriptions \(Entity _ sub) -> do
+    runDB
+      $ P.selectList
+        [ ArkhamCardSetSubscriptionPublishedCardSetId P.==. publishedId
+        , ArkhamCardSetSubscriptionSubscribed P.==. True
+        ]
+        []
+  subscribed <- fmap (listToMaybe . catMaybes) . for subscriptions $ \(Entity _ sub) -> do
     owner <- runDB $ DB.get (arkhamCardSetSubscriptionCustomCardSetId sub)
     pure $ case owner of
       Just s | arkhamCustomCardSetUserId s == userId -> Just (arkhamCardSetSubscriptionVersion sub)
@@ -346,6 +365,9 @@ listingFor userId (Entity publishedId row) = do
       , publishedCardSetResponseName = arkhamPublishedCardSetName row
       , publishedCardSetResponseDescription = arkhamPublishedCardSetDescription row
       , publishedCardSetResponseUrl = arkhamPublishedCardSetUrl row
+      , publishedCardSetResponseIcon = arkhamPublishedCardSetIcon row
+      , publishedCardSetResponseInvestigatorExpansion =
+          arkhamPublishedCardSetInvestigatorExpansion row
       , publishedCardSetResponseAuthor = maybe "someone" userUsername author
       , publishedCardSetResponseMine = isAuthor
       , publishedCardSetResponseOfficial = maybe False userAdmin author
@@ -564,6 +586,9 @@ postApiV1ArkhamCustomCardSetPublishR
 postApiV1ArkhamCustomCardSetPublishR setId = do
   Entity userId user <- getRequestUser
   setRow <- ownedCardSet userId setId
+  -- Somebody else's set, taken from a listing or a link. Publishing it would be
+  -- putting their work up as yours.
+  requireUnlocked setId
   PublishPost {publishNote, publishNotify} <- requireCheckJsonBody
   now <- liftIO getCurrentTime
 
@@ -578,6 +603,13 @@ postApiV1ArkhamCustomCardSetPublishR setId = do
   let description = arkhamCustomCardSetDescription setRow
       url = arkhamCustomCardSetUrl setRow
       name = arkhamCustomCardSetName setRow
+      -- The icon and whether this is an expansion travel with them, so a
+      -- listing can be drawn without loading the set behind it. What the set
+      -- \*declares* -- its tokens and keywords -- is not copied here: it is
+      -- stamped on every card in the snapshot, which is where an import of a
+      -- version reads it from.
+      icon = arkhamCustomCardSetIcon setRow
+      expansion = arkhamCustomCardSetInvestigatorExpansion setRow
       -- Printed order, which is the order the author put them in. It is fixed
       -- here rather than by whoever reads the version, because the listing only
       -- carries the first few and they have to be the first few.
@@ -611,6 +643,8 @@ postApiV1ArkhamCustomCardSetPublishR setId = do
         $ [ ArkhamPublishedCardSetName P.=. name
           , ArkhamPublishedCardSetDescription P.=. description
           , ArkhamPublishedCardSetUrl P.=. url
+          , ArkhamPublishedCardSetIcon P.=. icon
+          , ArkhamPublishedCardSetInvestigatorExpansion P.=. expansion
           , ArkhamPublishedCardSetLatestVersion P.=. version
           , ArkhamPublishedCardSetUpdatedAt P.=. now
           ]
@@ -625,7 +659,18 @@ postApiV1ArkhamCustomCardSetPublishR setId = do
             ForReview -> Nothing
       found <-
         P.insert
-          $ ArkhamPublishedCardSet userId (Just setId) name description url 1 approved now now
+          $ ArkhamPublishedCardSet
+            userId
+            (Just setId)
+            name
+            description
+            url
+            icon
+            expansion
+            1
+            approved
+            now
+            now
       versionId <-
         P.insert $ ArkhamPublishedCardSetVersion found 1 publishNote name snapshot now
       submit publication found versionId userId 1 notify now
@@ -707,6 +752,10 @@ withdrawPending publishedId = do
 
 {- | Take a published set into your own collection, following it from then on.
 
+The copy is locked: it is what was published, and taking it again is how it
+catches up. 'postApiV1ArkhamPublishedCardSetImportR' is the other way to take it,
+for somebody who wants the cards to build on rather than to follow.
+
 Only an approved version: 'requireVersion' answers notFound for anything else, so
 a set waiting for review cannot be imported by url even by its own author.
 
@@ -721,7 +770,24 @@ postApiV1ArkhamPublishedCardSetSubscribeR publishedId = do
   published <- runDB $ get404 publishedId
   SubscribePost {subscribeVersion} <- requireCheckJsonBody
   version <- requireVersion publishedId subscribeVersion
-  void $ importVersion userId publishedId version
+  void $ importVersion Following userId publishedId version
+  listingFor userId (Entity publishedId published)
+
+{- | Take a published set as your own: the cards, and nothing following them.
+
+The same write as subscribing, and the same record of which set of yours is your
+copy of this listing -- only the flag saying you follow it is off, so the copy is
+yours to edit and hears nothing more from here. Taking it the other way replaces
+it, since a card code is unique per account and nobody can hold both.
+-}
+postApiV1ArkhamPublishedCardSetImportR
+  :: ArkhamPublishedCardSetId -> Handler PublishedCardSetResponse
+postApiV1ArkhamPublishedCardSetImportR publishedId = do
+  userId <- getRequestUserId
+  published <- runDB $ get404 publishedId
+  SubscribePost {subscribeVersion} <- requireCheckJsonBody
+  version <- requireVersion publishedId subscribeVersion
+  void $ importVersion Owned userId publishedId version
   listingFor userId (Entity publishedId published)
 
 {- | Bring a subscribed set up to the newest approved version.
@@ -736,26 +802,38 @@ postApiV1ArkhamCustomCardSetSyncR
 postApiV1ArkhamCustomCardSetSyncR setId = do
   userId <- getRequestUserId
   void $ ownedCardSet userId setId
-  subscription <- runDB $ P.getBy (UniqueCardSetSubscription setId)
+  subscription <-
+    runDB
+      $ P.selectFirst
+        [ ArkhamCardSetSubscriptionCustomCardSetId P.==. setId
+        , ArkhamCardSetSubscriptionSubscribed P.==. True
+        ]
+        []
   case subscription of
     Nothing -> invalidArgs ["That set is not following a published one any more"]
     Just (Entity _ sub) -> do
       let publishedId = arkhamCardSetSubscriptionPublishedCardSetId sub
       published <- runDB $ get404 publishedId
       version <- requireVersion publishedId Nothing
-      void $ importVersion userId publishedId version
+      void $ importVersion Following userId publishedId version
       listingFor userId (Entity publishedId published)
 
-{- | Write a published version into the caller's collection and record that it is
-following it. The set is matched by the subscription that already points at it,
-so updating replaces the copy in place rather than making a second one.
+{- | Write a published version into the caller's collection and record which set
+of theirs is their copy of this listing. The set is matched by the row that
+already points at it, so taking it again replaces the copy in place rather than
+making a second one -- which holds whichever way either take was done.
+
+'Following' leaves the copy locked and on this version. 'Owned' writes the same
+row with the flag off: the caller has a set of their own, and the row is there
+only so the next take finds it.
 -}
 importVersion
-  :: UserId
+  :: Taking
+  -> UserId
   -> ArkhamPublishedCardSetId
   -> ArkhamPublishedCardSetVersion
   -> Handler ArkhamCustomCardSetId
-importVersion userId publishedId version = do
+importVersion taking userId publishedId version = do
   cards <- versionCards version
   now <- liftIO getCurrentTime
   let name = arkhamPublishedCardSetVersionName version
@@ -765,14 +843,39 @@ importVersion userId publishedId version = do
   listing <- runDB $ DB.get publishedId
   let description = arkhamPublishedCardSetDescription =<< listing
       url = arkhamPublishedCardSetUrl =<< listing
+      icon = arkhamPublishedCardSetIcon =<< listing
+      expansion = maybe False arkhamPublishedCardSetInvestigatorExpansion listing
+      {- What the set declared, read back off the cards the version was
+      published with. The version carries no room of its own for it, and does
+      not need one: every card in it was stamped from the author's row, so the
+      cards are the record. -}
+      (tokens, keywords) = setDeclarationsFromCards cards
 
-  existing <- mineFollowing userId publishedId
-  -- A first subscription has to find a name nobody else of yours is using.
-  name' <- case existing of
-    Just _ -> pure name
-    Nothing -> freeName userId name
+  {- Not guarded by 'requireUnlocked': the copy this replaces is a copy of this
+  very set, so it is either unlocked or locked by this set -- and refusing the
+  second would be refusing to let a followed set catch up, which is the whole
+  point of following one. -}
+  existing <- myCopyOf userId publishedId
+  {- A name none of your other sets is using. The copy being replaced is excepted
+  from that, since the name it already holds is its own -- but a third set of
+  yours holding it is still a clash, and renaming into one is a unique index
+  violation rather than an update. -}
+  name' <- freeName userId existing name
 
-  prepared <- traverse (prepareCardForSet userId name') cards
+  let incoming =
+        ArkhamCustomCardSet
+          userId
+          name'
+          description
+          url
+          Nothing
+          expansion
+          icon
+          tokens
+          keywords
+          now
+          now
+  prepared <- traverse (prepareCardForSet userId incoming) cards
 
   runDB do
     setId <- case existing of
@@ -782,47 +885,46 @@ importVersion userId publishedId version = do
           [ ArkhamCustomCardSetName P.=. name'
           , ArkhamCustomCardSetDescription P.=. description
           , ArkhamCustomCardSetUrl P.=. url
+          , ArkhamCustomCardSetInvestigatorExpansion P.=. expansion
+          , ArkhamCustomCardSetIcon P.=. icon
+          , ArkhamCustomCardSetTokens P.=. tokens
+          , ArkhamCustomCardSetKeywords P.=. keywords
           , ArkhamCustomCardSetUpdatedAt P.=. now
           ]
         P.deleteWhere [ArkhamCustomCardCustomCardSetId P.==. found]
         pure found
-      Nothing -> P.insert $ ArkhamCustomCardSet userId name' description url Nothing now now
+      Nothing -> P.insert incoming
     for_ prepared $ persistCard userId setId now
     -- Written after the cards, so a failed import leaves nothing claiming to be
     -- up to date.
+    followOnly FromListing setId
     P.deleteWhere [ArkhamCardSetSubscriptionCustomCardSetId P.==. setId]
     P.insert_
       $ ArkhamCardSetSubscription
         setId
         publishedId
+        (case taking of Following -> True; Owned -> False)
         (arkhamPublishedCardSetVersionVersion version)
         now
         now
     pure setId
 
--- | The caller's own set following this listing, if they have one.
-mineFollowing :: UserId -> ArkhamPublishedCardSetId -> Handler (Maybe ArkhamCustomCardSetId)
-mineFollowing userId publishedId = do
-  subs <-
-    runDB $ P.selectList [ArkhamCardSetSubscriptionPublishedCardSetId P.==. publishedId] []
-  ours <- forM subs \(Entity _ sub) -> do
-    let setId = arkhamCardSetSubscriptionCustomCardSetId sub
-    owner <- runDB $ DB.get setId
-    pure $ case owner of
-      Just s | arkhamCustomCardSetUserId s == userId -> Just setId
-      _ -> Nothing
-  pure $ listToMaybe (catMaybes ours)
+{- | The caller's own copy of this listing, if they have one.
 
-{- | A name no other set of yours holds. Subscribing to something called what one
-of your own sets is called should not fail, and should not silently replace it.
+Whether or not it still follows it: the row is what says "this set of mine came
+from that listing", and a copy taken into the editor is still the set that a
+later subscribe has to replace.
+
+A copy taken from the author's /link/ before they published counts too, which is
+what 'myCopyOfSet' is asked for first. Without that, subscribing to a set you
+already hold by link writes a second set and moves the cards into it, leaving the
+first one empty -- a card code is unique per account, so the two cannot coexist.
+
+The subscription scan below is the fallback for a listing whose author has since
+deleted their own set, which leaves nothing for the first question to ask about.
 -}
-freeName :: UserId -> Text -> Handler Text
-freeName userId name = go name (2 :: Int)
- where
-  go candidate attempt = do
-    taken <- runDB $ P.getBy (UniqueUserCustomCardSetName userId candidate)
-    case taken of
-      Nothing -> pure candidate
-      Just _
-        | attempt > 50 -> invalidArgs ["You already have a set called \"" <> name <> "\""]
-        | otherwise -> go (name <> " (" <> tshow attempt <> ")") (attempt + 1)
+myCopyOf :: UserId -> ArkhamPublishedCardSetId -> Handler (Maybe ArkhamCustomCardSetId)
+myCopyOf userId publishedId = do
+  source <- runDB $ fmap (arkhamPublishedCardSetCustomCardSetId =<<) (DB.get publishedId)
+  byAuthorSet <- maybe (pure Nothing) (myCopyOfSet userId) source
+  maybe (myCopyOfListing userId publishedId) (pure . Just) byAuthorSet

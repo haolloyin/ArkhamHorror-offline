@@ -371,6 +371,13 @@ handleLoseActions a@InvestigatorAttrs {..} iid source n msg = do
 handleDoLoseActions a@InvestigatorAttrs {..} iid n = do
   -- TODO: after losing all remaining actions we can lose additional actions
   additionalActions <- getAdditionalActions a
+  doLoseActionsFrom a iid n additionalActions
+
+handleDoLoseStandardActions a@InvestigatorAttrs {..} iid n = do
+  additionalActions <- filter isStandardAdditionalAction <$> getAdditionalActions a
+  doLoseActionsFrom a iid n additionalActions
+
+doLoseActionsFrom a iid n additionalActions = do
   let
     remaining = max 0 (n - a ^. remainingActionsL)
     additional = min remaining (length additionalActions)
@@ -403,7 +410,7 @@ handleSetActionsV2 a@InvestigatorAttrs {..} iid n = do
 
 handleGainActions a@InvestigatorAttrs {..} iid n = do
   -- TODO: If we add a window here we need to reconsider Ace of Rods, likely it would need a Do variant
-  pure $ a & remainingActionsL +~ n
+  pure $ a & remainingActionsL %~ max 0 . (+ n)
 
 handleLoseAdditionalAction a@InvestigatorAttrs {..} iid n = do
   pure $ a & usedAdditionalActionsL %~ (n :)

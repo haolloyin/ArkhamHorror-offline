@@ -66,7 +66,7 @@ import Arkham.Token
 import Arkham.Treachery.Types (Field (..))
 import Arkham.Window
 import Arkham.Window qualified as Window
-import Control.Lens (over, transform)
+import Control.Lens (over, toListOf, transform)
 import Control.Monad.Trans.Class
 import Data.Data (cast, gmapQ)
 import Data.Data.Lens (biplate)
@@ -133,6 +133,16 @@ pendingWindowEffect window = case (windowTiming window, windowType window) of
     Damaged target' _ -> target == target'
     CheckDefeated _ target' -> target == target'
     _ -> False
+
+{- | The investigator a window is about, for a per-investigator limit.
+
+Read off the shape rather than enumerated: a window that names a seat carries
+it as its first 'InvestigatorId', and there are far too many window types for a
+hand-written list to stay true as new ones arrive. A window that names none has
+no per-investigator bucket, which is the honest answer for it.
+-}
+windowInvestigator :: WindowType -> Maybe InvestigatorId
+windowInvestigator = listToMaybe . toListOf biplate
 
 windows :: [WindowType] -> [Message]
 windows windows' = [CheckWindows $ map (mkWindow timing) windows' | timing <- [#when, #at, #after]]
@@ -991,6 +1001,11 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
       guardTiming timing $ \case
         Window.WouldPerformRevelationSkillTest who _ -> matchWho iid who whoMatcher
         _ -> noMatch
+    Matcher.GainsSurge timing whoMatcher sourceMatcher ->
+      guardTiming timing $ \case
+        Window.GainedSurge who surgeSource ->
+          andM [matchWho iid who whoMatcher, sourceMatches surgeSource sourceMatcher]
+        _ -> noMatch
     Matcher.WouldDrawEncounterCard timing whoMatcher phaseMatcher ->
       guardTiming timing $ \case
         Window.WouldDrawEncounterCard who _ p ->
@@ -1396,6 +1411,19 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
     Matcher.InvestigatorResigned timing whoMatcher -> guardTiming timing $ \case
       Window.InvestigatorResigned who ->
         matchWho iid who (Matcher.IncludeEliminated $ Matcher.replaceYouMatcher iid whoMatcher)
+      _ -> noMatch
+    {- Trauma on defeat is suffered on the way out, so 'IncludeEliminated' here as
+    well: by the time the window resolves the investigator may already be
+    eliminated. -}
+    Matcher.SuffersPhysicalTrauma timing whoMatcher -> guardTiming timing $ \case
+      Window.SufferedTrauma who physical _
+        | physical > 0 ->
+            matchWho iid who (Matcher.IncludeEliminated $ Matcher.replaceYouMatcher iid whoMatcher)
+      _ -> noMatch
+    Matcher.SuffersMentalTrauma timing whoMatcher -> guardTiming timing $ \case
+      Window.SufferedTrauma who _ mental
+        | mental > 0 ->
+            matchWho iid who (Matcher.IncludeEliminated $ Matcher.replaceYouMatcher iid whoMatcher)
       _ -> noMatch
     Matcher.PutLocationIntoPlay timing whoMatcher locationMatcher ->
       guardTiming timing $ \case
@@ -1903,6 +1931,10 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
       Window.ResolvesTreachery who treacheryId ->
         andM [matchWho iid who whoMatcher, treacheryId <=~> IncludeOutOfPlayTreachery treacheryMatcher]
       _ -> noMatch
+    Matcher.ResolvesStory timing whoMatcher storyMatcher -> guardTiming timing $ \case
+      Window.ResolvesStory who storyId ->
+        andM [matchWho iid who whoMatcher, storyId <=~> storyMatcher]
+      _ -> noMatch
     Matcher.ResolvesChaosToken timing whoMatcher tokenMatcher -> guardTiming timing $ \case
       Window.ResolvesChaosToken who token ->
         andM [matchWho iid who whoMatcher, matchChaosToken who token tokenMatcher]
@@ -2223,13 +2255,14 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
             , gameValueMatches n valueMatcher
             ]
         _ -> noMatch
-    Matcher.WouldDiscoverClues timing whoMatcher whereMatcher valueMatcher ->
+    Matcher.WouldDiscoverClues timing whoMatcher whereMatcher valueMatcher sourceMatcher ->
       guardTiming timing $ \case
-        Window.WouldDiscoverClues who lid _ _ n ->
+        Window.WouldDiscoverClues who lid _ source' n ->
           andM
             [ matchWho iid who (Matcher.replaceThatLocation lid whoMatcher)
             , locationMatches iid source window' lid whereMatcher
             , gameValueMatches n valueMatcher
+            , sourceMatches source' sourceMatcher
             ]
         _ -> noMatch
     Matcher.GainsClues timing whoMatcher valueMatcher -> guardTiming timing $ \case

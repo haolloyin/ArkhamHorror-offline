@@ -25,6 +25,7 @@ what saving reports only as a shrug.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,7 @@ FIELD_TYPE_FOR_KIND = {
     "enemy": "Field Enemy",
     "investigator": "Field Investigator",
     "location": "Field Location",
+    "skill": "Field Skill",
 }
 
 # Bound before any step runs, whatever the card is.
@@ -112,6 +114,26 @@ ENTITY_FOR_CARD_TYPE = {
 }
 
 
+def _remembered(node: Any, into: set[str]) -> set[str]:
+    """Names the card writes into its own metaMap with a `SetGlobal`.
+
+    `bindings` binds every key it finds there, which is how a card reads back a
+    choice it made on an earlier turn. The names are not declared anywhere, so
+    the only place to learn them is the writes themselves.
+    """
+    if isinstance(node, list):
+        for item in node:
+            _remembered(item, into)
+    elif isinstance(node, dict):
+        if node.get("tag") == "SetGlobal" and isinstance(node.get("contents"), list):
+            key = node["contents"][1] if len(node["contents"]) > 1 else None
+            if isinstance(key, str) and key:
+                into.add(key)
+        for item in node.values():
+            _remembered(item, into)
+    return into
+
+
 def _card_bindings(card_def: dict) -> set[str]:
     """Every `$name` this card can use without binding it first."""
     card_type = card_def.get("cardType")
@@ -121,7 +143,7 @@ def _card_bindings(card_def: dict) -> set[str]:
     else:
         # An unknown card type should not turn every field read into a warning.
         fields = [name for names in ENTITY_BINDINGS.values() for name in names]
-    return ALWAYS_BOUND | set(fields)
+    return ALWAYS_BOUND | set(fields) | _remembered(card_def.get("meta"), set())
 
 
 class Problem(dict):
@@ -170,6 +192,12 @@ def check_value(value: Any, type_expression: str, path: str = "", depth: int = 0
     # `null` outside a Maybe is the failure that looks most like success: the
     # builder writes it for a field nobody filled in, and it kills the whole
     # value rather than the field.
+    #
+    # Except where the field is raw JSON, which has a null: `SetGlobal` stores
+    # a Value, and remembering "nothing yet" under a name is how a card says
+    # the choice has not been made.
+    if value is None and type_expression.strip() in ("Value", "Aeson.Value"):
+        return []
     if value is None:
         return [
             Problem(
@@ -237,6 +265,12 @@ def _check_sum(value: Any, sum_schema: dict, written_as: str, path: str, depth: 
                 )
             ]
         if value not in constructors:
+            # A set's own token is a Token too. It has no constructor, because
+            # the engine never heard of it: `Custom slug` reads back off the
+            # "custom:" prefix, and a keyword's behaviour writes it as the
+            # string the prefix makes.
+            if name == "Token" and value.startswith("custom:") and len(value) > len("custom:"):
+                return []
             near = [c for c in constructors if value.lower() in c.lower() or c.lower() in value.lower()]
             hint = f" Did you mean {', '.join(near[:5])}?" if near else ""
             return [Problem("error", path, f'"{value}" is not a constructor of {name}.{hint}')]
@@ -278,6 +312,13 @@ def _check_sum(value: Any, sum_schema: dict, written_as: str, path: str, depth: 
         ]
     tag = value.get("tag")
     if not isinstance(tag, str):
+        # A hand-written decoder need not use the tagged encoding its
+        # constructors imply: `Uses` is written `{"type", "amount"}`, chosen by
+        # which keys are there rather than by a tag. The decoder says which keys
+        # it reads, so an untagged object is checked against those instead of
+        # being reported as a missing tag.
+        if name in HAND_WRITTEN:
+            return _check_hand_written(value, name, path)
         return [Problem("error", path, f'{name} needs a "tag" naming one of its {len(constructors)} constructors')]
     con = constructors.get(tag)
     if con is None:
@@ -333,6 +374,107 @@ def _check_sum(value: Any, sum_schema: dict, written_as: str, path: str, depth: 
     problems = []
     for index, (item, field) in enumerate(zip(contents, fields)):
         problems += check_value(item, field["type"], f"{path}.contents[{index}]", depth + 1)
+    return problems
+
+
+#: What a keyword slot's `kind` says its value is. `text` is the card's own
+#: words and `value` is deliberately untyped -- a keyword may ask for anything.
+SLOT_TYPES = {
+    "window": "WindowMatcher",
+    "criterion": "Criterion",
+}
+
+
+def _check_keyword_effects(meta: dict, card_bindings: set, problems: list) -> None:
+    """A `_keywords` entry, checked against what its set declared.
+
+    These were the one part of a def nothing checked: a keyword's slots carry
+    windows, criteria and steps like anything else, but they live under names the
+    keyword invents, so there was no type to check them against. The set's
+    declarations are stamped onto every card as `setKeywords`, which is exactly
+    the missing half -- each slot says its `kind`, and that names the type.
+
+    Without this a keyword slot holding a matcher that does not exist validates
+    clean and the card silently does nothing. That is how Bullhorn carried an
+    `EnemyMatches` the engine has never had.
+    """
+    declared = {
+        k["name"]: k
+        for k in (meta.get("setKeywords") or [])
+        if isinstance(k, dict) and isinstance(k.get("name"), str)
+    }
+    for index, entry in enumerate(meta.get("_keywords") or []):
+        path = f"meta._keywords[{index}]"
+        if not isinstance(entry, dict):
+            problems.append(Problem("error", path, "a keyword entry is a JSON object"))
+            continue
+        name = entry.get("keyword")
+        keyword = declared.get(name)
+        if keyword is None:
+            # Not an error on its own: the declarations ride along on the card
+            # and a def checked outside its set has none to check against.
+            if declared:
+                problems.append(
+                    Problem("error", f"{path}.keyword",
+                            f"this set declares no keyword {name!r}",
+                            fix=f"it declares: {', '.join(sorted(declared)) or 'none'}")
+                )
+            continue
+
+        slots = {s["name"]: s for s in (keyword.get("slots") or []) if isinstance(s, dict)}
+        for slot_name, slot in slots.items():
+            if slot.get("required") and slot_name not in entry:
+                problems.append(
+                    Problem("error", f"{path}.{slot_name}",
+                            f"{name} requires {slot_name!r}, and gives the card nothing without it")
+                )
+        for key, value in entry.items():
+            if key in ("keyword", "token"):
+                continue
+            # The card's own half of the result, gated by the keyword.
+            if key == "modifiers":
+                for i, spec in enumerate(value or []):
+                    _check_modifier_spec(spec, f"{path}.modifiers[{i}]", card_bindings, problems)
+                continue
+            if key == "abilities":
+                for i, spec in enumerate(value or []):
+                    _check_ability_spec(spec, f"{path}.abilities[{i}]", card_bindings, problems)
+                continue
+            slot = slots.get(key)
+            if slot is None:
+                near = [k for k in sorted(slots) if key.lower() in k.lower()]
+                problems.append(
+                    Problem("error", f"{path}.{key}",
+                            f"{name} has no slot {key!r}, so nothing reads it",
+                            fix=f"its slots are: {', '.join(sorted(slots)) or 'none'}")
+                )
+                continue
+            kind = slot.get("kind")
+            if kind == "steps":
+                _walk_steps(value or [], f"{path}.{key}", card_bindings, problems)
+            elif kind in SLOT_TYPES:
+                problems += check_value(value, SLOT_TYPES[kind], f"{path}.{key}")
+
+
+def _check_hand_written(value: dict, name: str, path: str) -> list["Problem"]:
+    """An object read by a hand-written decoder, checked against its own keys.
+
+    Only the keys are checked, not their types: the decoder chooses among
+    several shapes by which keys are present (`Uses` takes a `limit` or not),
+    so there is no one constructor to read field types off.
+    """
+    decoder = HAND_WRITTEN[name]
+    known = set(decoder["required"]) | set(decoder["optional"])
+    problems = []
+    for key in value:
+        if key not in known:
+            near = [k for k in sorted(known) if key.lower() in k.lower()]
+            hint = f" Did you mean {', '.join(near[:3])}?" if near else ""
+            problems.append(Problem("error", f"{path}.{key}", f"{name} has no field {key!r}.{hint}"))
+    # Every shape the decoder accepts is an alternative, so a key it demands in
+    # one branch may be absent in another. Only a key no branch could do without
+    # -- one the decoder reads before any choice -- is worth insisting on, and
+    # the instance does not say which those are. So: nothing is reported missing.
     return problems
 
 
@@ -571,8 +713,30 @@ def _fields(step: dict, which: str) -> dict:
     return merged
 
 
-def _binds(step: dict, which: str) -> set[str]:
-    """What a step adds to scope for the steps after it."""
+#: Steps whose binding is in scope only for the steps written INSIDE them.
+#:
+#: `runForEach`, `runChooseFrom` and the rest build an inner env and hand it to
+#: their own steps; the env the outer run carries is returned unchanged. Only
+#: `let`, `query`, `random` and the steps that start a test add anything to what
+#: comes after. Crediting the others to the following steps let a card read a
+#: name that resolves to nothing there -- which is exactly the silent failure
+#: this checker exists to catch.
+INSIDE_ONLY = {
+    "forEach",
+    "chooseFrom",
+    "repeat",
+    "withSkillTest",
+    "withLocationOf",
+    "distribute",
+    "search",
+}
+
+
+def _binds(step: dict, which: str, *, inside: bool = True) -> set[str]:
+    """What a step binds. `inside` asks for its nested steps' scope; without it,
+    only what the steps AFTER this one can see."""
+    if not inside and which in INSIDE_ONLY:
+        return set()
     fields = _fields(step, which)
     payload = step.get(which)
     added: set[str] = set()
@@ -600,13 +764,24 @@ def _binds(step: dict, which: str) -> set[str]:
         index = fields.get("i")
         added.add(index if isinstance(index, str) and index else bound("i"))
     elif which == "withSkillTest":
-        added.add(bound("skillTest"))
+        # `bindingName o "skillTestId"` in `runWithSkillTest`, and the editor
+        # announces the same. Named "skillTest" here, the checker reported every
+        # use of the name the engine actually binds as unbound.
+        added.add(bound("skillTestId"))
     elif which == "withLocationOf":
         added.add(bound("location"))
     elif which == "distribute":
         added.add(bound("who"))
         amount = fields.get("amount")
         added.add(amount if isinstance(amount, str) and amount else "amount")
+    elif which == "search":
+        # The first card found and all of them, which only the `onFound` branch
+        # sees -- but scope here is one set per step, and naming them in the
+        # steps AFTER a search is harmless: the engine simply has nothing bound
+        # there, and an unbound name is already reported where it is used.
+        name = bound("card")
+        added.add(name)
+        added.add(f"{name}s")
 
     # Every step that starts a skill test binds the test it started.
     if which in ("fight", "investigate", "evade", "parley", "test"):
@@ -622,9 +797,19 @@ def _nested_blocks(step: dict, which: str) -> list[tuple[str, Any]]:
         if key in fields:
             blocks.append((key, fields[key]))
     for key in ("onSuccess", "onFailure", "onReveal"):
-        block = fields.get(key)
-        if isinstance(block, dict):
-            blocks.append((f"{key}.steps", block.get("steps") or []))
+        for index, block in enumerate(_outcome_blocks(fields.get(key))):
+            where = f"{key}.steps" if index == 0 and isinstance(fields.get(key), dict) else f"{key}[{index}].steps"
+            if isinstance(block, dict):
+                blocks.append((where, block.get("steps") or []))
+            else:
+                # Wrong shape, reported in `_check_step`. Still walked, so the
+                # author gets what is inside it in the same pass as the shape.
+                blocks.append((key, fields[key]))
+                break
+    # A search's two answers are plain step lists, not blocks with a `steps` key.
+    for key in ("onFound", "onNoneFound"):
+        if key in fields:
+            blocks.append((key, fields[key]))
     if which == "case" and isinstance(step.get(which), list):
         for index, branch in enumerate(step[which]):
             if isinstance(branch, dict):
@@ -700,7 +885,7 @@ def _walk_steps(steps: Any, path: str, bound: set[str], problems: list[Problem])
                     )
 
         _check_step(which, step, here, scope, problems)
-        scope |= _binds(step, which)
+        scope |= _binds(step, which, inside=False)
 
 
 def _check_step(which: str, step: dict, path: str, scope: set[str], problems: list[Problem]) -> None:
@@ -711,7 +896,15 @@ def _check_step(which: str, step: dict, path: str, scope: set[str], problems: li
 
     def typed(key: str, type_name: str) -> None:
         if key in fields:
-            problems.extend(check_value(fields[key], type_name, at(key)))
+            problems.extend(decoded(fields[key], type_name, at(key)))
+
+    def decoded(value: Any, type_name: str, where: str) -> list[Problem]:
+        """A payload the engine hands to `decodeWith`, which substitutes
+        `$bindings` and evaluates nothing: an expression left inside one stays
+        an object, the value fails to parse and the step does nothing at all.
+        """
+        expressions = _expressions_in(value, where)
+        return expressions or check_value(value, type_name, where)
 
     if which == "push":
         problems.extend(_check_message(payload, f"{path}.push"))
@@ -738,8 +931,11 @@ def _check_step(which: str, step: dict, path: str, scope: set[str], problems: li
 
     if which in ("fight", "investigate", "evade", "parley", "test"):
         typed("skill", "SkillType")
+    if which == "modify":
+        typed("target", "Target")
+        typed("window", "EffectWindow")
     for index, modifier in enumerate(fields.get("modifiers") or []):
-        problems.extend(check_value(modifier, "ModifierType", f"{at('modifiers')}[{index}]"))
+        problems.extend(decoded(modifier, "ModifierType", f"{at('modifiers')}[{index}]"))
 
     # `if`/`when` read a condition; `case` reads one per branch.
     for form in ("if", "when"):
@@ -751,8 +947,26 @@ def _check_step(which: str, step: dict, path: str, scope: set[str], problems: li
             if isinstance(branch, dict) and isinstance(branch.get("if"), dict):
                 _check_condition(branch["if"], f"{path}.case[{index}].if", problems)
 
+    for key in ("onSuccess", "onFailure", "onReveal"):
+        _check_outcome_block(fields.get(key), key, at(key), problems)
+
     if isinstance(fields.get("query"), dict):
         _check_query(fields["query"], at("query"), problems)
+
+    # `over` is an expression and `query` is a matcher. `runChooseFrom` hands
+    # `over` to `evalExpr`, which does not know a `{kind, matcher}` query spec
+    # and answers with the spec itself: one option labelled "Choose", binding an
+    # object no message can decode, so the card plays and silently does nothing.
+    over = fields.get("over")
+    if isinstance(over, dict) and "kind" in over and "matcher" in over:
+        problems.append(
+            Problem(
+                "error",
+                at("over"),
+                "a query spec in `over`: `over` is an expression, so this binds the spec "
+                "itself and the step silently does nothing -- write it as `query`",
+            )
+        )
 
     inner = set(scope) | _binds(step, which)
     for key, block in _nested_blocks(step, which):
@@ -770,16 +984,175 @@ def _check_step(which: str, step: dict, path: str, scope: set[str], problems: li
             option_scope.add("chosen")
         if isinstance(option.get("query"), dict):
             _check_query(option["query"], f"{option_path}.query", problems)
+        # An option's own criterion, which decides whether it is offered at all.
+        # Untyped it was the one Criterion nothing checked, so a constructor
+        # written without the fields it needs simply hid the option.
+        if "criteria" in option:
+            # The wrapped form the builder writes, or a bare criterion, which
+            # the engine also reads. Either way it is a Criterion underneath.
+            held = option["criteria"]
+            if isinstance(held, dict) and "criteria" in held:
+                held = held["criteria"]
+                where = f"{option_path}.criteria.criteria"
+            else:
+                where = f"{option_path}.criteria"
+            problems.extend(check_value(held, "Criterion", where))
         _walk_steps(option.get("steps") or [], f"{option_path}.steps", option_scope, problems)
 
     # Expressions, for their $bindings and their operators. The nested step lists
     # are walked above and must not be read as expressions.
-    handled = {"then", "else", "steps", "options", "onSuccess", "onFailure", "onReveal", "query"}
+    handled = {
+        "then", "else", "steps", "options", "onSuccess", "onFailure", "onReveal", "query",
+        # A search's two answers are step lists, walked above with the bindings
+        # the search makes. Read as expressions they would be walked again with
+        # the OUTER scope, and every name the search bound would be reported
+        # unbound -- the checker telling an author their card is broken when the
+        # steps it is looking at are not the ones that run.
+        "onFound", "onNoneFound",
+    }
     for key, value in fields.items():
         if key not in handled:
             _walk_expression(value, at(key), scope, problems)
     if which not in ("push", "request") and not isinstance(payload, dict) and payload is not None:
         _walk_expression(payload, f"{path}.{which}", scope, problems)
+
+
+def _mentions(value: Any, tag_name: str) -> bool:
+    """Is that constructor named anywhere inside this value?"""
+    if isinstance(value, dict):
+        return value.get("tag") == tag_name or any(_mentions(v, tag_name) for v in value.values())
+    if isinstance(value, list):
+        return any(_mentions(v, tag_name) for v in value)
+    return value == tag_name
+
+
+def _outcome_blocks(value: Any) -> list[Any]:
+    """The riders written under one outcome key.
+
+    A card may say it twice -- "if you succeed, evade; if you succeed by 2 or
+    more, discover a clue" -- so a list is a list of riders. A lone block is the
+    same thing said once.
+    """
+    if value is None:
+        return []
+    return list(value) if isinstance(value, list) else [value]
+
+
+def _check_outcome_block(value: Any, key: str, path: str, problems: list[Problem]) -> None:
+    """"If you succeed, ..." as the step that starts the test writes it.
+
+    Two ways to write one that run as nothing at all:
+
+    A bare step list where a rider belongs. Each rider is read for its `steps`
+    key, so a step has none and the branch is dropped -- and the editor reads
+    `.steps` too, which means the builder would show the rider empty and write
+    that emptiness back.
+
+    A result criterion inside one. The steps are worked out when the test BEGINS
+    and held as messages, so a `SkillTestResultIs` there is asked of a test that
+    has not run: it answers `Unrun` and everything under it is skipped. `by` is
+    where the margin belongs.
+    """
+    for index, block in enumerate(_outcome_blocks(value)):
+        at = path if isinstance(value, dict) else f"{path}[{index}]"
+        if not isinstance(block, dict) or not ({"steps", "by"} & set(block)):
+            problems.append(
+                Problem(
+                    "error",
+                    at,
+                    f'"{key}" holds riders, not steps, so none of this ever runs',
+                    fix='write {"steps": [...]}, with "by" for "if you succeed by 2 or more"'
+                    " -- a list of those says it more than once",
+                )
+            )
+            return
+        if _mentions(block.get("steps"), "SkillTestResultIs"):
+            problems.append(
+                Problem(
+                    "error",
+                    f"{at}.steps",
+                    f'a result criterion inside "{key}" is asked before the test runs, '
+                    "so it answers Unrun and these steps are skipped",
+                    fix=f'say the margin as "by" on this rider instead',
+                )
+            )
+
+
+#: Keys that make an object an expression rather than a value. A pushed message
+#: is SUBSTITUTED, not evaluated -- `$name` is replaced, nothing is computed --
+#: so one of these left inside a push stays an object, the message fails to
+#: decode, and the whole push is dropped without a word.
+EXPRESSION_KEYS = {
+    "get", "map", "query", "field", "filter", "count", "sum", "concat", "take",
+    "skillTest", "traits", "min", "max",
+}
+
+
+def _expressions_in(value: Any, path: str) -> list[Problem]:
+    found: list[Problem] = []
+
+    def walk(v: Any, at: str) -> None:
+        if isinstance(v, dict):
+            used = sorted(set(v) & EXPRESSION_KEYS)
+            if used:
+                found.append(
+                    Problem(
+                        "error",
+                        at,
+                        f'"{used[0]}" is an expression, and a pushed message is '
+                        "substituted rather than evaluated, so this stays an object "
+                        "and the whole message is dropped",
+                        fix='bind it first with {"let": "name", "be": <the expression>} '
+                        'and push "$name"',
+                    )
+                )
+                return
+            for k, x in v.items():
+                walk(x, f"{at}.{k}")
+        elif isinstance(v, list):
+            for i, x in enumerate(v):
+                walk(x, f"{at}[{i}]")
+
+    walk(value, path)
+    return found
+
+
+def _check_deal_damage(value: Any, path: str) -> list[Problem]:
+    """`DealDamage` is enemies only.
+
+    The only handler for it is `EnemyTarget`, so one aimed at an investigator or
+    an asset reaches nothing and the damage simply never happens. Each other
+    entity has its own message, and an investigator has two: direct damage,
+    which goes where the card says, and an assignment, which the player places.
+    """
+    found: list[Problem] = []
+
+    def walk(v: Any, at: str) -> None:
+        if isinstance(v, dict):
+            if v.get("tag") == "DealDamage_":
+                target = (v.get("contents") or [None])[0]
+                tag = target.get("tag") if isinstance(target, dict) else None
+                if tag and tag != "EnemyTarget":
+                    found.append(
+                        Problem(
+                            "error",
+                            at,
+                            f"DealDamage is handled for enemies only, so a {tag} "
+                            "takes none of it",
+                            fix="an investigator takes `InvestigatorDirectDamage_` (where the "
+                            "card says) or `InvestigatorAssignDamage_` (where the player says); "
+                            "an asset takes `DealAssetDamageWithCheck`",
+                        )
+                    )
+                    return
+            for k, x in v.items():
+                walk(x, f"{at}.{k}")
+        elif isinstance(v, list):
+            for i, x in enumerate(v):
+                walk(x, f"{at}[{i}]")
+
+    walk(value, path)
+    return found
 
 
 def _check_message(value: Any, path: str) -> list[Problem]:
@@ -791,6 +1164,12 @@ def _check_message(value: Any, path: str) -> list[Problem]:
     and needs the wrapper. Saying which wrapper turns "no such constructor" into
     something to act on.
     """
+    expressions = _expressions_in(value, path)
+    if expressions:
+        return expressions
+    problems = _check_deal_damage(value, path)
+    if problems:
+        return problems
     problems = check_value(value, "Message", path)
     if not problems or not isinstance(value, dict):
         return problems
@@ -831,6 +1210,151 @@ def _check_condition(condition: dict, path: str, problems: list[Problem]) -> Non
 # * The whole card
 
 
+#: Modifiers that change a card's printed icons. `iconsForCard` reads them off
+#: `CardIdTarget` and asks nothing else, so one hung on an entity is never seen.
+ICON_MODIFIERS = {
+    "AddSkillIcons",
+    "RemoveSkillIcons",
+    "DoubleSkillIcons",
+    "DoubleSkillIconsOf",
+    "ReplaceAllSkillIconsWithWild",
+}
+
+
+def _check_icon_modifier(modifier: Any, kind: Any, path: str, problems: list[Problem]) -> None:
+    """Icons belong to the card, not to the entity that card became.
+
+    Every hand-written skill in the engine hangs them on `a.cardId` for this
+    reason. A modifier spec of kind "skill" (or "asset", or "event") reaches
+    the entity's own target, where nothing ever reads an icon -- so the card
+    keeps exactly the icons it was printed with and nothing says otherwise.
+    """
+    name = modifier.get("tag") if isinstance(modifier, dict) else modifier
+    if name in ICON_MODIFIERS and kind != "card":
+        problems.append(
+            Problem(
+                "error",
+                path,
+                f'{name} on a "{kind}" is never read; icons are read off the card',
+                fix='use kind "card" with a matcher of {"tag": "BasicCardMatch", '
+                '"contents": {"tag": "CardWithId", "contents": "$cardId"}}',
+            )
+        )
+
+
+def _check_modifier_spec(spec: Any, path: str, card_bindings: set, problems: list) -> None:
+    """One `_modifiers` entry: who gets the modifiers, and which they are.
+
+    Lifted out alongside '_check_ability_spec', and for the same reason: a
+    keyword's behaviour hands the card modifiers in exactly this shape.
+    """
+    if not isinstance(spec, dict):
+        problems.append(Problem("error", path, "a modifier spec is an object"))
+        return
+    kind = spec.get("kind")
+    if kind not in MATCHER_FOR_KIND:
+        problems.append(
+            Problem("error", f"{path}.kind", f'"{kind}" is not a modifier kind',
+                    fix=f"one of: {', '.join(VOCAB['modifierKinds'])}")
+        )
+    elif "matcher" in spec:
+        problems += check_value(spec["matcher"], MATCHER_FOR_KIND[kind], f"{path}.matcher")
+    lets = {
+        entry["name"]
+        for entry in spec.get("let") or []
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+    }
+    scope = set(card_bindings) | lets | {spec.get("eachBind") or "each"}
+    for i, modifier in enumerate(spec.get("modifiers") or []):
+        problems += check_value(modifier, "ModifierType", f"{path}.modifiers[{i}]")
+        _check_icon_modifier(modifier, kind, f"{path}.modifiers[{i}]", problems)
+    if "if" in spec and isinstance(spec["if"], dict):
+        condition = spec["if"]
+        if "criteria" in condition:
+            problems += check_value(condition["criteria"], "Criterion", f"{path}.if.criteria")
+        elif "kind" in condition:
+            _check_query(condition, f"{path}.if", problems)
+    for key, value in spec.items():
+        if key not in ("modifiers", "matcher", "if"):
+            _walk_expression(value, f"{path}.{key}", scope, problems)
+
+
+def _check_ability_spec(spec: Any, path: str, card_bindings: set, problems: list) -> None:
+    """One `_abilities` entry.
+
+    Lifted out because a keyword's behaviour may give the card abilities of its
+    own, gated by the keyword -- the same shape, written somewhere else, and
+    worth the same checking.
+    """
+    if not isinstance(spec, dict):
+        problems.append(Problem("error", path, "an ability is an object"))
+        return
+    if "type" not in spec:
+        problems.append(
+            Problem("error", path, 'an ability needs a "type" (its AbilityType)')
+        )
+    else:
+        # The whole ability is dropped if this will not decode, which is the
+        # most expensive silent failure the DSL has.
+        found = check_value(spec["type"], "AbilityType", f"{path}.type")
+        for problem in found:
+            problem["message"] += (
+                " -- an AbilityType that will not decode makes customAbilities drop the"
+                " whole ability, so the card ends up with no ability at all."
+            )
+        problems += found
+    if "criteria" in spec:
+        problems += check_value(spec["criteria"], "Criterion", f"{path}.criteria")
+    if "limit" in spec:
+        problems += check_value(spec["limit"], "AbilityLimit", f"{path}.limit")
+    if "zone" in spec and spec["zone"] not in ("hand", "discard", "search", "topOfDeck"):
+        problems.append(
+            Problem("error", f"{path}.zone", f'"{spec["zone"]}" is not a zone',
+                    fix="hand, discard, search or topOfDeck")
+        )
+    unknown = set(spec) - set(DSL["specs"]["_abilities"])
+    for key in sorted(unknown):
+        problems.append(
+            Problem("warning", f"{path}.{key}", "an ability spec never reads this key",
+                    fix=f"it reads: {', '.join(DSL['specs']['_abilities'])}")
+        )
+    _check_window_reads(spec, path, problems)
+    _walk_steps(spec.get("steps") or [], f"{path}.steps", card_bindings, problems)
+
+
+def _check_window_reads(spec: dict, path: str, problems: list) -> None:
+    """`$w0`, `$w1` ... read the window's fields by position.
+
+    Past the end they read as nothing, and whatever they fed quietly does
+    nothing -- a criterion that is never true, a query that finds nobody. The
+    field count is in the schema whenever the matcher and the window share a
+    name, which is most of them; where they differ there is nothing to check
+    against and the read is left alone.
+    """
+    window = ((spec.get("type") or {}).get("window") or {})
+    tag = window.get("tag") if isinstance(window, dict) else None
+    if not isinstance(tag, str):
+        return
+    entry = schema.types().get("WindowType")
+    if not entry:
+        return
+    fields = {c["name"]: len(c["fields"]) for c in entry["constructors"]}
+    if tag not in fields:
+        return
+    read = {int(n) for n in re.findall(r'"\$w(\d+)"', json.dumps(spec.get("steps") or []))}
+    for index in sorted(n for n in read if n >= fields[tag]):
+        problems.append(
+            Problem(
+                "error",
+                f"{path}.steps",
+                f'"$w{index}" is past the end of {tag}, which carries '
+                f'{fields[tag]} field(s), so it reads as nothing',
+                fix=f'read $w0..$w{fields[tag] - 1}, and reach inside one with '
+                '{"field": "<name>", "of": "$w0"}' if fields[tag] else "this window carries no fields",
+            )
+        )
+
+
 def lint(card_def: dict) -> list[Problem]:
     """Everything wrong with the def's behaviour, as far as the types can say."""
     problems: list[Problem] = []
@@ -840,41 +1364,66 @@ def lint(card_def: dict) -> list[Problem]:
 
     card_bindings = _card_bindings(card_def)
 
-    for index, spec in enumerate(meta.get("_abilities") or []):
-        path = f"meta._abilities[{index}]"
-        if not isinstance(spec, dict):
-            problems.append(Problem("error", path, "an ability is an object"))
-            continue
-        if "type" not in spec:
-            problems.append(
-                Problem("error", path, 'an ability needs a "type" (its AbilityType)')
+    # `Criteria.Self` asks whether the ability's SOURCE is the acting
+    # investigator, so it is only ever true on an investigator card. Anywhere
+    # else it is a criterion that never holds, and the ability it guards simply
+    # never fires.
+    if card_def.get("cardType") != "InvestigatorType" and '"Self"' in json.dumps(meta):
+        problems.append(
+            Problem(
+                "error",
+                "meta",
+                '"Self" holds only when the source is an investigator, so on a '
+                f'{card_def.get("cardType")} it is always false',
+                fix="drop it, or say what you meant about this card another way",
             )
-        else:
-            # The whole ability is dropped if this will not decode, which is the
-            # most expensive silent failure the DSL has.
-            found = check_value(spec["type"], "AbilityType", f"{path}.type")
-            for problem in found:
-                problem["message"] += (
-                    " -- an AbilityType that will not decode makes customAbilities drop the"
-                    " whole ability, so the card ends up with no ability at all."
+        )
+
+    # `$iid` is the acting investigator, which a STEP has and a modifiers block
+    # does not: there it decodes as an id nobody has, and a field calculation on
+    # one throws -- every read of the game then answers 500. `$controller` or
+    # `$id` is the one the card means.
+    def _iid_in_modifiers(value, path):
+        if isinstance(value, dict):
+            for key, inner in value.items():
+                _iid_in_modifiers(inner, f"{path}.{key}")
+        elif isinstance(value, list):
+            for i, inner in enumerate(value):
+                _iid_in_modifiers(inner, f"{path}[{i}]")
+        elif value == "$iid":
+            problems.append(
+                Problem(
+                    "error",
+                    path,
+                    '"$iid" is not bound in a modifiers block, only in a step',
+                    fix='use "$controller" (who holds the card) or "$id" (the card itself)',
                 )
-            problems += found
-        if "criteria" in spec:
-            problems += check_value(spec["criteria"], "Criterion", f"{path}.criteria")
-        if "limit" in spec:
-            problems += check_value(spec["limit"], "AbilityLimit", f"{path}.limit")
-        if "zone" in spec and spec["zone"] not in ("hand", "discard", "search", "topOfDeck"):
-            problems.append(
-                Problem("error", f"{path}.zone", f'"{spec["zone"]}" is not a zone',
-                        fix="hand, discard, search or topOfDeck")
             )
-        unknown = set(spec) - set(DSL["specs"]["_abilities"])
-        for key in sorted(unknown):
-            problems.append(
-                Problem("warning", f"{path}.{key}", "an ability spec never reads this key",
-                        fix=f"it reads: {', '.join(DSL['specs']['_abilities'])}")
+
+    # A play window of `AnyWindow` also matches the windows opened while the
+    # card is being played, so the play never finishes: the card is offered and
+    # clicking it does nothing. A bare "Fast." is `FastPlayerWindow`, which is
+    # what every official unrestricted fast event uses.
+    fast = card_def.get("fastWindow")
+    if isinstance(fast, dict) and fast.get("tag") == "AnyWindow":
+        problems.append(
+            Problem(
+                "error",
+                "fastWindow",
+                "AnyWindow as a PLAY window also matches the windows opened while "
+                "the card is being played, so the play never completes",
+                fix='use "FastPlayerWindow" for a bare "Fast.", or the window the '
+                'card\'s "Play when ..." names',
             )
-        _walk_steps(spec.get("steps") or [], f"{path}.steps", card_bindings, problems)
+        )
+
+    for key in ("_modifiers", "_keywords"):
+        for index, block in enumerate(meta.get(key) or []):
+            inner = block.get("modifiers") if key == "_keywords" else block
+            _iid_in_modifiers(inner, f"meta.{key}[{index}]")
+
+    for index, spec in enumerate(meta.get("_abilities") or []):
+        _check_ability_spec(spec, f"meta._abilities[{index}]", card_bindings, problems)
 
     messages = schema.message_constructors()
     for index, spec in enumerate(meta.get("_handlers") or []):
@@ -895,42 +1444,29 @@ def lint(card_def: dict) -> list[Problem]:
         scope = set(card_bindings)
         if isinstance(on, str) and on in messages:
             scope |= {str(i) for i in range(len(messages[on]))}
+        for at, pair in enumerate(spec.get("requires") or []):
+            if not (isinstance(pair, list) and len(pair) == 2):
+                problems.append(
+                    Problem(
+                        "error",
+                        f"{path}.requires[{at}]",
+                        "a requires is a pair of values to compare",
+                        fix='write ["$2", "$source"]',
+                    )
+                )
+                continue
+            for side in pair:
+                _walk_expression(side, f"{path}.requires[{at}]", scope, problems)
         _walk_steps(spec.get("steps") or [], f"{path}.steps", scope, problems)
 
     for index, spec in enumerate(meta.get("_modifiers") or []):
-        path = f"meta._modifiers[{index}]"
-        if not isinstance(spec, dict):
-            problems.append(Problem("error", path, "a modifier spec is an object"))
-            continue
-        kind = spec.get("kind")
-        if kind not in MATCHER_FOR_KIND:
-            problems.append(
-                Problem("error", f"{path}.kind", f'"{kind}" is not a modifier kind',
-                        fix=f"one of: {', '.join(VOCAB['modifierKinds'])}")
-            )
-        elif "matcher" in spec:
-            problems += check_value(spec["matcher"], MATCHER_FOR_KIND[kind], f"{path}.matcher")
-        lets = {
-            entry["name"]
-            for entry in spec.get("let") or []
-            if isinstance(entry, dict) and isinstance(entry.get("name"), str)
-        }
-        scope = set(card_bindings) | lets | {spec.get("eachBind") or "each"}
-        for i, modifier in enumerate(spec.get("modifiers") or []):
-            problems += check_value(modifier, "ModifierType", f"{path}.modifiers[{i}]")
-        if "if" in spec and isinstance(spec["if"], dict):
-            condition = spec["if"]
-            if "criteria" in condition:
-                problems += check_value(condition["criteria"], "Criterion", f"{path}.if.criteria")
-            elif "kind" in condition:
-                _check_query(condition, f"{path}.if", problems)
-        for key, value in spec.items():
-            if key not in ("modifiers", "matcher", "if"):
-                _walk_expression(value, f"{path}.{key}", scope, problems)
+        _check_modifier_spec(spec, f"meta._modifiers[{index}]", card_bindings, problems)
 
     for key in STEP_META_KEYS:
         if key in meta:
             _walk_steps(meta[key] or [], f"meta.{key}", card_bindings, problems)
+
+    _check_keyword_effects(meta, card_bindings, problems)
 
     # A behaviour key nothing reads is the quietest failure of all: the card looks
     # written and does nothing.

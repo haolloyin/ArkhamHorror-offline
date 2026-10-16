@@ -1,6 +1,7 @@
 /health HealthR GET
 /error ErrorR GET
 /api ApiP:
+  /auth/arkham-build/callback ApiAuthArkhamBuildCallbackR GET
   /v1 ApiV1P:
     /authenticate ApiV1AuthenticationR POST
     /register ApiV1RegistrationR POST
@@ -14,11 +15,18 @@
       / ApiV1ApiKeysR GET POST
       !/self ApiV1ApiKeySelfR GET
       /#ArkhamApiKeyId ApiV1ApiKeyR DELETE
+    /arkham-build ApiV1ArkhamBuildP:
+      /connection ApiV1ArkhamBuildConnectionR GET DELETE
+      /authorize ApiV1ArkhamBuildAuthorizeR POST
+      /verify ApiV1ArkhamBuildVerifyR POST
+      /decks ApiV1ArkhamBuildDecksR GET
     /site-settings ApiV1SiteSettingsR GET
+    /maintenance ApiV1MaintenanceR GET POST DELETE
     /notifications ApiV1NotificationsR GET
     /3ed ApiV1ThirdEditionP:
       /catalog ApiV1ThirdEditionCatalogR GET
       /tables ApiV1ThirdEditionTablesR GET POST
+      !/tables/import ApiV1ThirdEditionImportR POST
       /tables/#UUID ApiV1ThirdEditionTableP:
         / ApiV1ThirdEditionTableR GET DELETE
         /join ApiV1ThirdEditionJoinR POST
@@ -27,6 +35,8 @@
         /answer ApiV1ThirdEditionAnswerR POST
         /debug ApiV1ThirdEditionDebugR POST
         /undo ApiV1ThirdEditionUndoR POST
+        /export ApiV1ThirdEditionExportR GET
+        /file-bug ApiV1ThirdEditionBugR POST
     /arkham ApiV1ArkhamP:
       /cards ApiV1ArkhamCardsR GET
       /traits ApiV1ArkhamTraitsR GET
@@ -42,11 +52,18 @@
           / ApiV1ArkhamCustomCardSetR PUT DELETE
           /publish ApiV1ArkhamCustomCardSetPublishR POST
           /sync ApiV1ArkhamCustomCardSetSyncR POST
+          /unlock ApiV1ArkhamCustomCardSetUnlockR POST
+          /share ApiV1ArkhamCustomCardSetShareR GET POST DELETE
+          /share/#ArkhamCardSetShareAccessId ApiV1ArkhamCustomCardSetShareAccessR PUT
+      /shared-card-sets/#Text ApiV1ArkhamSharedCardSetP:
+        / ApiV1ArkhamSharedCardSetR GET
+        /subscribe ApiV1ArkhamSharedCardSetSubscribeR POST
       /published-card-sets ApiV1ArkhamPublishedCardSetsP:
         / ApiV1ArkhamPublishedCardSetsR GET
         /#ArkhamPublishedCardSetId ApiV1ArkhamPublishedCardSetP:
           / ApiV1ArkhamPublishedCardSetR GET PUT DELETE
           /subscribe ApiV1ArkhamPublishedCardSetSubscribeR POST
+          /import ApiV1ArkhamPublishedCardSetImportR POST
           /like ApiV1ArkhamPublishedCardSetLikeR POST DELETE
       /homebrew/cards ApiV1ArkhamHomebrewCardsR GET
       /card/#CardCode ApiV1ArkhamCardR GET
@@ -58,6 +75,7 @@
         /#ArkhamDeckId ApiV1ArkhamDeckP:
           / ApiV1ArkhamDeckR GET DELETE
           /sync ApiV1ArkhamSyncDeckR POST
+          /url ApiV1ArkhamDeckUrlR PUT
           /overlay ApiV1ArkhamDeckOverlayR PUT DELETE
       /achievements ApiV1ArkhamAchievementsR GET DELETE
       /games ApiV1ArkhamGamesP:
@@ -80,6 +98,8 @@
           /undo/round ApiV1ArkhamGameUndoRoundR PUT
           /undo/step/#Int ApiV1ArkhamGameUndoStepR PUT
           /log/before/#Int ApiV1ArkhamGameLogBeforeR GET
+          /log/sections ApiV1ArkhamGameLogSectionsR GET
+          /log/export ApiV1ArkhamGameLogExportR GET
           /file-bug ApiV1ArkhamGameBugR POST
           /spectate ApiV1ArkhamGameSpectateR GET
           /export ApiV1ArkhamGameExportR GET
@@ -92,6 +112,8 @@
           /achievements ApiV1ArkhamGameAchievementsR GET
           /custom-cards ApiV1ArkhamGameCustomCardsR GET
           /step ApiV1ArkhamGameStepR GET
+          /archive ApiV1ArkhamGameArchiveR GET
+          /unarchive ApiV1ArkhamGameUnarchiveR PUT
       /events ApiV1ArkhamEventsP:
         / ApiV1ArkhamEventsR GET POST
         /#ArkhamEpicEventId ApiV1ArkhamEventP:
@@ -113,12 +135,23 @@
       /game-stats ApiV1AdminGameStatsP:
         / ApiV1AdminGameStatsR GET
         !/refresh ApiV1AdminGameStatsRefreshR POST
+      /archives ApiV1AdminArchivesP:
+        / ApiV1AdminArchivesR GET
+        !/run ApiV1AdminArchivesRunR POST
+        /#ArkhamGameId ApiV1AdminArchiveGameR POST
+      /notifications ApiV1AdminNotificationsP:
+        / ApiV1AdminNotificationsR GET POST
+        /#NotificationId ApiV1AdminNotificationR GET PUT DELETE
       /card-set-submissions ApiV1AdminCardSetSubmissionsP:
         / ApiV1AdminCardSetSubmissionsR GET
         /#ArkhamCardSetSubmissionId ApiV1AdminCardSetSubmissionP:
           / ApiV1AdminCardSetSubmissionR GET
           /approve ApiV1AdminCardSetSubmissionApproveR POST
           /deny ApiV1AdminCardSetSubmissionDenyR POST
+      /users ApiV1AdminUsersP:
+        / ApiV1AdminUsersR GET
+        /#UserId/features ApiV1AdminUserFeaturesR PUT
+        /#UserId/games ApiV1AdminUserGamesR GET
       /games ApiV1AdminGamesP:
         / ApiV1AdminGamesR GET
         !/active ApiV1AdminActiveGamesR GET

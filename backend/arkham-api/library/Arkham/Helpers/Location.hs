@@ -9,6 +9,7 @@ import Arkham.Classes.HasQueue
 import Arkham.Classes.Query hiding (matches)
 import Arkham.Direction
 import Arkham.Enemy.Types (EnemyAttrs, Field (..))
+import Arkham.Event.Types (Field (EventPlacement))
 import Arkham.ForMovement
 import {-# SOURCE #-} Arkham.Helpers.Cost (getCanAffordCost)
 import Arkham.Helpers.GameValue (gameValueMatches)
@@ -55,21 +56,27 @@ single location that was granted it -- so they are kept apart rather than merged
 connectedMatcherParts
   :: HasGame m => ForMovement -> LocationId -> m ([LocationMatcher], [LocationMatcher])
 connectedMatcherParts forMovement l = do
-  isRevealed <- field LocationRevealed l
-  directionalMatchers <- fieldMap LocationConnectsTo (map (`LocationInDirection` self) . setToList) l
-  base <-
-    if isRevealed
-      then field LocationRevealedConnectedMatchers l
-      else field LocationConnectedMatchers l
-
   modifiers <- getModifiers (LocationTarget l)
-  -- A location that "loses" a connection symbol stops connecting to that symbol; the
-  -- symbol matchers are what the card def turned its printed connections into.
-  let lostSymbols = [sym | LosesConnectionSymbol sym <- modifiers]
-      keeps = \case
-        Matcher.LocationWithSymbol sym -> sym `notElem` lostSymbols
-        _ -> True
-  (filter keeps base <> directionalMatchers,) <$> foldM applyModifier [] modifiers
+  -- An isolated location connects to nothing at all. The other half -- nothing
+  -- connecting to it -- is the LocationWithSymbol branch of
+  -- Arkham.Game.getLocationsMatching.
+  if DoesNotConnect `elem` modifiers
+    then pure ([], [])
+    else do
+      isRevealed <- field LocationRevealed l
+      directionalMatchers <- fieldMap LocationConnectsTo (map (`LocationInDirection` self) . setToList) l
+      base <-
+        if isRevealed
+          then field LocationRevealedConnectedMatchers l
+          else field LocationConnectedMatchers l
+
+      -- A location that "loses" a connection symbol stops connecting to that symbol; the
+      -- symbol matchers are what the card def turned its printed connections into.
+      let lostSymbols = [sym | LosesConnectionSymbol sym <- modifiers]
+          keeps = \case
+            Matcher.LocationWithSymbol sym -> sym `notElem` lostSymbols
+            _ -> True
+      (filter keeps base <> directionalMatchers,) <$> foldM applyModifier [] modifiers
  where
   applyModifier current (ConnectedToWhen whenMatcher matcher) = do
     matches <- elem l <$> select whenMatcher
@@ -104,6 +111,10 @@ placementLocation = \case
   AttachedToEnemy eid -> fieldMayJoin EnemyLocation eid
   AttachedToTreachery tid -> fieldMayJoin TreacheryLocation tid
   AttachedToAsset aid' _ -> fieldMayJoin AssetLocation aid'
+  -- An event has no location field of its own, so this is wherever the event
+  -- it is attached to has ended up -- usually a play area, which is its
+  -- controller's location.
+  AttachedToEvent eid -> placementLocation =<< field EventPlacement eid
   InVehicle aid' -> field AssetLocation aid'
   AttachedToAct _ -> pure Nothing
   AttachedToAgenda _ -> pure Nothing

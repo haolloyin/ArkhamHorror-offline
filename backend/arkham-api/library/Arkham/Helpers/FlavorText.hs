@@ -113,6 +113,12 @@ cols body = do
 hr :: FlavorTextBuilder ()
 hr = addEntry FT.hr
 
+{- | A numbered note, rendered at the foot of the panel. Written after the prose
+it annotates, which carries the marker @[^n]@ with the same number.
+-}
+footnote :: HasI18n => Int -> Scope -> FlavorTextBuilder ()
+footnote n = addEntry . FT.footnote n
+
 img :: HasCardCode a => a -> FlavorTextBuilder ()
 img = addEntry . FT.img . toCardCode
 
@@ -144,6 +150,13 @@ tarot = addEntry . TarotEntry
 compose :: FlavorTextBuilder () -> FlavorTextBuilder ()
 compose builder = case buildFlavor builder of
   FlavorText _t b -> addEntry $ CompositeEntry b
+
+{- | The blue panel a flashback is printed in, around several entries. @.blue@ in
+a locale string styles one; this styles a block built from many.
+-}
+blueBlock :: FlavorTextBuilder () -> FlavorTextBuilder ()
+blueBlock builder = case buildFlavor builder of
+  FlavorText _t b -> addEntry $ ModifyEntry [BlueEntry] $ CompositeEntry b
 
 addEntry :: FlavorTextEntry -> FlavorTextBuilder ()
 addEntry entry = modify \s@FlavorText {flavorBody} -> s {flavorBody = flavorBody <> [entry]}

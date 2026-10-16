@@ -64,6 +64,12 @@ instance Ord ChaosToken where
 instance Eq ChaosToken where
   (==) = (==) `on` chaosTokenId
 
+-- | Sealing a token that is already sealed here is not a second copy of it.
+addSealedChaosToken :: ChaosToken -> [ChaosToken] -> [ChaosToken]
+addSealedChaosToken token tokens
+  | token `elem` tokens = tokens
+  | otherwise = token : tokens
+
 instance ToGameLoggerFormat ChaosToken where
   format c = format c.face
 
@@ -295,6 +301,21 @@ isOddChaosToken = \case
   MinusFive -> True
   MinusSeven -> True
   _ -> False
+
+-- | Every printed numeric face, for cards that name "each numeric token".
+numericChaosTokenFaces :: [ChaosTokenFace]
+numericChaosTokenFaces =
+  [ PlusOne
+  , Zero
+  , MinusOne
+  , MinusTwo
+  , MinusThree
+  , MinusFour
+  , MinusFive
+  , MinusSix
+  , MinusSeven
+  , MinusEight
+  ]
 
 isSymbolChaosToken :: ChaosTokenFace -> Bool
 isSymbolChaosToken = \case

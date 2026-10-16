@@ -111,18 +111,63 @@ export const cardBindings = (cardType?: string): Binding[] => [
   }),
 ]
 
+/* What the card has remembered.
+ *
+ * A `SetGlobal` writes a key into the entity's own metaMap, and `bindings` in
+ * "Arkham.Custom.Ability" binds every key it finds there -- which is how a card
+ * reads back a choice it made on an earlier turn. The names cannot be known
+ * ahead of time, so they are read off the def: every SetGlobal written anywhere
+ * on this card names a binding the rest of the card may use.
+ *
+ * Real fields win a clash, so a key named after one is not offered. */
+const RESERVED = new Set([
+  'id', 'source', 'target', 'iid', 'controller', 'owner', 'investigator', 'cardId', 'drawnBy',
+  'meta', 'metaMap', 'placement', 'tokens', 'window', 'message', 'payment',
+])
+
+export function rememberedBindings(meta: unknown): Binding[] {
+  const keys = new Set<string>()
+  const walk = (node: any) => {
+    if (Array.isArray(node)) {
+      node.forEach(walk)
+      return
+    }
+    if (!node || typeof node !== 'object') return
+    if (node.tag === 'SetGlobal' && Array.isArray(node.contents)) {
+      const key = node.contents[1]
+      if (typeof key === 'string' && key && !RESERVED.has(key)) keys.add(key)
+    }
+    Object.values(node).forEach(walk)
+  }
+  walk(meta)
+  return [...keys].sort().map((name) => ({
+    name,
+    detail: 'whatever was remembered under this name',
+    origin: 'a Set Global written on this card',
+  }))
+}
+
 /* Meta the card is *built* from -- an enemy's prey, where it spawns -- is read
  * before any entity exists, so it cannot see the entity's own fields. Mirrors
  * `defBindings` in "Arkham.Card.CustomCard": the only name a def alone knows is
- * whose signature it is. */
-export const defBindings = (): Binding[] => [
-  {
-    name: 'investigator',
-    detail: 'InvestigatorId, on a signature card',
-    type: 'InvestigatorId',
-    origin: "whoever's signature this is",
-  },
-]
+ * whose signature it is.
+ *
+ * And it knows that from two places: the Signature deck restriction, and the
+ * investigator who lists this card among their signatures. Only the second is
+ * usable HERE -- writing `$investigator` into the deck restriction the binding
+ * is read from is circular, and resolves to nothing. So the name is offered
+ * only when an investigator claims the card. */
+export const defBindings = (hasSignatureOwner = false): Binding[] =>
+  hasSignatureOwner
+    ? [
+        {
+          name: 'investigator',
+          detail: 'InvestigatorId, on a signature card',
+          type: 'InvestigatorId',
+          origin: 'the investigator who lists this among their signatures',
+        },
+      ]
+    : []
 
 /* What paying for an ability gave up. Only an ability has this: a handler is a
  * reaction to a message and a modifier is read rather than used, so neither pays
@@ -187,6 +232,7 @@ const stepKinds = [
   'forEach',
   'repeat',
   'distribute',
+  'search',
   'request',
   'modify',
   'withSkillTest',
@@ -213,8 +259,13 @@ const stepKinds = [
   'setAside',
 ]
 
+/* A keyword's behaviour may hold a bare `$slot` where a list of steps goes, so a
+ * step is not always an object. `in` throws on a string, which took the whole
+ * editor down rather than the one step. */
 export const stepKind = (step: any): string =>
-  stepKinds.find((kind) => kind in (step ?? {})) ?? 'push'
+  step && typeof step === 'object'
+    ? (stepKinds.find((kind) => kind in step) ?? 'push')
+    : 'slot'
 
 const named = (value: any, fallback: string) =>
   typeof value === 'string' && value.trim() ? value.trim() : fallback
@@ -328,6 +379,20 @@ export function stepBindings(
           at('1', 'the second thing it carries', 'an Ask the game step'),
         ],
       }
+    /* What the search found, in scope only for the steps that act on it. As
+     * with a Distribute, nothing from earlier in this run is: the found cards
+     * arrive in their own message. Only `onFound` sees these -- `onNoneFound`
+     * by definition has no card -- which the editor passes separately. */
+    case 'search': {
+      const name = named(step.search?.bind, 'card')
+      return {
+        after: [],
+        inside: [
+          at(name, 'the first card found', 'a Search step', 'Card'),
+          at(`${name}s`, 'every card found', 'a Search step', '[Card]'),
+        ],
+      }
+    }
     /* Who got a share and how much, in scope only for the steps that spend it.
      * Nothing from earlier in this run is: the answer is its own message. */
     case 'distribute':
@@ -455,3 +520,58 @@ export function bindingFits(
   }
   return strip(binding.type) === strip(fieldType)
 }
+
+
+/* What a KEYWORD's behaviour templates can refer to.
+ *
+ * A keyword is written once for every card that will print it, so where a card's
+ * own template would name a value outright, a keyword's names a slot and each
+ * card fills it in. Those slots are bindings like any other, which is the whole
+ * trick: the ordinary editors already know how to offer a `$name` wherever one
+ * fits, so the keyword's behaviour is edited with exactly the same fields as a
+ * card's, and nobody has to type `$condition` into a JSON blob.
+ *
+ * A slot's `kind` is what decides where it is offered. One left as `value` gets
+ * no type, which the field editors read as "could be anything" and offer
+ * everywhere -- the same as a `let` whose expression they cannot pin down.
+ */
+const SLOT_TYPES: Record<string, string | undefined> = {
+  window: 'WindowMatcher',
+  criterion: 'Criterion',
+  text: 'Text',
+  // A list of steps is not a value any field takes; it is offered in a steps
+  // list instead (see `StepsEditor`'s slot step).
+  steps: undefined,
+  value: undefined,
+}
+
+export type KeywordSlotLike = { name: string; label?: string; kind?: string }
+
+export const keywordBindings = (slots: KeywordSlotLike[] = []): Binding[] => [
+  {
+    name: 'keywordToken',
+    detail: 'Token — the token this keyword marks itself with',
+    type: 'Token',
+    origin: 'the keyword',
+  },
+  { name: 'keywordName', detail: 'Text', type: 'Text', origin: 'the keyword' },
+  ...slots
+    .filter((slot) => String(slot.name ?? '').trim())
+    .map((slot) => ({
+      name: String(slot.name).trim(),
+      detail: slot.label || slot.name,
+      type: SLOT_TYPES[slot.kind ?? 'value'],
+      origin: 'a slot each card fills in',
+    })),
+]
+
+/* The slots that stand for a list of steps, which is the one place a slot goes
+ * that is not a field. */
+export const keywordStepSlots = (slots: KeywordSlotLike[] = []): Binding[] =>
+  slots
+    .filter((slot) => slot.kind === 'steps' && String(slot.name ?? '').trim())
+    .map((slot) => ({
+      name: String(slot.name).trim(),
+      detail: slot.label || slot.name,
+      origin: 'a slot each card fills in',
+    }))
