@@ -363,6 +363,11 @@ def _check_sum(value: Any, sum_schema: dict, written_as: str, path: str, depth: 
             )
         ]
     if len(contents) != len(fields):
+        # A constructor that gained a field often keeps a decoder for the older,
+        # shorter form beside the derived one, and a def written then still
+        # reads. The engine accepts it, so this does.
+        if len(contents) in VOCAB.get("legacyArities", {}).get(tag, []):
+            return []
         return [
             Problem(
                 "error",
@@ -536,7 +541,10 @@ def _check_record(
 def _walk_expression(expr: Any, path: str, bound: set[str], problems: list[Problem]) -> None:
     """Check one expression, and collect the `$names` it reads."""
     if isinstance(expr, str):
-        if expr.startswith("$"):
+        # `$.again` is the card's own text and `$label.fight` is a prompt the app
+        # already says: both are addresses the client looks words up by, and
+        # nothing binds a name for either.
+        if expr.startswith("$") and not expr.startswith("$.") and not expr.startswith("$label."):
             name = expr[1:]
             if name and name not in bound and not name.isdigit() and not _is_positional(name):
                 problems.append(
@@ -732,11 +740,89 @@ INSIDE_ONLY = {
 }
 
 
+#: The fields whose value a player reads as a prompt.
+LABEL_FIELDS = ("label", "declineLabel", "done", "tooltip")
+
+#: `prestidigitation.to` -- a key by the look of it, words by how it is read.
+LOOKS_LIKE_A_KEY = re.compile(r"[a-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+\Z")
+
+
+#: `$label.addToHand name=s:"X"` -- a key out of the app's own vocabulary, and
+#: values for whatever the sentence leaves blank.
+SHARED_LABEL = re.compile(r'\A\$([A-Za-z][A-Za-z0-9_.]*\.[A-Za-z0-9_]+)((?:\s+\S+)*)\Z')
+SHARED_PARAM = re.compile(r'([^=\s]+)=([is]):("(?:[^"\\]|\\.)*"|\S+)')
+
+
+def _check_shared_label(value: str, path: str, problems: list) -> None:
+    """A label that names the app's own words rather than the card's.
+
+    Worth checking because the client answers a key it does not know with the
+    key itself: a misspelt one reads as `$label.addToHannd` at the player, which
+    is the same silence as a label that was never looked up at all.
+    """
+    catalogue = DSL.get("sharedText") or {}
+    if not catalogue:
+        return
+    match = SHARED_LABEL.match(value.strip())
+    if not match:
+        return
+    key, rest = match.group(1), match.group(2)
+    if key not in catalogue:
+        problems.append(
+            Problem("warning", path, f'"{key}" is not one of the shared prompts',
+                    fix="the builder's Shared text picker lists them")
+        )
+        return
+    given = {name for name, _, _ in SHARED_PARAM.findall(rest)}
+    for blank in catalogue[key]:
+        if blank not in given:
+            problems.append(
+                Problem("warning", path, f'"{key}" leaves {{{blank}}} blank and nothing fills it',
+                        fix=f'add {blank}=s:"..." (or {blank}=i:N for a number)')
+            )
+
+
+def _check_labels(value: Any, path: str, problems: list) -> None:
+    """A label is shown to the player exactly as written, so one that reads as a
+    key is a key nothing looks up: the player is shown `impalingSwords.again`.
+
+    The card's own text is `$.again`, which the engine turns into the address the
+    client looks up and the builder fills in beside the label.
+    """
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            if key in LABEL_FIELDS and isinstance(inner, str) and inner.startswith("$"):
+                _check_shared_label(inner, f"{path}.{key}", problems)
+            if key in LABEL_FIELDS and isinstance(inner, str) and LOOKS_LIKE_A_KEY.match(inner):
+                name = inner.split(".")[-1]
+                problems.append(
+                    Problem(
+                        "warning",
+                        f"{path}.{key}",
+                        f'"{inner}" is shown to the player as those words, not looked up',
+                        fix=f'write "$.{name}" and say what it means in the card\'s Text',
+                    )
+                )
+            _check_labels(inner, f"{path}.{key}", problems)
+    elif isinstance(value, list):
+        for index, inner in enumerate(value):
+            _check_labels(inner, f"{path}[{index}]", problems)
+
+
+def _repeat_name(step: dict) -> set[str]:
+    """What a repeat is called, when it is called at all. A named repeat runs a
+    pass at a time when something asks for one, so its name is in scope both
+    inside it -- a pass asks for the next -- and after it, which is where the
+    first pass is asked for."""
+    name = _fields(step, "repeat").get("as")
+    return {name} if isinstance(name, str) and name else set()
+
+
 def _binds(step: dict, which: str, *, inside: bool = True) -> set[str]:
     """What a step binds. `inside` asks for its nested steps' scope; without it,
     only what the steps AFTER this one can see."""
     if not inside and which in INSIDE_ONLY:
-        return set()
+        return _repeat_name(step) if which == "repeat" else set()
     fields = _fields(step, which)
     payload = step.get(which)
     added: set[str] = set()
@@ -763,6 +849,7 @@ def _binds(step: dict, which: str, *, inside: bool = True) -> set[str]:
     elif which == "repeat":
         index = fields.get("i")
         added.add(index if isinstance(index, str) and index else bound("i"))
+        added |= _repeat_name(step)
     elif which == "withSkillTest":
         # `bindingName o "skillTestId"` in `runWithSkillTest`, and the editor
         # announces the same. Named "skillTest" here, the checker reported every
@@ -885,6 +972,7 @@ def _walk_steps(steps: Any, path: str, bound: set[str], problems: list[Problem])
                     )
 
         _check_step(which, step, here, scope, problems)
+        _check_labels(step, here, problems)
         scope |= _binds(step, which, inside=False)
 
 
@@ -989,14 +1077,20 @@ def _check_step(which: str, step: dict, path: str, scope: set[str], problems: li
         # written without the fields it needs simply hid the option.
         if "criteria" in option:
             # The wrapped form the builder writes, or a bare criterion, which
-            # the engine also reads. Either way it is a Criterion underneath.
+            # the engine also reads. A condition is not only a criterion
+            # though -- `runReadCondition` reads a query ("something matches"),
+            # a source test and a comparison too -- so only the shapes that can
+            # be nothing else are checked as one.
             held = option["criteria"]
             if isinstance(held, dict) and "criteria" in held:
                 held = held["criteria"]
                 where = f"{option_path}.criteria.criteria"
             else:
                 where = f"{option_path}.criteria"
-            problems.extend(check_value(held, "Criterion", where))
+            if isinstance(held, dict) and "kind" in held and "matcher" in held:
+                _check_query(held, where, problems)
+            elif not (isinstance(held, dict) and ({"source", "matches"} <= held.keys() or "eq" in held)):
+                problems.extend(check_value(held, "Criterion", where))
         _walk_steps(option.get("steps") or [], f"{option_path}.steps", option_scope, problems)
 
     # Expressions, for their $bindings and their operators. The nested step lists
@@ -1499,6 +1593,18 @@ def validate(card_def: dict) -> dict:
 
     problems = check_value(card_def, "CardDef", "")
     problems += lint(card_def)
+
+    # The same thing said once. A step inside another is walked twice -- as part
+    # of the step that holds it, and again as a step of its own -- so a problem
+    # on it is found twice and is still one problem.
+    seen, once = set(), []
+    for problem in problems:
+        mark = (problem["severity"], problem["path"], problem["message"])
+        if mark in seen:
+            continue
+        seen.add(mark)
+        once.append(problem)
+    problems = once
 
     errors = [p for p in problems if p["severity"] == "error"]
     warnings = [p for p in problems if p["severity"] == "warning"]

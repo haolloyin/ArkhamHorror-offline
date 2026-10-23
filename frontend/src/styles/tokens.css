@@ -8,6 +8,14 @@
   --combat: #ae4236;
   --agility: #14854d;
 
+  /* Dark fills for a button that IS a skill: the base token is too bright to
+     sit behind the light button text. The first three are what the skill-test
+     buttons already used; the intellect is its base token at the same depth. */
+  --willpower-dark: #00008b;
+  --intellect-dark: #3e1e43;
+  --combat-dark: #8b0000;
+  --agility-dark: #004d00;
+
   --willpower-light: #C5DEF2;
   --intellect-light: #EAD5EC;
   --combat-light: #F1D3D0;
@@ -69,6 +77,16 @@
   --box-background: #353b49;
   --box-border: #434c5e;
 
+  /* How a finished game reads. The -finished pair is the grey a finished row
+     settles to; the outcome pair tints it by verdict, and the -dark variants are
+     the solid fills behind the game-over headline. */
+  --box-background-finished: #3b3b3b;
+  --box-border-finished: #4c4c4c;
+  --outcome-won: #4ade80;
+  --outcome-lost: #f87171;
+  --outcome-won-dark: #1c522c;
+  --outcome-lost-dark: #5e1818;
+
   --title: #cecece;
   --green-title: #38615F;
   --text: white;
@@ -80,6 +98,11 @@
 
   --button-1: #6E8640;
   --button-1-highlight: #5a6e34;
+
+  /* The same green stepped back toward the background, for chrome that should
+     read as selected without competing with a primary button next to it. */
+  --button-1-muted: color-mix(in srgb, var(--button-1) 45%, var(--background-dark));
+  --button-1-muted-highlight: color-mix(in srgb, var(--button-1) 60%, var(--background-dark));
 
   --button-2: #532e61;
   --button-2-highlight: #4d2b61;

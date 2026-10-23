@@ -4,14 +4,28 @@
     "name": "A World Torn Down",
     "intro": {
       "title": "Scenario III: A World Torn Down",
-      "intro1": "<p>Lacking other leads to pursue, you stay awhile to observe the Myriad Gentleman's home. You spend a long time waiting, watching the property's exits for any sign of movement. Sure enough, as the sun sets, a convoy of vehicles sets out from the manor. You follow as best you can, careful not to be spotted.</p><p>Before too long, the Myriad Gentleman reaches their destination. A school, by the look of it. You go to follow them, but before you're able to make it inside, the school is suffused with a dim green glow, rebuffing you, as a muffled chanting flows from the building&hellip;</p>",
-      "intro2": "<p>Mount Hollyoke Elementary was condemned by Arkham's town council several years ago, but for unknown reasons was never demolished. This seems to suit the Myriad just fine &mdash; they've repurposed it to their own ends. A ritual takes place here tonight &mdash; one that could spell the end of everything and everywhen.</p>"
+      "checkCampaignLog": "<p class='basic right'>Check Campaign Log. *If the investigators fled the Gentleman's manor*:<br>Proceed to _Intro 1_.</p><p class='basic right'>*If the investigators learnt of the Myriad's ritual*:<br>Skip to _Intro 2_.</p>",
+      "intro1": "<p>_Intro 1_: Lacking other leads to pursue, you stay awhile to observe the Myriad Gentleman's home. You spend a long time waiting, watching the property's exits for any sign of movement. Sure enough, as the sun sets, a convoy of vehicles sets out from the manor. You follow as best you can, careful not to be spotted.</p><p>Before too long, the Myriad Gentleman reaches their destination. A school, by the look of it. You go to follow them, but before you're able to make it inside, the school is suffused with a dim green glow, rebuffing you, as a muffled chanting flows from the building&hellip;</p><p class='basic right'>Proceed to _Setup_.</p>",
+      "intro2": "<p>_Intro 2_: Mount Hollyoke Elementary was condemned by Arkham's town council several years ago, but for unknown reasons was never demolished. This seems to suit the Myriad just fine &mdash; they've repurposed it to their own ends. A ritual takes place here tonight &mdash; one that could spell the end of everything and everywhen.</p><p class='basic right'>Proceed to _Setup_.</p>"
     },
     "setup": {
       "gatherSets": "Gather all the cards from the following encounter sets: *A World Torn Down*, *Night of the Ritual*, *Agents of Aforgomon*, *Myriad*, *Nyctophobia*, *Thugs* and *Unleashed Chaos*. These sets are indicated by the following icons:<section class='encounter-sets'><img src='{imgPath}/homebrew/ages-unwound/sets/a-world-torn-down.png' /><img src='{imgPath}/homebrew/ages-unwound/sets/night-of-the-ritual.png' /><img src='{imgPath}/homebrew/ages-unwound/sets/agents-of-aforgomon.png' /><img src='{imgPath}/homebrew/ages-unwound/sets/myriad.png' /><img src='{imgPath}/homebrew/ages-unwound/sets/nyctophobia.png' /><img src='{imgPath}/homebrew/ages-unwound/sets/thugs.png' /><img src='{imgPath}/homebrew/ages-unwound/sets/unleashed-chaos.png' /></section>",
-      "placeLocations": "Put Front Gates, Side Building, Children's Playground, Sports Field, Front Hallway and Rear Corridors into play.",
-      "startAt": "Each investigator begins play at the Front Gates.",
+      "placeLocations": "Put Front Gates, Side Building, Children's Playground, Sports Field, Front Hallway and Rear Corridors into play. Each investigator begins play at the Front Gates.",
       "setAside": "Set each other location aside, out of play, along with Hound of Unmaking, Unstable Warding, each copy of Unleashed Chaos and Stirring Titan, Unstable Energies, Aid from Afar and The Myriad Gentleman _(The High Priest)_."
+    },
+    "rules": {
+      "recordingTheTime": {
+        "title": "Recording the Time",
+        "body": "<p class='basic'>At various points during this scenario, you will be asked to record *the time* next to entries in your Campaign Log. To do this, simply record, in brackets, the current agenda number and the number of doom on the current agenda. For example: If there is 4 doom on agenda 1a, you would record the time as (1,4).</p>"
+      },
+      "gainingAndLosingActions": {
+        "title": "Gaining and Losing Actions",
+        "body": "<p class='basic'>As time becomes increasingly unstable, the number of actions you may take on a turn may also change.</p><ul><li>Several effects refer to *standard actions*. A standard action is any action that does not have a limitation on its use, regardless of its source. For example, *Finn Edwards* has a copy of *Leo De Luca* in play. He has four standard actions on his turns &mdash; the default three and an additional action from Leo &mdash; as well as an additional, non-standard action from his investigator ability that can only be used to evade.</li><li>Each investigator is considered to gain their actions for the next round in step 4.2 of the upkeep phase. Effects that grant you additional actions on each of your turns are also considered to grant you actions at this point. This means that effects after an investigator's turn cannot make them lose actions for the next round, unless they happen after the upkeep phase. For example, *Finn Edwards* is attacked by a *Chronophage* in the enemy phase. This would cause him to lose an action, but as his turn has ended he has no actions remaining. During the upkeep phase of the same round, he draws the weakness *Overzealous*; if an encounter card drawn from this effect would cause him to lose actions, this happens as normal.</li><li>If a player card effect (such as the *Gold Pocket Watch*) causes the investigator phase to repeat, investigators are considered to gain their actions for their turns at the start of the phase. If a player card effect allows an investigator to take an additional turn, they are considered to gain their actions at the start of that turn.</li></ul>"
+      },
+      "haunted": {
+        "title": "Haunted",
+        "body": "<p class='basic'>Haunted is an ability that appears on some locations. Each time an investigator fails a skill test while investigating a location, after applying all results for that skill test, that investigator must resolve all “Haunted –” abilities on that location.</p><p class='basic'>A location is “haunted” for the purposes of other card effects if it has at least one “Haunted –” ability (printed or otherwise).</p>"
+      }
     },
     "aidFromAfar": {
       "label": {
@@ -27,25 +41,53 @@
       "additionalActions": "End of the Line"
     },
     "resolutions": {
+      "noResolution": {
+        "title": "No Resolution",
+        "body": "<p class='basic'>*If no resolution was reached (each investigator was defeated)*:</p>",
+        "proceedToResolution1": "*If it was act 1 when the scenario ended*: Read _Resolution 1_.",
+        "proceedToResolution2": "*If it was act 2 or 3 when the scenario ended*: Read _Resolution 2_."
+      },
       "resolution1": {
         "title": "Resolution 1",
-        "body": "<p>_Resolution 1_: Try as you might, the Myriad's fortress is virtually impenetrable. As the ritual inside builds towards its terrible conclusion, you throw yourself at it in desperation, seeking any way to break&mdash;</p>"
+        "body": "<p>_Resolution 1_: Try as you might, the Myriad's fortress is virtually impenetrable. As the ritual inside builds towards its terrible conclusion, you throw yourself at it in desperation, seeking any way to break&mdash;</p>",
+        "checkCampaignLog": "<p class='basic'>Check Campaign Log:</p>",
+        "proceedToResolution4": "*If the timeline was weakened*, proceed to _Resolution 4_.",
+        "proceedToResolution5": "Otherwise, proceed to _Resolution 5_."
       },
       "resolution2": {
         "title": "Resolution 2",
-        "body": "<p>_Resolution 2_: The distortions around you grow more and more severe. You can barely stand, can hardly move as broken realities circle and shift. Time melts like butter on a stove, and you find yourself falling, falling outside of time&hellip;</p><p class='basic'>In your Campaign Log, record that *the investigators fell to the Myriad*. Next to this, record the time. If there was no agenda in play, record the time as (3,4).</p><p class='basic'>Each investigator earns {xp} experience.</p>"
+        "body": "<p>_Resolution 2_: The distortions around you grow more and more severe. You can barely stand, can hardly move as broken realities circle and shift. Time melts like butter on a stove, and you find yourself falling, falling outside of time&hellip;</p>",
+        "fellToTheMyriad": "In your Campaign Log, record that *the investigators fell to the Myriad*. Next to this, record the time. If there was no agenda in play, record the time as (3,4).",
+        "eliminatedTheHighPriest": "If The Myriad Gentleman (*The High Priest*) is in the victory display, record in your Campaign Log that *the investigators eliminated the high priest*.",
+        "chaosTokens": "Remove all {cultist} and {tablet} tokens from the chaos bag. Then, add 1 {cultist}, 1 {tablet} and 2 {elderThing} tokens to the chaos bag.",
+        "victoryXp": "Each investigator earns experience equal to the Victory X value of each card in the victory display."
       },
       "resolution3": {
         "title": "Resolution 3",
-        "body": "<p>_Resolution 3_: Tearing apart the first ritual circle, you turn your attention to the other two. The cultists surrounding them advance on you; they don't look like particularly capable fighters, but they outnumber you ten to one. Taking a few cautious steps backwards, you find yourself on the precipice of a swirling, many-hued rift in reality, the untamed schism that was once contained by the arcane circle you broke. It's a way out, maybe, but an unfathomable one&hellip;</p><p>Then, a commotion on the far side of the auditorium. New arrivals, cutting their way through the cultists, making a beeline for the other circles. It's difficult to see past the encroaching cultists, but you manage to catch the eye of&mdash;</p><p>No, that can't be.</p><p>You glance at the rift behind you. The figure nods, once. You step into the unknown.</p><p class='basic'>Each investigator earns {xp} experience.</p>"
+        "body": "<p>_Resolution 3_: Tearing apart the first ritual circle, you turn your attention to the other two. The cultists surrounding them advance on you; they don't look like particularly capable fighters, but they outnumber you ten to one. Taking a few cautious steps backwards, you find yourself on the precipice of a swirling, many-hued rift in reality, the untamed schism that was once contained by the arcane circle you broke. It's a way out, maybe, but an unfathomable one&hellip;</p><p>Then, a commotion on the far side of the auditorium. New arrivals, cutting their way through the cultists, making a beeline for the other circles. It's difficult to see past the encroaching cultists, but you manage to catch the eye of&mdash;</p><p>No, that can't be.</p><p>You glance at the rift behind you. The figure nods, once. You step into the unknown.</p>",
+        "gatewayToThePast": "If Ritual Circle (*Gateway to the Past*) is in play:",
+        "steppedIntoThePast": "In your Campaign Log, record that *the investigators stepped into the past*.",
+        "pastChaosTokens": "Remove all {cultist} and {tablet} tokens from the chaos bag. Then, add 2 {tablet} and 1 {elderThing} token to the chaos bag.",
+        "aHarnessedFuture": "If Ritual Circle (*A Harnessed Future*) is in play:",
+        "steppedIntoTheFuture": "In your Campaign Log, record that *the investigators stepped into the future*.",
+        "futureChaosTokens": "Remove all {cultist} and {tablet} tokens from the chaos bag. Then, add 2 {cultist} and 1 {elderThing} token to the chaos bag.",
+        "eliminatedTheHighPriest": "If The Myriad Gentleman (*The High Priest*) is in the victory display, record in your Campaign Log that *the investigators eliminated the high priest*.",
+        "victoryXp": "Each investigator earns experience equal to the Victory X value of each card in the victory display."
       },
       "resolution4": {
         "title": "Resolution 4",
-        "body": "<p>_Resolution 4_: You run, panting, down an alley. The armed men are still in pursuit&mdash;</p><p>As you explore the manor's garden, a tall man in a fine suit strolls out to meet you&mdash;</p><p>Your family, such as it is, stands at your bedside, awaiting&mdash;</p><p>You let out an ear-piercing wail, unsteady on your tiny legs&mdash;</p><p>&mdash;through the barrier. There must be a way, there&mdash;</p><p>“Mama.” Your first word.</p><p>“I'm sorry. I failed you all.” Your last.</p><p class='basic'>In your Campaign Log, record that *all times are one*. Each investigator is driven insane. The investigators lose the campaign.</p>"
+        "body": "<p>_Resolution 4_: You run, panting, down an alley. The armed men are still in pursuit&mdash;</p><p>As you explore the manor's garden, a tall man in a fine suit strolls out to meet you&mdash;</p><p>Your family, such as it is, stands at your bedside, awaiting&mdash;</p><p>You let out an ear-piercing wail, unsteady on your tiny legs&mdash;</p><p>&mdash;through the barrier. There must be a way, there&mdash;</p><p>“Mama.” Your first word.</p><p>“I'm sorry. I failed you all.” Your last.</p>",
+        "allTimesAreOne": "In your Campaign Log, record that *all times are one*.",
+        "drivenInsane": "Each investigator is driven insane.",
+        "loseTheCampaign": "The investigators lose the campaign."
       },
       "resolution5": {
         "title": "Resolution 5",
-        "body": "<p>_Resolution 5_: Mount Hollyoke Elementary was condemned by Arkham's town council several years ago, but for unknown reasons was never demolished. This seems to suit the Myriad just fine &mdash; they've repurposed it to their own ends. A ritual takes place here tonight &mdash; one that could spell the end of everything and everywhen.</p><p>“With a sense of troublous familiarity, I beheld the blurred unstable pictures which flowed past me upon this never-resting medium. Orient temples, flashing with sun-struck bronze and gold; the sharp, crowded gables and spires of medieval cities; tropic and northern forests; the costumes and physiognomies of the Levant, of Persia, of old Rome and Carthage, went by like blown, flying mirages. Each succeeding tableau belonged to a more ancient period than the one before it — and I knew that each was a scene from some former existence of my own.”</p><p>&mdash; Clark Ashton Smith, “The Chain of Aforgomon”</p><p class='basic'>In your Campaign Log, record that *the timeline was weakened*. The investigators must replay Scenario III: A World Torn Down. No experience points are earned from your previous game.</p>"
+        "body": "<p>_Resolution 5_: Mount Hollyoke Elementary was condemned by Arkham's town council several years ago, but for unknown reasons was never demolished. This seems to suit the Myriad just fine &mdash; they've repurposed it to their own ends. A ritual takes place here tonight &mdash; one that could spell the end of everything and everywhen.</p>",
+        "timelineWasWeakened": "In your Campaign Log, record that *the timeline was weakened*.",
+        "chaosTokens": "Add 2 {elderThing} tokens to the chaos bag.",
+        "replayScenario": "The investigators must replay _Scenario III: A World Torn Down_. Reset the game to this scenario's _Setup_. No experience points are earned from your previous game.",
+        "quote": "<p>“With a sense of troublous familiarity, I beheld the blurred unstable pictures which flowed past me upon this never-resting medium. Orient temples, flashing with sun-struck bronze and gold; the sharp, crowded gables and spires of medieval cities; tropic and northern forests; the costumes and physiognomies of the Levant, of Persia, of old Rome and Carthage, went by like blown, flying mirages. Each succeeding tableau belonged to a more ancient period than the one before it — and I knew that each was a scene from some former existence of my own.”</p><p>&mdash; Clark Ashton Smith, “The Chain of Aforgomon”</p>"
       }
     }
   }

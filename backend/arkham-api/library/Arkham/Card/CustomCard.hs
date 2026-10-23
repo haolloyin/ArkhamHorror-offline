@@ -65,6 +65,9 @@ missingCustomCardDef cardType cardCode =
   (emptyCardDef cardCode ("Missing card" :: Name) cardType)
     { cdCardTraits = mempty
     , cdTags = [missingCustomCardTag]
+    , -- Building an investigator reads its class, so a stand-in without one
+      -- throws rather than losing the one card this exists to lose.
+      cdClassSymbols = singleton #neutral
     }
 
 {- | The def for a custom code, or a stand-in when it is not to hand.
@@ -163,13 +166,101 @@ customCardCodes card =
  where
   def = customCardDef card
 
-{-# NOINLINE customCardRegistry #-}
-customCardRegistry :: IORef (Map CardCode CustomCard)
-customCardRegistry = unsafePerformIO (newIORef mempty)
+{- | A library keyed by every code its cards answer to, ready for the registry.
 
+Aliases underneath, so a card's own code always wins one. Importing the
+arkham.build pack gives its card a code derived from the same id a hand-built
+card can claim, and in that collision the imported card is the one the deck
+means. Left-biased union rather than row order, which is `updatedAt` and says
+nothing about which card is which.
+
+One function because every path that loads a deck has to resolve the same codes:
+keying it by hand at each of them drifted once already, and a deck naming a card
+by the id it claims then missed it (#5891).
+-}
+customCardsByCode :: [CustomCard] -> Map CardCode CustomCard
+customCardsByCode cards =
+  Map.fromList [(cdCardCode (customCardDef c), c) | c <- cards]
+    `Map.union` Map.fromList [(code, c) | c <- cards, code <- drop 1 (customCardCodes c)]
+
+{- | The registry, with the one thing that can only be known from all of it.
+
+'registrySignatureOwners' maps a signature card's code to the investigator that
+lists it. Derived here, where the registry changes, rather than by searching for
+it where it is asked: the question is asked of every custom def the engine
+reads, thousands of times a turn, and answering each by walking the registry
+made a game's cost grow with the number of custom cards the whole /process/ had
+ever loaded -- every def of every game deserialized and every card of every
+library registered since the last restart.
+-}
+data CustomCardRegistry = CustomCardRegistry
+  { registryCards :: Map CardCode CustomCard
+  , registrySignatureOwners :: Map CardCode CardCode
+  , registryGeneration :: Int
+  -- ^ Moves when, and only when, the cards above do. See 'customCardRegistryGeneration'.
+  }
+
+{-# NOINLINE customCardRegistry #-}
+customCardRegistry :: IORef CustomCardRegistry
+customCardRegistry = unsafePerformIO (newIORef (CustomCardRegistry mempty mempty 0))
+
+{- | A counter that moves whenever the registry does.
+
+Everything derived from a def -- not only the def itself -- stays good for
+exactly as long as this stands still, so a cache anywhere in the engine can
+hold its own entries and drop all of them at once without this module having to
+know that it exists.
+-}
+customCardRegistryGeneration :: MonadIO m => m Int
+customCardRegistryGeneration = registryGeneration <$> readIORef customCardRegistry
+
+{- | Who claims each signature card, keyed by the code the card answers to.
+
+Keyed and queried through 'sanitizeCustomCardCode' so the map's 'Ord' lookup
+decides exactly what the 'elem' it replaced decided. 'Eq CardCode' treats a
+trailing a/b/c/d as a side designator, which 'Ord' knows nothing about; a
+sanitized code ends in a digit, has no side, and so compares structurally.
+
+The registry key rather than the def's own code, and the earliest of them on a
+tie, because that is the order a scan of the map would have found them in.
+-}
+signatureOwners :: Map CardCode CustomCard -> Map CardCode CardCode
+signatureOwners cards =
+  Map.fromListWith (\_later earlier -> earlier)
+    $ [ (sigCode, ownerCode)
+      | (ownerCode, card) <- Map.toList cards
+      , let def = customCardDef card
+      , cdCardType def == InvestigatorType
+      , sigCode <- signatureCodes def
+      ]
+ where
+  -- Raw: substitution asks who the owner is, which is what this answers.
+  signatureCodes def = maybe [] (map sanitizeCustomCardCode) (rawMetaMaybe "_signatures" def)
+
+{- | Add these cards to the registry, if they are not already exactly in it.
+
+Registration happens twice per answer -- once for the game's own snapshot as it
+is deserialized, once for the library of whoever is playing -- and almost every
+time it is handed back precisely what it was handed last time. Noticing that is
+the whole point: a registration that changes nothing leaves the generation
+where it is, so every def and everything derived from one survives the answer
+instead of being rebuilt from meta on the next message that asks for it.
+-}
 registerCustomCards :: MonadIO m => Map CardCode CustomCard -> m ()
-registerCustomCards cards =
-  unless (null cards) $ atomicModifyIORef' customCardRegistry \existing -> (cards <> existing, ())
+registerCustomCards cards = unless (null cards) do
+  changed <- atomicModifyIORef' customCardRegistry \existing ->
+    let
+      alreadyThere new old = if new == old then Nothing else Just new
+      incoming = Map.differenceWith alreadyThere cards (registryCards existing)
+     in
+      if null incoming
+        then (existing, False)
+        else
+          let !merged = incoming <> registryCards existing
+           in (CustomCardRegistry merged (signatureOwners merged) (registryGeneration existing + 1), True)
+  -- A derived def carries the signature restriction the rest of the registry
+  -- implies, so any change to any card invalidates every one of them.
+  when changed $ atomicModifyIORef' customCardDefCache (const (mempty, ()))
 
 {- | Registration as a pure side effect, for the 'FromJSON Game' path where the
 defs must be live before the entities that reference them are parsed.
@@ -180,7 +271,7 @@ registerCustomCardsPure = unsafePerformIO . registerCustomCards
 lookupCustomCard :: HasCardCode a => a -> Maybe CustomCard
 lookupCustomCard (toCardCode -> cardCode)
   | not (isCustomCardCode cardCode) = Nothing
-  | otherwise = unsafePerformIO $ Map.lookup cardCode <$> readIORef customCardRegistry
+  | otherwise = unsafePerformIO $ Map.lookup cardCode . registryCards <$> readIORef customCardRegistry
 
 {- | The def as the engine should see it, with the signature restriction the
 investigator implies.
@@ -191,17 +282,39 @@ added to an investigator's signatures is theirs at once, instead of only after
 it is next saved.
 -}
 lookupCustomCardDef :: HasCardCode a => a -> Maybe CardDef
-lookupCustomCardDef =
-  fmap
-    ( withHiddenRevelation
-        . withAbilityZones
-        . withSignatureRestriction
-        -- Before the zones are derived, because a keyword's result may grant an
-        -- ability with a zone of its own.
-        . withKeywordEffects
-        . customCardDef
-    )
-    . lookupCustomCard
+lookupCustomCardDef (toCardCode -> cardCode)
+  | not (isCustomCardCode cardCode) = Nothing
+  | otherwise = unsafePerformIO do
+      cached <- Map.lookup cardCode <$> readIORef customCardDefCache
+      case cached of
+        Just def -> pure (Just def)
+        Nothing -> case deriveCustomCardDef <$> lookupCustomCard cardCode of
+          Nothing -> pure Nothing
+          Just def -> do
+            atomicModifyIORef' customCardDefCache \m -> (Map.insert cardCode def m, ())
+            pure (Just def)
+
+{- | Derived defs, held until the registry they were derived from changes.
+
+Deriving one parses and rebuilds the whole of a card's meta -- kilobytes of
+ability DSL for an ordinary card -- and 'toCardDef' is a lookup as far as every
+caller is concerned, so it is called freely and the derivation was being redone
+on each of them. Caching the record is enough: its fields stay thunks, so a
+caller still pays only for what it reads, and pays it once.
+-}
+{-# NOINLINE customCardDefCache #-}
+customCardDefCache :: IORef (Map CardCode CardDef)
+customCardDefCache = unsafePerformIO (newIORef mempty)
+
+deriveCustomCardDef :: CustomCard -> CardDef
+deriveCustomCardDef =
+  withRevelationAbility
+    . withAbilityZones
+    . withSignatureRestriction
+    -- Before the zones are derived, because a keyword's result may grant an
+    -- ability with a zone of its own.
+    . withKeywordEffects
+    . customCardDef
 
 {- | Whether the def prints the hidden keyword.
 
@@ -216,17 +329,38 @@ isHiddenCustomCard def = printsHidden && canBeHidden
   canBeHidden =
     cdCardType def `elem` [EnemyType, PlayerEnemyType, TreacheryType, PlayerTreacheryType]
 
-{- | The hidden keyword /is/ a revelation: "an encounter card or weakness with the
-hidden keyword has a revelation ability that secretly adds that card to your
-hand". A treachery is drawn with one either way, but an enemy is not, so without
-this a hidden enemy would spawn nothing and sit in limbo. Derived rather than
-asked for, so the keyword alone is enough to say what the card does -- and so an
-author who writes the def by hand cannot print the keyword without it.
+-- | The meta key holding what a card's revelation does.
+revelationMetaKey :: Text
+revelationMetaKey = "_onRevelation"
+
+-- | The meta key holding where a card's revelation leaves it.
+revelationPlacementMetaKey :: Text
+revelationPlacementMetaKey = "_revelationPlacement"
+
+{- | A card that was given a revelation ability has one.
+
+Read off what the def says rather than off its card type: steps under
+@_onRevelation@, a @_revelationPlacement@ that puts the card somewhere, and the
+hidden keyword -- which "secretly adds that card to your hand", and is the whole
+of what a hidden card's revelation does -- each are a revelation ability. Any
+card type can be given one, so an asset or an event with revelation steps counts
+exactly as a treachery does.
+
+Derived rather than asked for, because a def that reaches the engine by a path
+other than the builder -- a set import, an export from another library, a def
+written by hand or by the MCP -- has nothing to set the flag beside the ability,
+and the two disagreeing is silent: 'hasRevelation' gates the draw, so the card
+is drawn, the ability never runs, and the card stays in hand.
 -}
-withHiddenRevelation :: CardDef -> CardDef
-withHiddenRevelation def
-  | isHiddenCustomCard def, cdRevelation def == NoRevelation = def {cdRevelation = IsRevelation}
+withRevelationAbility :: CardDef -> CardDef
+withRevelationAbility def
+  | hasRevelationAbility, cdRevelation def == NoRevelation = def {cdRevelation = IsRevelation}
   | otherwise = def
+ where
+  hasRevelationAbility = isHiddenCustomCard def || placesItself || notNull steps
+  steps = fromMaybe [] (rawMetaMaybe revelationMetaKey def) :: [Value]
+  -- "none" is the builder's way of saying the steps place it, or nothing does.
+  placesItself = maybe False (/= ("none" :: Text)) (customMetaMaybe revelationPlacementMetaKey def)
 
 withSignatureRestriction :: CardDef -> CardDef
 withSignatureRestriction def
@@ -304,16 +438,6 @@ card's own abilities.
 -}
 customSignatureOwner :: HasCardCode a => a -> Maybe CardCode
 customSignatureOwner (toCardCode -> cardCode) = unsafePerformIO do
-  registry <- readIORef customCardRegistry
-  pure
-    $ listToMaybe
-      [ ownerCode
-      | (ownerCode, card) <- Map.toList registry
-      , let def = customCardDef card
-      , cdCardType def == InvestigatorType
-      , cardCode `elem` signatureCodes def
-      ]
- where
-  -- Raw: substitution asks who the owner is, which is what this answers.
-  signatureCodes def =
-    maybe [] (map sanitizeCustomCardCode) (rawMetaMaybe "_signatures" def)
+  Map.lookup (sanitizeCustomCardCode cardCode)
+    . registrySignatureOwners
+    <$> readIORef customCardRegistry

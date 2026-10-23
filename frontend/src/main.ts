@@ -2,7 +2,6 @@ import './styles/index.css'
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import FloatingVue from 'floating-vue'
-import Toast from "vue-toastification";
 import { createVfm } from 'vue-final-modal'
 import App from './App.vue'
 import router from './router'
@@ -11,13 +10,18 @@ import { useUserStore } from '@/stores/user'
 import { FontAwesomeIcon } from "@fortawesome/vue-fontawesome";
 import { library } from "@fortawesome/fontawesome-svg-core";
 import { faExpeditedssl } from "@fortawesome/free-brands-svg-icons";
-import { faFilter, faGear, faLayerGroup, faBan, faCircleExclamation, faGhost, faLocationDot, faSearch, faList, faImage, faAngleDown, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faArrowUp, faStore, faTriangleExclamation, faShuffle, faTrophy, faDownload, faUpload, faCheckDouble, faFlask, faBug, faPen, faThumbsUp, faHourglassHalf, faCircleXmark, faCircleCheck, faClipboardCheck, faChartSimple, faRectangleList, faCircleQuestion, faBullhorn, faBoxArchive, faUserGear, faPlus, faLink, faLinkSlash, faUsers, faLock, faUnlock } from '@fortawesome/free-solid-svg-icons'
+import { faCode, faFilter, faGear, faLayerGroup, faBan, faCircleExclamation, faGhost, faLocationDot, faSearch, faList, faImage, faAngleDown, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronLeft, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faArrowUp, faStore, faTriangleExclamation, faShuffle, faTrophy, faDownload, faUpload, faCheckDouble, faFlask, faBug, faPen, faThumbsUp, faHourglassHalf, faCircleXmark, faCircleCheck, faClipboardCheck, faChartSimple, faRectangleList, faCircleQuestion, faBullhorn, faBoxArchive, faUserGear, faPlus, faLink, faLinkSlash, faUsers, faLock, faUnlock } from '@fortawesome/free-solid-svg-icons'
 import * as VueI18n from 'vue-i18n'
 import { loadLocaleMessages, normalizeLocale } from '@/locales/messages'
+import { setI18n } from '@/locales/i18n'
 import { preferredLanguage } from '@/locales/language'
 import mitt from 'mitt';
+import { installChunkRecovery, reloadIfStaleChunk } from '@/chunkRecovery'
+import { hideAppLoading } from '@/appLoading'
 
-library.add(faFilter, faBan, faLocationDot, faCircleExclamation, faGhost, faSearch, faList, faImage, faAngleDown, faExpeditedssl, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faArrowUp, faStore, faTriangleExclamation, faShuffle, faTrophy, faGear, faLayerGroup, faDownload, faUpload, faCheckDouble, faFlask, faBug, faPen, faThumbsUp, faHourglassHalf, faCircleXmark, faCircleCheck, faClipboardCheck, faChartSimple, faRectangleList, faCircleQuestion, faBullhorn, faBoxArchive, faUserGear, faPlus, faLink, faLinkSlash, faUsers, faLock, faUnlock)
+library.add(faCode, faFilter, faBan, faLocationDot, faCircleExclamation, faGhost, faSearch, faList, faImage, faAngleDown, faExpeditedssl, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronLeft, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faArrowUp, faStore, faTriangleExclamation, faShuffle, faTrophy, faGear, faLayerGroup, faDownload, faUpload, faCheckDouble, faFlask, faBug, faPen, faThumbsUp, faHourglassHalf, faCircleXmark, faCircleCheck, faClipboardCheck, faChartSimple, faRectangleList, faCircleQuestion, faBullhorn, faBoxArchive, faUserGear, faPlus, faLink, faLinkSlash, faUsers, faLock, faUnlock)
+
+installChunkRecovery()
 
 async function bootstrap() {
   const language = localStorage.getItem('language')
@@ -43,6 +47,8 @@ async function bootstrap() {
     messages: loadedMessages
   })
 
+  setI18n(i18n)
+
   const pinia = createPinia()
   const vfm = createVfm()
   const emitter = mitt()
@@ -66,7 +72,6 @@ async function bootstrap() {
         },
       },
     }).
-    use(Toast, {}).
     use(vfm).
     use(i18n).
     component("font-awesome-icon", FontAwesomeIcon)
@@ -93,4 +98,15 @@ async function bootstrap() {
   app.mount('#app')
 }
 
-void bootstrap()
+/* bootstrap() dynamically imports its locale messages, so a deploy can break it
+ * before the app ever mounts -- where there is no router and no error handler to
+ * notice. */
+void bootstrap().catch((error) => {
+  /* A reload is about to replace the page, so the splash should stay up over
+   * it; anything else means there is no app coming, and sitting under a
+   * throbbing token forever is worse than an empty page. */
+  if (!reloadIfStaleChunk(error)) {
+    hideAppLoading()
+    throw error
+  }
+})

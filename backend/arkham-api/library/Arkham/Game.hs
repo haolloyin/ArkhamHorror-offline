@@ -83,6 +83,7 @@ import Arkham.Helpers.Card (
   extendedCardMatch,
   filterCardsSubstituted,
   getHasVictoryPoints,
+  getModifiedCardCost,
   getVictoryPoints,
   iconsForCard,
  )
@@ -167,8 +168,10 @@ import Arkham.Location.Types (
   toLocationLabel,
   toLocationSymbol,
  )
+import Arkham.Log (toLogRef)
 import Arkham.Log.Entry
 import Arkham.Log.Narrator
+import Arkham.Log.Refs (sourceRefFor)
 import Arkham.Matcher hiding (
   AssetCard,
   AssetDefeated,
@@ -322,6 +325,8 @@ newGame scenarioOrCampaignId seed playerCount difficulty includeTarotReadings =
         , gamePhaseStep = Nothing
         , gameSkillTest = Nothing
         , gameGameState = state
+        , gameOutcome = Nothing
+        , gameLastResolution = Nothing
         , gameFocusedCards = mempty
         , gameHighlightedCards = mempty
         , gameFocusedTarotCards = mempty
@@ -598,6 +603,47 @@ withSkillTestMetadata st = do
   stmRevealStrategy <- getSkillTestRevealStrategy st
   pure $ st `with` SkillTestMetadata {..}
 
+{- | What an effect forbids doing with each card an investigator could use, and
+what is forbidding it.
+
+Prohibitions only -- 'preventsPlay' and 'preventsCommit', the same predicates
+'getIsPlayable' and 'getIsCommittable' consult. Cost, timing, icons, criteria
+and limits are deliberately left out: those change from moment to moment and the
+client already learns them from whether the card is offered as a choice, whereas
+"Dissonant Voices is in your threat area" holds all round and is invisible until
+you try. An entry is kept even when no ref resolves, so the card is still badged
+when the source has left play.
+-}
+prohibitionRefs :: HasGame m => [(Card, [Modifier])] -> m [(CardId, [LogRef])]
+prohibitionRefs prohibited = do
+  entries <- for prohibited \(c, mods) ->
+    if null mods
+      then pure Nothing
+      else do
+        refs <- modifierRefs mods
+        pure $ Just (toCardId c, refs)
+  pure (catMaybes entries)
+
+{- | What to name as responsible for a set of modifiers. May come back empty:
+the effect still applies, we just cannot say what did it.
+-}
+modifierRefs :: HasGame m => [Modifier] -> m [LogRef]
+modifierRefs mods = do
+  -- A modifier whose source has left play still has the card it came on.
+  refs <- for mods \m -> do
+    mRef <- sourceRefFor m.source
+    pure $ mRef <|> (toLogRef <$> modifierCard m)
+  pure $ nub (catMaybes refs)
+
+{- | A prohibition that is about the investigator rather than about one card:
+'Nothing' when they are not under it at all, and the refs naming what is
+responsible when they are.
+-}
+investigatorProhibition :: HasGame m => [Modifier] -> m (Maybe [LogRef])
+investigatorProhibition mods
+  | null mods = pure Nothing
+  | otherwise = Just <$> modifierRefs mods
+
 withInvestigatorConnectionData
   :: HasGame m
   => With WithDeckSize ModifierData
@@ -629,10 +675,20 @@ withInvestigatorConnectionData inner@(With target _) = case target of
     combat <- field InvestigatorBaseCombat (toId investigator')
     agility <- field InvestigatorBaseAgility (toId investigator')
     handSize <- getHandSize (toAttrs investigator')
+    playProhibitions <- prohibitionRefs =<< getPlayProhibitions (toId investigator')
+    commitProhibitions <- prohibitionRefs =<< getCommitProhibitions (toId investigator')
+    cannotDiscoverClues <-
+      investigatorProhibition =<< getCannotDiscoverCluesModifiers (toId investigator')
+    cannotSpendClues <-
+      investigatorProhibition =<< getCannotSpendCluesModifiers (toId investigator')
     let
       additionalData =
         object
           [ "additionalActions" .= additionalActions
+          , "playProhibitions" .= playProhibitions
+          , "commitProhibitions" .= commitProhibitions
+          , "cannotDiscoverClues" .= cannotDiscoverClues
+          , "cannotSpendClues" .= cannotSpendClues
           , "engagedEnemies" .= engagedEnemies
           , "assets" .= (assets <> assets')
           , "events" .= events
@@ -871,6 +927,7 @@ instance ToJSON gid => ToJSON (PublicGame gid) where
       <> ("activeCard" .= gameActiveCard)
       <> ("removedFromPlay" .= gameRemovedFromPlay)
       <> ("gameState" .= gameGameState)
+      <> ("outcome" .= gameOutcomeOf g)
       <> ("inSetup" .= gameInSetup)
       <> ("skillTestResults" .= gameSkillTestResults)
       <> ("question" .= gameQuestion)
@@ -975,6 +1032,7 @@ instance ToJSON gid => ToJSON (PublicGame gid) where
         , "activeCard" .= toJSON gameActiveCard
         , "removedFromPlay" .= toJSON gameRemovedFromPlay
         , "gameState" .= toJSON gameGameState
+        , "outcome" .= toJSON (gameOutcomeOf g)
         , "inSetup" .= toJSON gameInSetup
         , "skillTestResults" .= toJSON gameSkillTestResults
         , "question" .= toJSON gameQuestion
@@ -1352,6 +1410,8 @@ getInvestigatorsMatching MatcherFunc {..} matcher = do
         $ field InvestigatorRemainingActions
         . toId
         >=> (`gameValueMatches` gameValueMatcher)
+    InvestigatorWithStandardActionsRemaining gameValueMatcher ->
+      flip runMatchesM as $ getStandardActions . toId >=> (`gameValueMatches` gameValueMatcher)
     InvestigatorWithActionsPerformed gameValueMatcher ->
       flip runMatchesM as
         $ fieldMap InvestigatorActionsPerformed length
@@ -1993,6 +2053,9 @@ abilityMatches a@Ability {..} = \case
   AbilityOnEnemy enemyMatcher -> case abilitySource.enemy of
     Just eid -> elem eid <$> select enemyMatcher
     _ -> pure False
+  AbilityOnTreachery treacheryMatcher -> case abilitySource.treachery of
+    Just tid -> elem tid <$> select treacheryMatcher
+    _ -> pure False
   AbilityOnInvestigator investigatorMatcher -> case abilitySource.investigator of
     Just iid' -> elem iid' <$> select investigatorMatcher
     _ -> pure False
@@ -2098,6 +2161,9 @@ getAbilitiesMatching matcher = guardYourLocation $ \_ -> do
       _ -> pure False
     AbilityOnEnemy enemyMatcher -> flip filterM as \a -> case a.source.enemy of
       Just eid -> elem eid <$> select enemyMatcher
+      _ -> pure False
+    AbilityOnTreachery treacheryMatcher -> flip filterM as \a -> case a.source.treachery of
+      Just tid -> elem tid <$> select treacheryMatcher
       _ -> pure False
     AbilityOnInvestigator investigatorMatcher -> flip filterM as \a -> case a.source.investigator of
       Just iid' -> elem iid' <$> select investigatorMatcher
@@ -2527,6 +2593,9 @@ getLocationsMatching lmatcher = do
     LocationWithMostClues locationMatcher -> do
       matches' <- go ls locationMatcher
       maxes <$> forToSnd matches' (pure . attr locationClues)
+    LocationWithMostCardsUnderneath locationMatcher -> do
+      matches' <- go ls locationMatcher
+      maxes <$> forToSnd matches' (fieldMap LocationCardsUnderneath length . toId)
     LocationCanBeEnteredBy enemyId -> do
       emods <- getModifiers enemyId
       flip filterM ls $ \l -> do
@@ -2677,10 +2746,13 @@ getLocationsMatching lmatcher = do
 
           imods <- getModifiers investigator
           let
+            -- an additional cost to move is paid once per step, so it rides along
+            -- with the enter half of each step's cost
+            moveCost = mconcat [c | AdditionalCostToMove c <- imods]
             getEnterCost loc = do
               mods <- getModifiers loc
               pcosts <- filterM ((loc <=~>) . fst) [(ma, c) | AdditionalCostToEnterMatching ma c <- imods]
-              pure $ concatMap snd pcosts <> mconcat [c | AdditionalCostToEnter c <- mods]
+              pure $ moveCost <> concatMap snd pcosts <> mconcat [c | AdditionalCostToEnter c <- mods]
             getLeaveCost loc = do
               mods <- getModifiers loc
               pure $ mconcat [c | AdditionalCostToLeave c <- mods]
@@ -2748,10 +2820,11 @@ getLocationsMatching lmatcher = do
 
               imods <- getModifiers investigator
               let
+                moveCost = mconcat [c | AdditionalCostToMove c <- imods]
                 getEnterCost loc = do
                   mods <- getModifiers loc
                   pcosts <- filterM ((loc <=~>) . fst) [(ma, c) | AdditionalCostToEnterMatching ma c <- imods]
-                  pure $ concatMap snd pcosts <> mconcat [c | AdditionalCostToEnter c <- mods]
+                  pure $ moveCost <> concatMap snd pcosts <> mconcat [c | AdditionalCostToEnter c <- mods]
                 getLeaveCost loc = do
                   mods <- getModifiers loc
                   pure $ mconcat [c | AdditionalCostToLeave c <- mods]
@@ -5596,6 +5669,7 @@ instance Query ChaosTokenMatcher where
       IncludeTokenPool m -> includeSealed m
       SealedOnAsset _ _ -> True
       SealedOnEnemy _ _ -> True
+      SealedOnScenarioReference _ -> True
       SealedOnInvestigator _ _ -> True
       SealedOnLocation _ _ -> True
       _ -> False
@@ -5648,6 +5722,10 @@ instance Query ChaosTokenMatcher where
         pure $ isMatch' && t `elem` sealedTokens
       SealedOnAsset assetMatcher chaosTokenMatcher -> \t -> do
         sealedTokens <- selectAgg id AssetSealedChaosTokens assetMatcher
+        isMatch' <- go chaosTokenMatcher t
+        pure $ isMatch' && t `elem` sealedTokens
+      SealedOnScenarioReference chaosTokenMatcher -> \t -> do
+        sealedTokens <- scenarioField ScenarioSealedChaosTokens
         isMatch' <- go chaosTokenMatcher t
         pure $ isMatch' && t `elem` sealedTokens
       WouldReduceYourSkillValueToZero -> \t ->
@@ -5885,7 +5963,8 @@ instance Query ExtendedCardMatcher where
             CanCommitAfterRevealingTokens -> pure True
             OnlySkillTestSource smatcher ->
               getSkillTestSource >>= \case
-                Just source -> sourceMatches source smatcher
+                Just source ->
+                  sourceMatches source $ maybe smatcher (`replaceYouMatcher` smatcher) card.owner
                 Nothing -> pure False
             OnlySkillTest smatcher ->
               getSkillTest >>= \case
@@ -5957,6 +6036,10 @@ instance Query ExtendedCardMatcher where
       VictoryDisplayCardMatch matcher' -> do
         cards <- filter (`elem` cs) <$> getVictoryDisplay
         go cards matcher'
+      CardWithModifiedCostAtLeast n -> do
+        iid <- fromMaybeM (selectJust ActiveInvestigator) (selectOne TurnInvestigator)
+        -- encounter cards have no cost to modify and 'getModifiedCardCost' errors on them
+        filterM (fmap (maybe False (>= n)) . getModifiedCardCost iid) (filterCards IsPlayerCard cs)
       PlayableCardWithCostReduction actionStatus n matcher' -> do
         mTurnInvestigator <- selectOne TurnInvestigator
         active <- selectJust ActiveInvestigator
@@ -6427,6 +6510,7 @@ eventField e fld = do
     EventUses -> pure $ Map.filterWithKey (\k _ -> Token.tokenIsUse k) eventTokens
     EventTokens -> pure eventTokens
     EventPlacement -> pure eventPlacement
+    EventPlayedFrom -> pure eventPlayedFrom
     EventCustomizations -> pure eventCustomizations
     EventMeta -> pure eventMeta
     EventTraits -> pure $ cdCardTraits cdef
@@ -6554,6 +6638,7 @@ instance Projection Scenario where
       ScenarioResignedCardCodes -> pure scenarioResignedCardCodes
       ScenarioResolvedStories -> pure scenarioResolvedStories
       ScenarioChaosBag -> pure scenarioChaosBag
+      ScenarioSealedChaosTokens -> pure scenarioSealedChaosTokens
       ScenarioCustomChaosBags -> pure scenarioCustomChaosBags
       ScenarioInResolution -> pure scenarioInResolution
       ScenarioIsPrelude -> pure scenarioIsPrelude

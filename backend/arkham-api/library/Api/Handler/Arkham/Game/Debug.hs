@@ -14,6 +14,7 @@ module Api.Handler.Arkham.Game.Debug (
 import Api.Arkham.Export
 import Api.Arkham.Helpers
 import Api.Arkham.Types.MultiplayerVariant
+import Api.Handler.Arkham.CustomCards (forRendering, setPayloadEtag, userCustomCards)
 import Arkham.Card.CardCode
 import Arkham.Card.CardDef (cdCardCode)
 import Arkham.Card.CustomCard
@@ -22,6 +23,7 @@ import Arkham.Id
 import Codec.Compression.GZip qualified as GZip
 import Conduit
 import Control.Exception (evaluate)
+import Data.Aeson qualified as Aeson
 import Data.Aeson.Types (parseMaybe)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
@@ -30,12 +32,10 @@ import Data.Text qualified as T
 import Data.Time.Clock
 import Database.Esqueleto.Experimental hiding (update)
 import Database.Persist qualified as Persist
-import Entity.Arkham.CustomCard
 import Entity.Arkham.Player
 import Entity.Arkham.Step
 import Import hiding (delete, exists, on, (==.))
 import Json
-import Safe (fromJustNote)
 import UnliftIO.Exception (catch, try)
 
 normalizeJsonInvestigatorId :: Text -> Text
@@ -44,15 +44,22 @@ normalizeJsonInvestigatorId iid = if "c" `T.isPrefixOf` iid then iid else "c" <>
 isGzipped :: BS.ByteString -> Bool
 isGzipped bs = BS.take 2 bs == BS.pack [0x1f, 0x8b]
 
+-- Both halves report what actually went wrong: the import UI shows the string
+-- straight to the player, and "this export is from a newer engine" and "this
+-- file is not an export at all" are not the same problem.
 decodeExportBytes :: BS.ByteString -> Handler (Either String ArkhamExport)
 decodeExportBytes bytes
+  | BS.null bytes = pure $ Left "The uploaded file was empty."
   | isGzipped bytes = do
       eDecompressed <-
         liftIO $ try @_ @SomeException $ evaluate $ BSL.toStrict $ GZip.decompress $ BSL.fromStrict bytes
       pure $ case eDecompressed of
-        Left err -> Left $ displayException err
-        Right decompressed -> eitherDecodeStrict' decompressed
-  | otherwise = pure $ eitherDecodeStrict' bytes
+        Left err -> Left $ "The compressed export could not be unpacked: " <> displayException err
+        Right decompressed -> describeDecode $ eitherDecodeStrict' decompressed
+  | otherwise = pure $ describeDecode $ eitherDecodeStrict' bytes
+ where
+  describeDecode =
+    first ("The export does not match what this version of the game can read: " <>)
 
 -- Compress each emitted JSON chunk as its own gzip member. Gzip readers are
 -- required to handle concatenated members, and this guarantees we keep sending
@@ -185,14 +192,12 @@ postApiV1ArkhamGamesImportR = do
   (params, files) <- runRequestBody
   let
     mInvestigatorId = fmap normalizeJsonInvestigatorId $ snd <$> find ((== "investigatorId") . fst) params
-  eExportData :: Either String ArkhamExport <-
-    decodeExportBytes
-      =<< ( fileSourceByteString
-              . snd
-              . fromJustNote "No export file uploaded"
-              . headMay
-              $ files
-          )
+  -- An absent file is the caller's mistake, not a server fault: say so as a 400
+  -- with a reason rather than dying in `fromJust` as a 500.
+  fileInfo <- case headMay files of
+    Nothing -> invalidArgs ["No export file was uploaded."]
+    Just (_, fileInfo) -> pure fileInfo
+  eExportData :: Either String ArkhamExport <- decodeExportBytes =<< fileSourceByteString fileInfo
   now <- liftIO getCurrentTime
 
   case eExportData of
@@ -214,7 +219,7 @@ postApiV1ArkhamGamesImportR = do
               ]
         campaignInvestigatorIds = map normalizeJsonInvestigatorId $ aeCampaignPlayers export
       key <- runDB $ do
-        gameId <- insert $ ArkhamGame agedName agedCurrentData agedStep variant now now
+        gameId <- insert $ ArkhamGame agedName agedCurrentData agedStep variant now now False
         case variant of
           -- A seat per investigator, as game creation does: the importing user
           -- holds them all, and a one-row solo import leaves every other
@@ -267,7 +272,7 @@ postApiV1ArkhamGamesImportR = do
         pure gameId
       pure
         $ toPublicGame
-          (Entity key $ ArkhamGame agedName agedCurrentData agedStep variant now now)
+          (Entity key $ ArkhamGame agedName agedCurrentData agedStep variant now now False)
           -- An import's rows come straight from the export, so hand them over
           -- the same way a live read would: structured where the row has a
           -- payload, legacy text otherwise.
@@ -325,16 +330,39 @@ postApiV1ArkhamGameClaimSeatR gameId = do
 Served on its own rather than folded into the game payload: a custom card
 carries its art inline (a data URI for a dropped image), which has no business
 riding every websocket update.
+
+Read through @gameCustomCards@ rather than by loading the game. @current_data@
+decodes to a whole 'Arkham.Game.Game' -- every location, asset and card, 97kB of
+JSON and several times that for a late campaign -- and this wants one key of it,
+which Postgres can hand over on its own.
+
+Stripped to 'forRendering', because the script on a custom card is read by the
+engine out of the library and by the card builder out of its own request, and by
+nothing here. 'setPayloadEtag' then lets a reader that already has these cards
+be told so, which is what makes moving between pages free rather than another
+copy of the table's whole card set.
 -}
 getApiV1ArkhamGameCustomCardsR :: ArkhamGameId -> Handler [CustomCard]
 getApiV1ArkhamGameCustomCardsR gameId = do
   userId <- getRequestUserId
-  ge <- runDB $ get404 gameId
-  rows <- runDB $ Persist.selectList [ArkhamCustomCardUserId Persist.==. userId] []
+  recorded <- runDB do
+    rows :: [Single Aeson.Value] <-
+      rawSql
+        "SELECT COALESCE(current_data -> 'gameCustomCards', '{}'::jsonb) FROM arkham_games WHERE id = ?"
+        [toPersistValue gameId]
+    case rows of
+      [] -> notFound
+      Single raw : _ -> pure $ fromMaybe mempty $ parseMaybe parseJSON raw
   -- Your own library wins over the copy recorded on the game, so editing a card
   -- shows through at the table without having to re-add it.
-  let library = Map.fromList do
-        Entity _ row <- rows
-        def <- maybeToList $ parseMaybe parseJSON (arkhamCustomCardDef row)
-        pure (cdCardCode def, CustomCard def (arkhamCustomCardArt row))
-  pure $ toList $ library <> gameCustomCards ge.currentData
+  library <- userCustomCards userId
+  {- Re-keyed by each card's own code before being listed, because the library is
+  keyed by every code a card answers to -- its own and the arkham.build aliases
+  'userCustomCards' adds underneath -- and listing it as it stands would send an
+  aliased card once per alias. The reader derives the aliases again from the def
+  it is given, so they were never worth the bytes. -}
+  let
+    deduped = Map.fromList [(cdCardCode (customCardDef c), c) | c <- toList (library <> recorded)]
+    payload = map forRendering (toList deduped)
+  setPayloadEtag payload
+  pure payload

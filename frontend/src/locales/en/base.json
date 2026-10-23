@@ -502,6 +502,18 @@
   },
   "player": {
     "viewDeck": "View Deck",
+    "cannotPlay": "An effect is preventing you from playing this card",
+    "cannotPlayBecause": "{source} is preventing you from playing this card",
+    "cannotCommit": "An effect is preventing you from committing this card",
+    "cannotCommitBecause": "{source} is preventing you from committing this card",
+    "cannotPlayOrCommit": "An effect is preventing you from playing or committing this card",
+    "cannotPlayOrCommitBecause": "{source} is preventing you from playing or committing this card",
+    "cannotDiscoverClues": "An effect is preventing you from discovering clues",
+    "cannotDiscoverCluesBecause": "{source} is preventing you from discovering clues",
+    "cannotSpendClues": "An effect is preventing you from spending clues",
+    "cannotSpendCluesBecause": "{source} is preventing you from spending clues",
+    "cannotDiscoverOrSpendClues": "An effect is preventing you from discovering or spending clues",
+    "cannotDiscoverOrSpendCluesBecause": "{source} is preventing you from discovering or spending clues",
     "silenceCard": "Silence — skip this card's free triggers and reactions while it is hidden",
     "unsilenceCard": "Unsilence — offer this card's triggers again"
   },
@@ -518,7 +530,23 @@
     "solo": "Solo",
     "multiplayer": "Multiplayer",
     "soloDescription": "You will control all investigators.",
-    "multiplayerDescription": "You will receive an invite link so others can join and claim their investigators."
+    "multiplayerDescription": "You will receive an invite link so others can join and claim their investigators.",
+    "chooseFile": "Click to choose export file\u2026",
+    "trimmed": "This export is too large to upload in full, so only the newest {kept} of its {total} saved steps will be imported. The game picks up exactly where it left off \u2014 only undo cannot reach further back than that.",
+    "trimmedAll": "This export is too large to upload in full, so all {total} of its saved steps will be dropped. The game picks up exactly where it left off \u2014 only undo will have nothing to go back to.",
+    "errors": {
+      "empty": "That file is empty \u2014 the export may not have finished downloading.",
+      "notJson": "That file could not be read as JSON, so it isn't an Arkham Horror export.",
+      "notAnExport": "That file is valid JSON but isn't an Arkham Horror game export \u2014 it has no campaign data in it.",
+      "badGzip": "That compressed file could not be unpacked. Re-download the export and try again.",
+      "noDecompression": "This browser can't unpack a compressed export. Upload the uncompressed .json export instead.",
+      "tooLarge": "The server refused the upload: at {size} the file is larger than it will accept. This game has too much saved history to import \u2014 please report it so the limit can be raised.",
+      "unreachable": "The connection dropped while uploading {size}. Check your connection \u2014 if it keeps failing, the file is larger than the server will accept.",
+      "notAuthorized": "You need to be signed in to import a game. Sign in and try again.",
+      "maintenance": "The server is down for maintenance. Try again in a few minutes.",
+      "rejected": "The server could not import that game: {reason}",
+      "statusOnly": "The server could not import that game (error {status}). Please try again."
+    }
   },
   "questionFilter": {
     "filter": "Filter"
@@ -572,7 +600,22 @@
   "home": {
     "dismiss": "Dismiss",
     "noActiveGames": "No active games.",
-    "loadGame": "Load Game"
+    "loadGame": "Load Game",
+    "yourGames": "Your Games",
+    "tabsLabel": "Which games to show",
+    "outcomeFilterLabel": "Filter finished games by outcome",
+    "allOutcomes": "All",
+    "noFinishedGames": "No finished games.",
+    "noGamesForOutcome": "No finished games with that outcome.",
+    "watchGames": "Watch",
+    "watchGamesAvailable": "{count} live game open to spectators | {count} live games open to spectators"
+  },
+  "watch": {
+    "title": "Games to Watch",
+    "blurb": "Games other people are playing right now and have opened up to spectators. You are watching only \u2014 you cannot take any actions.",
+    "empty": "Nobody is hosting a game for spectators right now.",
+    "back": "\u2190 Your Games",
+    "loading": "Loading\u2026"
   },
   "about": {
     "supportTitle": "Support",
@@ -588,6 +631,8 @@
     "languageHelp": "This will change the language of the cards and app, but will default to English if a card or text is not available in the selected language.",
     "phaseTransitionNotifications": "Phase transition notifications",
     "phaseTransitionNotificationsHelp": "Show a full-screen notification when the game enters a new phase.",
+    "spectators": "Allow spectators by default",
+    "spectatorsHelp": "When on, new games you start are listed on the home page for anyone to watch. You still choose per game when you start one, and that choice is fixed for the life of that game.",
     "enrollInBeta": "Enroll in beta",
     "betaWarning": "Beta features are likely very broken and games may be unrecoverable, please only enable this if you are willing to provide feedback.",
     "epicMultiplayer": "Epic Multiplayer (dev)",
@@ -640,6 +685,7 @@
     "submissions": "Submissions",
     "deleteRoom": "Delete",
     "dropRoom": "Drop",
+    "inspectRoom": "Inspect",
     "confirmDropRoom": "Drop this room? {n} connected player will be sent back to the home page. | Drop this room? {n} connected players will be sent back to the home page.",
     "gameStats": "Stats",
     "notifications": "Notifications"
@@ -664,7 +710,14 @@
     "locationLocked": "This location is currently locked."
   },
   "gameRow": {
-    "solo": "Solo"
+    "solo": "Solo",
+    "won": "Won",
+    "lost": "Lost",
+    "wonUncertain": "Won?",
+    "outcomeUncertain": "The Campaign Guide prints this ending as \u201cThe investigators win the campaign\u2026?\u201d and does not say more.",
+    "watch": "Watch",
+    "inactive": "Inactive",
+    "inactiveTooltip": "Nobody has taken an action in this game for at least five minutes."
   },
   "replay": {
     "restart": "Restart",
@@ -1230,10 +1283,15 @@
     "newCard": "New card",
     "emptySetPanel": "Nothing in this set yet. Build a card and it lands here.",
     "exportCard": "Export this card",
+    "rawCard": "Open this card's JSON",
+    "selectCards": "Select cards",
+    "rawSaved": "Saved {name}",
+    "rawFailed": "That def could not be saved",
     "deleteCard": "Delete this card",
     "hideLibrary": "Hide library",
     "showLibrary": "Show library",
     "editingCard": "Editing card",
+    "editingNamedCard": "Editing {name}",
     "inSet": "in {name}",
     "saveChanges": "Save changes",
     "createCard": "Create card",
@@ -1266,6 +1324,7 @@
     "reviewShowAll": "Show all {count}",
     "reviewShowLess": "Show fewer",
     "reviewConfirm": "Import",
+    "reviewElsewhere": "{name} is already in \"{set}\", and a card belongs to one set \u2014 importing it here would take it out of that one. | {count} of these cards are already in other sets, {name} among them. A card belongs to one set, so importing them here would take them out of those.",
     "reviewConfirmReplace": "Replace",
     "reviewCancel": "Cancel",
     "types": {
@@ -1330,6 +1389,9 @@
     "viewAll": "View all {count}",
     "previewLabel": "Preview",
     "setFilterPlaceholder": "Filter by name, type or trait…",
+    "viewLabel": "How to show the cards",
+    "viewImages": "Images",
+    "viewList": "List",
     "submitTitle": "Submit \"{name}\" to the marketplace",
     "publishTitle": "Publish \"{name}\" to the marketplace",
     "submitLede": "Sent for review. It goes on the shelf once someone has looked it over.",
@@ -1412,6 +1474,40 @@
     "decidedApproved": "Approved by {by} on {at}.",
     "decidedDenied": "Denied by {by} on {at}."
   },
+  "adminCardSets": {
+    "title": "All Card Sets",
+    "scopeLabel": "Which sets to show",
+    "scope": {
+      "originals": "Originals",
+      "published": "Published",
+      "copies": "Copies",
+      "all": "All"
+    },
+    "searchLabel": "Search card sets",
+    "searchPlaceholder": "Set name, author or email\u2026",
+    "loading": "Loading card sets\u2026",
+    "loadFailed": "Could not load the card sets.",
+    "empty": "No card sets here.",
+    "emptySearch": "Nothing matching \u201c{query}\u201d.",
+    "cardCount": "{n} card | {n} cards",
+    "edited": "edited {at}",
+    "expansion": "Expansion",
+    "live": "In marketplace v{version}",
+    "awaitingReview": "Awaiting review v{version}",
+    "deniedTag": "Not approved",
+    "follows": {
+      "marketplace": "Copy of a listing",
+      "link": "Copy from a link"
+    },
+    "imported": "Imported pack",
+    "viewCards": "View cards",
+    "hideCards": "Hide cards",
+    "loadingCards": "Loading cards\u2026",
+    "cardsFailed": "Could not load the cards in that set.",
+    "previous": "Previous",
+    "next": "Next",
+    "showing": "{first}\u2013{last} of {total}"
+  },
   "adminUsers": {
     "title": "Users",
     "note": "Find an account by name or email \u2014 granting a feature here is the only way into it",
@@ -1474,6 +1570,8 @@
     "futureDated": "Dated ahead \u2014 already live"
   },
   "gameClosed": "That game has been closed.",
+  "gameAbandonedTitle": "Everyone has left",
+  "gameAbandoned": "The players have left this game, so there is nothing left to watch.",
   "maintenance": {
     "title": "Down for maintenance",
     "body": "Arkham Horror is down for scheduled database maintenance.",
@@ -1533,6 +1631,10 @@
       "abandonedBeforeStart": "Never started",
       "scenariosPlayed": "Scenarios played",
       "scenarioSuccess": "Scenario success",
+      "campaignSuccess": "Campaign success",
+      "ending": "Ending",
+      "result": "Result",
+      "games": "Games",
       "playerMix": "Player mix",
       "difficultyMix": "Difficulty mix"
     },
@@ -1557,6 +1659,26 @@
     "achievementsSub": "Share of the {n} people who have earned at least one achievement. Rarest first.",
     "inProgressN": "{n} in progress",
     "noAchievements": "Nobody has earned an achievement yet.",
+    "won": "Won",
+    "lost": "Lost",
+    "outcomeUnknown": "Outcome unknown",
+    "outcomeUnknownSub": "Finished before the engine recorded how a game ended. Press Work out outcomes to reconstruct them from what each campaign left behind.",
+    "backfillOutcomes": "Work out outcomes",
+    "backfillingOutcomes": "Working out outcomes\u2026",
+    "backfillFailed": "Could not work out outcomes.",
+    "backfillResult": "Worked out {computed}; {remaining} still unknown.",
+    "backfillUndecided": "{undecided} could not be judged and were left alone.",
+    "backfillDone": "Every finished game has an outcome.",
+    "endingsHeading": "Campaign endings",
+    "endingsSub": "Which ending each campaign\u2019s runs actually stopped on, most common first. Only runs with a known outcome appear. \u201cNo resolution\u201d is a final scenario lost or resigned out of.",
+    "noEndings": "No campaign has recorded an ending yet.",
+    "noResolution": "No resolution",
+    "uncertain": "(stated as \u201cwin the campaign\u2026?\u201d)",
+    "ofWhichUncertain": "{n} stated as \u201c\u2026?\u201d",
+    "resolutionN": "Resolution {n}",
     "nPlayerPlus": "{n}+ players"
+  },
+  "toasts": {
+    "dismiss": "Dismiss"
   }
 }

@@ -116,6 +116,8 @@ data WindowMatcher
     -}
     EnemyWouldTakeDamageWithAmount Timing SourceMatcher EnemyMatcher ValueMatcher
   | WouldSearchDeck Timing Who DeckMatcher
+  | -- | "When a card would search the encounter deck to find an enemy".
+    WouldFindEncounterCard Timing Who TargetMatcher SearchMatcher
   | WouldLookAtDeck Timing Who DeckMatcher
   | LookedAtDeck Timing Who DeckMatcher
   | SearchedDeck Timing Who DeckMatcher
@@ -191,6 +193,10 @@ data WindowMatcher
   | DiscoverClues Timing Who Where ValueMatcher
   | WouldDiscoverClues Timing Who Where ValueMatcher SourceMatcher
   | GainsClues Timing Who ValueMatcher
+  | {- | The counterpart of 'LostActions'. @#when@ is before the gain lands, so
+    it can be cancelled by dropping the queued @Do (GainActions ...)@.
+    -}
+    GainsActions Timing Who SourceMatcher ValueMatcher
   | GainsResources Timing Who SourceMatcher ValueMatcher
   | SpendsResources Timing Who ValueMatcher
   | EnemyWouldAttack Timing Who EnemyAttackMatcher EnemyMatcher

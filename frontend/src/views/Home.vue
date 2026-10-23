@@ -1,8 +1,9 @@
 <script lang="ts" setup>
 import { ref, computed, Ref } from 'vue';
 import { useUserStore } from '@/stores/user';
-import { useRouter, useRoute } from 'vue-router';
-import { deleteEvent, deleteGame, fetchGames, fetchEvents, fetchNotifications } from '@/arkham/api';
+import { useCardStore } from '@/stores/cards';
+import { useRouter } from 'vue-router';
+import { deleteEvent, deleteGame, fetchGames, fetchEvents, fetchNotifications, fetchSpectatableGameActivity } from '@/arkham/api';
 import { cullGameLocalStorage, removeGameLocalStorage } from '@/arkham/localStorage';
 import { isDevBuild } from '@/arkham/displayRules';
 import type { BrokenGameDetails, GameDetails } from '@/arkham/types/Game';
@@ -10,14 +11,16 @@ import type { EventListEntry } from '@/arkham/types/EpicEvent';
 import type { AppNotification } from '@/arkham/api';
 import GameRow from '@/arkham/components/GameRow.vue';
 import EventRow from '@/arkham/components/EventRow.vue';
-import NewGame from '@/arkham/views/NewCampaign.vue';
 import ImportGame from '@/arkham/components/ImportGame.vue';
 import PrimaryButton from '@/components/PrimaryButton.vue';
+import SegmentedToggle from '@/components/SegmentedToggle.vue';
 import { storeToRefs } from 'pinia';
+import { useI18n } from 'vue-i18n';
 
-const route = useRoute()
+const { t } = useI18n()
 const router = useRouter()
 const store = useUserStore()
+const cardStore = useCardStore()
 const { currentUser } = storeToRefs(store)
 const games: Ref<GameDetails[]> = ref([])
 const brokenGames: Ref<BrokenGameDetails[]> = ref([])
@@ -29,10 +32,56 @@ const dismissedNotifications = JSON.parse(localStorage.getItem('dismissedNotific
 const activeGames = computed(() => games.value.filter(g => g.gameState.tag !== 'IsOver'))
 const finishedGames = computed(() => games.value.filter(g => g.gameState.tag === 'IsOver'))
 
+type Tab = 'active' | 'finished'
+type OutcomeFilter = 'all' | 'won' | 'lost'
+
+/* Null until the player picks a tab, so that until they do we can land them on
+ * whichever tab actually has something in it -- someone whose games are all
+ * finished should not arrive at an empty page. */
+const chosenTab = ref<Tab | null>(null)
+const tab = computed<Tab>(() => {
+  if (chosenTab.value) return chosenTab.value
+  if (activeGames.value.length > 0 || events.value.length > 0 || brokenGames.value.length > 0) return 'active'
+  return finishedGames.value.length > 0 ? 'finished' : 'active'
+})
+
+const outcomeFilter = ref<OutcomeFilter>('all')
+const wonGames = computed(() => finishedGames.value.filter(g => g.outcome?.result === 'Won'))
+const lostGames = computed(() => finishedGames.value.filter(g => g.outcome?.result === 'Lost'))
+
+/* A finished game can still have no verdict -- a standalone, or a campaign that
+ * ended in a way we cannot read -- so Won and Lost need not add up to All. */
+const shownFinishedGames = computed(() => {
+  switch (outcomeFilter.value) {
+    case 'won': return wonGames.value
+    case 'lost': return lostGames.value
+    default: return finishedGames.value
+  }
+})
+
+const tabOptions = computed(() => [
+  { value: 'active' as Tab, label: t('activeGames'), count: activeGames.value.length + events.value.length },
+  { value: 'finished' as Tab, label: t('finishedGames'), count: finishedGames.value.length },
+])
+
+const outcomeOptions = computed(() => [
+  { value: 'all' as OutcomeFilter, label: t('home.allOutcomes'), count: finishedGames.value.length },
+  { value: 'won' as OutcomeFilter, label: t('gameRow.won'), count: wonGames.value.length },
+  { value: 'lost' as OutcomeFilter, label: t('gameRow.lost'), count: lostGames.value.length },
+])
+
 fetchGames().then((result) => {
   const availableGames = result.filter((g) => g.tag === 'game') as GameDetails[]
   cullGameLocalStorage(availableGames)
   games.value = availableGames
+  /* One request for every custom investigator on the page, rather than each row
+   * buying the whole of its game's card set to read a portrait off it. */
+  cardStore.ensureCustomCardPortraits(
+    availableGames.flatMap((game) => [
+      ...game.investigators.map((investigator) => investigator.id),
+      ...Object.values(game.otherInvestigators).map((investigator) => investigator.id),
+    ]),
+  )
   // Only dev builds get the broken-game rows: in production an unloadable game
   // is noise a player cannot act on beyond deleting it.
   brokenGames.value = isDevBuild() ? (result.filter((g) => g.tag === 'error') as BrokenGameDetails[]) : []
@@ -52,6 +101,17 @@ fetchEvents().then((result) => {
 })
 
 fetchNotifications().then((result) => notifications.value = result.filter((n: AppNotification) => !dismissedNotifications.includes(n.id)))
+
+/* How many games are open to spectators right now, for the badge on the Watch
+ * button. The digest is the ids-only probe the watch page polls, so this is a
+ * handful of uuids rather than a game apiece -- but it is read once on mount
+ * and left alone: the number is an invitation to click through, and the page
+ * behind the button is the one that keeps itself current. A failure just leaves
+ * the button unbadged. */
+const liveGameCount = ref(0)
+fetchSpectatableGameActivity()
+  .then((activity) => liveGameCount.value = activity.length)
+  .catch(() => liveGameCount.value = 0)
 
 async function deleteGameEvent(game: GameDetails) {
   deleteGame(game.id).then(() => {
@@ -73,7 +133,6 @@ async function deleteEpicEvent(event: EventListEntry) {
   })
 }
 
-const newGame = ref(route.path === "/new-game" || false)
 const showImportGame = ref(false)
 const importGameRef = ref<any>(null)
 const importGameSelected = computed(() => !!importGameRef.value?.selectedFile)
@@ -81,27 +140,7 @@ const importGameCanSubmit = computed(() => importGameRef.value?.canSubmit ?? fal
 const importGameLoading = computed(() => importGameRef.value?.loading ?? false)
 const submitImportGame = () => importGameRef.value?.submit()
 
-// View Transition helper
-function withViewTransition(fn: () => void) {
-  const d = document as any
-  if (typeof d.startViewTransition === 'function') {
-    d.startViewTransition(() => fn())
-  } else {
-    fn()
-  }
-}
-
-const toggleNewGame = () => {
-  withViewTransition(() => {
-    newGame.value = !newGame.value
-    showImportGame.value = false
-    if (newGame.value === true) {
-      router.push({ path: "/new-game" })
-    } else {
-      router.push({ path: "/" })
-    }
-  })
-}
+const goToNewGame = () => router.push({ path: '/new-game' })
 
 const toggleImportGame = () => {
   showImportGame.value = !showImportGame.value
@@ -115,15 +154,7 @@ const dismissNotification = (notification: AppNotification) => {
 
 <template>
   <div class="page-container">
-    <NewGame v-if="currentUser && newGame" @close="toggleNewGame">
-      <template #cancel>
-        <button @click="toggleNewGame" class="cancel-new-game-button">
-          <span>{{ $t('cancel') }}</span>
-        </button>
-      </template>
-    </NewGame>
-
-    <div v-if="!newGame" class="home page-content">
+    <div class="home page-content">
       <div class="notification" v-for="notification in notifications" :key="notification.id">
         <p v-html="notification.body"></p>
         <a @click.prevent="dismissNotification(notification)" href="#">{{ $t('home.dismiss') }}</a>
@@ -132,12 +163,32 @@ const dismissNotification = (notification: AppNotification) => {
       <div class="container">
         <section>
           <header class="main-header">
-            <h2>{{$t('activeGames')}}</h2>
+            <div class="title-group">
+              <h2>{{$t('home.yourGames')}}</h2>
+              <SegmentedToggle
+                class="tabs"
+                :model-value="tab"
+                :options="tabOptions"
+                :label="$t('home.tabsLabel')"
+                @update:model-value="chosenTab = $event as Tab"
+              />
+            </div>
             <div class="header-actions">
+              <!-- Other people's games are a page of their own: they are not
+                   yours, and the only thing to do with one is watch it. -->
+              <RouterLink class="secondary-cta watch-cta" to="/watch">
+                <font-awesome-icon icon="eye" />
+                {{ $t('home.watchGames') }}
+                <span
+                  v-if="liveGameCount > 0"
+                  class="watch-count"
+                  :aria-label="$t('home.watchGamesAvailable', { count: liveGameCount }, { plural: liveGameCount })"
+                >{{ liveGameCount }}</span>
+              </RouterLink>
               <button v-if="currentUser" class="secondary-cta" type="button" @click="toggleImportGame">
                 {{ $t('home.loadGame') }}
               </button>
-              <PrimaryButton :label="$t('newGame')" @click="toggleNewGame" />
+              <PrimaryButton :label="$t('newGame')" @click="goToNewGame" />
             </div>
           </header>
           <Transition name="slide">
@@ -160,31 +211,47 @@ const dismissNotification = (notification: AppNotification) => {
               <ImportGame ref="importGameRef" />
             </div>
           </Transition>
-          <div v-if="activeGames.length === 0 && events.length === 0 && brokenGames.length === 0" class="box">
-            <p>{{ $t('home.noActiveGames') }}</p>
-          </div>
-          <div v-for="game in brokenGames" :key="game.id" class="broken-game">
-            <div class="broken-game-details">
-              <span class="broken-game-title">{{ game.name }}</span>
-              <span class="broken-game-error">{{ game.error }}</span>
+          <template v-if="tab === 'active'">
+            <div v-if="activeGames.length === 0 && events.length === 0 && brokenGames.length === 0" class="box">
+              <p>{{ $t('home.noActiveGames') }}</p>
             </div>
-            <a href="#delete" class="broken-game-delete" @click.prevent="deleteBrokenGame(game)">
-              <font-awesome-icon icon="trash" />
-            </a>
-          </div>
-          <EventRow
-            v-for="event in events"
-            :key="event.id"
-            :event="event"
-            :deleteEvent="() => deleteEpicEvent(event)"
-          />
-          <GameRow v-for="game in activeGames" :key="game.id" :game="game" :deleteGame="() => deleteGameEvent(game)" />
-        </section>
+            <div v-for="game in brokenGames" :key="game.id" class="broken-game">
+              <div class="broken-game-details">
+                <span class="broken-game-title">{{ game.name }}</span>
+                <span class="broken-game-error">{{ game.error }}</span>
+              </div>
+              <a href="#delete" class="broken-game-delete" @click.prevent="deleteBrokenGame(game)">
+                <font-awesome-icon icon="trash" />
+              </a>
+            </div>
+            <EventRow
+              v-for="event in events"
+              :key="event.id"
+              :event="event"
+              :deleteEvent="() => deleteEpicEvent(event)"
+            />
+            <GameRow v-for="game in activeGames" :key="game.id" :game="game" :deleteGame="() => deleteGameEvent(game)" />
+          </template>
 
-        <section>
-          <header><h2 v-if="finishedGames.length > 0">{{$t('finishedGames')}}</h2></header>
-          <GameRow v-for="game in finishedGames" :key="game.id" :game="game" :deleteGame="() => deleteGameEvent(game)" />
-
+          <template v-else>
+            <SegmentedToggle
+              v-if="finishedGames.length > 0"
+              class="outcome-filter"
+              :model-value="outcomeFilter"
+              :options="outcomeOptions"
+              :label="$t('home.outcomeFilterLabel')"
+              @update:model-value="outcomeFilter = $event as OutcomeFilter"
+            />
+            <div v-if="shownFinishedGames.length === 0" class="box">
+              <p>{{ finishedGames.length === 0 ? $t('home.noFinishedGames') : $t('home.noGamesForOutcome') }}</p>
+            </div>
+            <GameRow
+              v-for="game in shownFinishedGames"
+              :key="game.id"
+              :game="game"
+              :deleteGame="() => deleteGameEvent(game)"
+            />
+          </template>
         </section>
       </div>
     </div>
@@ -193,6 +260,13 @@ const dismissNotification = (notification: AppNotification) => {
 </template>
 
 <style scoped>
+/* Switching tabs changes how tall the page is, and a scrollbar that appears and
+   disappears with it shifts the whole column sideways under the pointer. Hold
+   the gutter open whether or not it is needed. */
+.page-container {
+  scrollbar-gutter: stable;
+}
+
 .broken-game {
   display: flex;
   gap: 10px;
@@ -259,7 +333,10 @@ h2 {
   }
 }
 
+/* The toggles here are chrome: a muted pill, so the eye still goes to New Game. */
 .home {
+  --segmented-accent: var(--button-1-muted);
+  --segmented-accent-highlight: var(--button-1-muted-highlight);
   max-width: 98vw;
   min-width: 60vw;
   margin: 0 auto;
@@ -288,18 +365,6 @@ h2 {
 
 button {
   transition: background-color 0.3s linear;
-}
-
-button.cancel-new-game-button {
-  height: fit-content;
-  align-self: center;
-  font-size: 1em;
-  font-weight: bolder;
-  width: fit-content;
-  background-color: var(--survivor);
-  &:hover {
-    background-color: var(--survivor-extra-dark);
-  }
 }
 
 button.new-game-button {
@@ -493,13 +558,62 @@ header {
   }
 }
 
-header.main-header {
-  view-transition-name: main-header;
+/* The tabs belong to the title, not to the actions, so they travel with it and
+   the pair wraps together once the header stops fitting on one line. */
+.main-header {
+  flex-wrap: wrap;
+}
+
+.title-group {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+
   h2 {
-    view-transition-name: main-header-title;
+    flex: none;
   }
-  .primary-btn {
-    view-transition-name: main-header-button;
+}
+
+.tabs {
+  flex: none;
+  min-width: 220px;
+}
+
+@media (max-width: 768px) {
+  .main-header {
+    flex-direction: column;
+    align-items: stretch;
   }
+
+  .header-actions {
+    justify-content: flex-start;
+  }
+}
+
+.outcome-filter {
+  margin-bottom: 10px;
+  max-width: 360px;
+}
+
+/* A link wearing a button's clothes, so it needs the centring a button has. */
+.watch-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+}
+
+/* Reads as a count on the button rather than as a second word in its label, so
+   it keeps the pill shape at any number of digits. */
+.watch-count {
+  background: var(--background-dark);
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  min-width: 1.6em;
+  padding: 3px 6px;
+  text-align: center;
 }
 </style>

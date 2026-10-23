@@ -8,6 +8,7 @@
 import * as JsonDecoder from 'ts.data.json'
 import { reactive } from 'vue'
 import { cardDefDecoder, type CardDef } from '@/arkham/types/CardDef'
+import { publishCardText } from '@/arkham/customText'
 
 export type CustomCard = {
   def: CardDef
@@ -40,6 +41,14 @@ export const CUSTOM_CARD_PREFIX = '*'
  * so every code is normalised to the bare form first. */
 export function stripCardCodePrefix(code: string): string {
   return code.replace(/^c(?=\*)/, '')
+}
+
+/* `GET /arkham/card/:code` answers out of the engine's own card maps. A custom
+ * card's def lives in the database and a homebrew one inside its box, so asking
+ * for either by code is a guaranteed 404 -- don't ask. */
+export function hasEngineCardDef(code: string): boolean {
+  const bare = code.replace(/^c(?=[*:])/, '')
+  return !bare.startsWith(CUSTOM_CARD_PREFIX) && !bare.startsWith(':')
 }
 
 /* The engine's own convention, mirrored from `FromJSON CardCode`: a code on the
@@ -183,6 +192,10 @@ export function normalizeCardDef(def: any): CardDef {
 const registry = reactive(new Map<string, CustomCard>())
 
 export function registerCustomCards(cards: CustomCard[]) {
+  /* The text these cards carry, handed to vue-i18n as they arrive: a prompt
+   * reads as words for every player in the game, not only the one whose
+   * library the set is in. */
+  publishCardText(cards.map((card) => card.def))
   for (const card of cards) {
     const cardCode = stripCardCodePrefix(card.def.cardCode)
     const existing = registry.get(cardCode)
@@ -285,12 +298,63 @@ export function cardArtReference(art: string | null | undefined): string | null 
   return /^\d{5}[a-z]?$/.test(code) ? code : null
 }
 
+/* ----------------------------------------------------------- portraits ---
+
+   A game row needs a custom investigator's portrait and nothing else, so it is
+   served and held on its own rather than as a def: see `fetchCustomCardPortraits`.
+
+   Four fields, against a def that can run to kilobytes of authoring script.
+
+   Kept beside the registry instead of registered as a stub def, because a stub
+   would overwrite the real def of a card the open game had already loaded, and
+   a portrait is not a card. Every reader below consults the registry first and
+   falls back here, so a full def always wins. */
+export type CardPortrait = {
+  cardCode: string
+  art: string | null
+  portrait: string | null
+  portraitBack: string | null
+}
+
+const portraits = reactive(new Map<string, CardPortrait>())
+
+export function registerCustomCardPortraits(entries: CardPortrait[]) {
+  for (const entry of entries) {
+    portraits.set(stripCardCodePrefix(entry.cardCode), entry)
+  }
+}
+
+/* Whether anything at all is known about this card's face -- a def or a
+ * portrait. A row waits on this before drawing, so it does not flash the
+ * "definition missing" image while the portraits are still in flight. */
+export function customCardFaceKnown(code: string): boolean {
+  const bare = stripCardCodePrefix(code)
+  return registry.has(bare) || portraits.has(bare)
+}
+
+/* The portrait a custom investigator carries, by side. `null` means the card
+ * names no portrait of its own, which is a different answer from "not loaded
+ * yet" -- `customCardFaceKnown` is that question. */
+export function customCardPortrait(code: string, suffix: string = ''): string | null {
+  const bare = stripCardCodePrefix(code)
+  const def = registry.get(bare)?.def
+  if (def) return (suffix === 'b' ? def.meta?.portraitBack : def.meta?.portrait) ?? null
+  const entry = portraits.get(bare)
+  if (!entry) return null
+  return (suffix === 'b' ? entry.portraitBack : entry.portrait) ?? null
+}
+
 // `art` arrives with a card-side suffix appended by the art helpers (`…b` for a
 // back). Custom cards are single-sided, so fall back to the bare code.
 export function customCardArt(art: string): string | null {
   const code = stripCardCodePrefix(art)
   const exact = registry.get(code)
   if (exact) return exact.art
+
+  // A portrait-only entry still knows where the card's own image lives, which
+  // is what a row falls back to for an investigator carrying no portrait.
+  const stub = portraits.get(code)
+  if (stub) return stub.art
 
   // A back is asked for as "<code>b". An investigator draws its own back; other
   // custom cards fall back to their face.
@@ -410,6 +474,26 @@ export const CARD_TYPES = [
   { value: 'StoryType', label: 'Story', short: 'Story' },
   { value: 'InvestigatorType', label: 'Investigator', short: 'Investigator' },
 ] as const
+
+/* What a card carries but does not own.
+ *
+ * The set stamps its name and its declarations onto every card it holds
+ * (`stampSet`), and the server derives `art` from the card code as the card
+ * comes in (`normalizeCard`). Written by hand they are not errors, they are
+ * silently overwritten -- the set corrects its own copies on its next save, and
+ * the code decides the art -- so an editor that shows the whole def should
+ * leave these out of it and put them back unchanged.
+ */
+export const DERIVED_CARD_KEYS = ['art'] as const
+export const SET_STAMPED_META_KEYS = ['set', 'setTokens', 'setKeywords'] as const
+
+/* What kind of card this is, with the deck it comes from left out: a
+ * PlayerTreachery and a TreacheryType are both treacheries, and a row that is
+ * already inside one set is not where the difference between their backs gets
+ * decided. `cardTypeLabel` is the one to reach for where it does -- a filter
+ * offering both at once has to tell them apart. */
+export const cardKind = (cardType: string): string =>
+  cardType.replace(/Type$/, '').replace(/^Player/, '')
 
 /* A card type as a chip says it. A type the list does not know -- one written
  * through the raw block -- keeps its own name without the suffix. */

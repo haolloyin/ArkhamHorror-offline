@@ -101,7 +101,12 @@ import GHC.Records
 
 activeCostActions :: ActiveCost -> [Action]
 activeCostActions ac = case ac.target of
-  ForAbility a -> #activate : a.actions
+  -- 'abilityActions' already adds #activate, and only for a non-basic
+  -- ActionAbility. Prefixing it here double-counted a real activation and, worse,
+  -- labelled the basic fight/evade/investigate/move abilities and every
+  -- reaction/fast ability an activate, so a cost modifier on #activate taxed them
+  -- all (#5895).
+  ForAbility a -> a.actions
   ForCard isPlayAction c ->
     [#play | isPlayAction == IsPlayAction]
       <> case ac.activeCostChosenOrAction of
@@ -506,7 +511,7 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
       push $ ShuffleCardsIntoDeck (Deck.InvestigatorDeck iid) bondedCards
       pure c
     ResolveEachHauntedAbility lid -> do
-      hauntedAbilities <- select $ HauntedAbility <> AbilityOnLocation (LocationWithId lid)
+      hauntedAbilities <- getResolvableHauntedAbilities iid lid
       pushIfAny hauntedAbilities
         $ chooseOneAtATime player [AbilityLabel iid ab [] [] [] | ab <- hauntedAbilities]
       -- No need to record payment... yet
@@ -726,6 +731,10 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
     DiscardAssetCost matcher -> do
       assets <- select (replaceYouMatcher iid matcher <> DiscardableAsset)
       push $ chooseOneSourced $ targetLabels assets $ only . pay . discardCost
+      pure c
+    ExileAssetCost matcher -> do
+      assets <- select (replaceYouMatcher iid matcher)
+      push $ chooseOneSourced $ targetLabels assets $ only . pay . exileCost
       pure c
     DiscardRandomCardCost -> do
       hand <- field InvestigatorHand iid

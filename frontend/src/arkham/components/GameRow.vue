@@ -1,8 +1,9 @@
 <script lang="ts" setup>
+import { useI18n } from 'vue-i18n'
 import { computed, onMounted, ref } from 'vue'
 import { customInvestigatorUsesCardPortrait, portraitImage } from '@/arkham/cardImages'
-import { fetchCustomCards } from '@/arkham/api'
-import { isCustomCardCode, registerCustomCards } from '@/arkham/customCards'
+import { customCardFaceKnown, isCustomCardCode } from '@/arkham/customCards'
+import { useCardStore } from '@/stores/cards'
 import type { GameDetails } from '@/arkham/types/Game'
 import type { Difficulty } from '@/arkham/types/Difficulty'
 import type { CampaignDetails } from '@/arkham/types/Campaign'
@@ -15,14 +16,33 @@ const props = withDefaults(
     game: GameDetails
     deleteGame?: () => void
     admin?: boolean
+    /* A game on the home page's watch list: the row is the same, but the title
+     * opens the read-only view and there is no seat to claim. */
+    spectate?: boolean
+    /* Nobody at this table has done anything for a while. In play, but not
+     * being played -- which only the list that polls for it can know, so it is
+     * passed in rather than read off the game. */
+    inactive?: boolean
   }>(),
   {
     admin: false,
+    spectate: false,
+    inactive: false,
   },
 )
 const campaign = computed<CampaignDetails | null>(() => props.game.campaign)
 const scenario = computed<ScenarioDetails | null>(() => props.game.scenario)
 const deleting = ref(false)
+const { t } = useI18n()
+const store = useCardStore()
+
+/* The one thing worth saying about a badge: that the Campaign Guide itself
+ * hedged the ending. */
+const outcomeTooltip = computed(() => {
+  const o = props.game.outcome
+  if (o?.certainty !== 'Uncertain') return null
+  return t('gameRow.outcomeUncertain')
+})
 
 const difficulty = computed<Difficulty>(() => {
   if (campaign.value) {
@@ -60,28 +80,24 @@ const usesCardPortrait = (cardCode: string) => customInvestigatorUsesCardPortrai
 const cardPortraitStyle = (cardCode: string) => ({
   backgroundImage: `url(${JSON.stringify(portraitImage(cardCode))})`,
 })
-const customCardsLoaded = ref(false)
-const portraitReady = (cardCode: string) => !isCustomCardCode(cardCode) || customCardsLoaded.value
+/* Do not render a temporary "Card Definition Missing" image while a custom
+ * investigator's portrait is still in flight. Asked of the registry rather than
+ * tracked here: the portraits are fetched once for the whole page, so a row
+ * does not know when the request it is waiting on settles -- only whether the
+ * answer has arrived. */
+const portraitReady = (cardCode: string) =>
+  !isCustomCardCode(cardCode) || customCardFaceKnown(cardCode)
 
-onMounted(async () => {
+/* The row used to fetch the game's whole custom-card set itself, once per row,
+ * to read two portrait fields off it. The page preloads the portraits for every
+ * row it is about to draw instead -- see `ensureCustomCardPortraits`. A row
+ * mounted outside such a page still asks, so it is never left faceless. */
+onMounted(() => {
   const investigatorIds = [
     ...props.game.investigators.map((investigator) => investigator.id),
     ...Object.values(props.game.otherInvestigators).map((investigator) => investigator.id),
   ]
-  if (!investigatorIds.some(isCustomCardCode)) {
-    customCardsLoaded.value = true
-    return
-  }
-
-  try {
-    registerCustomCards(await fetchCustomCards(props.game.id))
-  } catch (error) {
-    console.error('Could not load custom card portraits', error)
-  } finally {
-    // Do not render a temporary "Card Definition Missing" image while the
-    // game-specific definitions are still in flight.
-    customCardsLoaded.value = true
-  }
+  store.ensureCustomCardPortraits(investigatorIds)
 })
 
 const campaignIcon = computed(() => {
@@ -112,7 +128,15 @@ const scenarioIcon = computed(() => {
 </script>
 
 <template>
-  <div class="game" :class="{ 'finished-game': game.gameState.tag == 'IsOver' }">
+  <div
+    class="game"
+    :class="{
+      'finished-game': game.gameState.tag == 'IsOver',
+      'inactive-game': inactive,
+      won: game.outcome?.result === 'Won',
+      lost: game.outcome?.result === 'Lost',
+    }"
+  >
     <div class="game-details">
       <div class="game-title">
         <div class="main-details">
@@ -125,6 +149,9 @@ const scenarioIcon = computed(() => {
           <router-link v-if="admin" class="title" :to="`/admin/games/${game.id}`">{{
             game.name
           }}</router-link>
+          <router-link v-else-if="spectate" class="title" :to="`/games/${game.id}/spectate`">{{
+            game.name
+          }}</router-link>
           <router-link
             v-else-if="game.hasOpenSeats"
             class="title"
@@ -133,6 +160,28 @@ const scenarioIcon = computed(() => {
           >
           <router-link v-else class="title" :to="`/games/${game.id}`">{{ game.name }}</router-link>
           <div v-if="game.multiplayerVariant === 'Solo'" class="solo">{{ $t('gameRow.solo') }}</div>
+          <div v-if="spectate" class="watching">
+            <font-awesome-icon icon="eye" />
+            {{ $t('gameRow.watch') }}
+          </div>
+          <div v-if="inactive" class="inactive" v-tooltip="$t('gameRow.inactiveTooltip')">
+            <font-awesome-icon icon="hourglass-half" />
+            {{ $t('gameRow.inactive') }}
+          </div>
+          <div
+            v-if="game.outcome"
+            class="outcome"
+            :class="game.outcome.result === 'Won' ? 'won' : 'lost'"
+            v-tooltip="outcomeTooltip"
+          >
+            {{
+              game.outcome.result === 'Lost'
+                ? $t('gameRow.lost')
+                : game.outcome.certainty === 'Uncertain'
+                  ? $t('gameRow.wonUncertain')
+                  : $t('gameRow.won')
+            }}
+          </div>
         </div>
         <div v-if="campaign && scenario && scenarioIcon" class="scenario-details">
           <img class="scenario-icon" :src="scenarioIcon" />
@@ -462,11 +511,31 @@ h2 {
   }
 }
 
+/* A finished row is greyed out, but the grey is stated outright and the
+   desaturation moved onto the contents -- a filter on the row would flatten any
+   tint the row itself carries. */
 .finished-game {
-  filter: saturate(0);
+  background-color: var(--box-background-finished);
+  border-color: var(--box-border-finished);
+
+  > .game-details {
+    filter: saturate(0);
+  }
+
   svg:hover {
     filter: saturate(1);
   }
+}
+
+/* Just enough of the verdict to read down a list of finished games. */
+.finished-game.won {
+  background-color: color-mix(in srgb, var(--box-background-finished) 92%, var(--outcome-won));
+  border-color: color-mix(in srgb, var(--box-border-finished) 86%, var(--outcome-won));
+}
+
+.finished-game.lost {
+  background-color: color-mix(in srgb, var(--box-background-finished) 92%, var(--outcome-lost));
+  border-color: color-mix(in srgb, var(--box-border-finished) 86%, var(--outcome-lost));
 }
 
 .other-subdetails {
@@ -503,6 +572,65 @@ h2 {
 .solo {
   color: rgba(255, 255, 255, 0.5);
   text-transform: uppercase;
+}
+
+/* Says what clicking the title does, since on this list it is not the game you
+ * sit down at. Neutral chrome, the same weight as the Solo badge: the row is
+ * still about the campaign, not about you watching it. */
+.watching {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.7);
+  white-space: nowrap;
+}
+
+/* In play, but nobody is playing it. Dimmed rather than greyed out: the game is
+ * still open and still worth clicking, so it recedes without reading as
+ * finished -- which is what the saturate(0) on a finished row says. Lifted back
+ * on hover, since the row somebody is pointing at is the one they want to read.
+ */
+.inactive-game > .game-details {
+  opacity: 0.72;
+  transition: opacity 0.2s;
+}
+
+.inactive-game:hover > .game-details {
+  opacity: 1;
+}
+
+/* Neutral chrome, like the badges beside it -- this is a row in a list, not
+ * board state, so it stays out of the highlight colours. Carried a little
+ * heavier than they are only to survive the dim it is explaining. */
+.inactive {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: rgba(255, 255, 255, 0.9);
+  white-space: nowrap;
+}
+
+/* A finished row is desaturated, which would eat any colour here, so the badge
+ * reads as neutral chrome and lets the word carry the verdict. */
+.outcome {
+  text-transform: uppercase;
+  font-size: 0.75em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: rgba(255, 255, 255, 0.75);
 }
 
 .claim-seat-link {

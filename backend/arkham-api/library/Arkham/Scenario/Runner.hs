@@ -72,6 +72,7 @@ import Arkham.Helpers.Message qualified as Msg
 import Arkham.Helpers.Modifiers hiding (cardResolutionModifiers)
 import Arkham.Helpers.Playable
 import Arkham.Helpers.Query
+import Arkham.Helpers.Ref (sourceToTarget)
 import Arkham.Helpers.Scenario
 import Arkham.Helpers.SkillTest (getIsCommittable)
 import Arkham.Helpers.Window hiding (checkAfter, checkWhen, checkWindows)
@@ -240,7 +241,7 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
                   Nothing -> do
                     pid <- getPlayer iid
                     let cards = nub $ map toCardCode $ filterCards (card_ $ #asset <> #spell) (unDeck deck)
-                    pure $ Just $ Ask pid $ QuestionLabel "$cards.label.eldritchBrand5.chooseCard" Nothing $ ChooseOne $ flip map cards \c ->
+                    pure $ Just $ Ask pid $ QuestionLabel "$cards.label.eldritchBrand5.chooseCard" [] $ ChooseOne $ flip map cards \c ->
                       CardLabel c False [UpdateCardSetting iid "11080" (SetCardSetting CardAttachments [c])]
                   Just _ -> pure Nothing
               else pure Nothing
@@ -856,6 +857,20 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
     pure $ a & setAsideCardsL %~ filter (`notElem` cards)
   PlaceUnderneath ScenarioTarget cards -> do
     pure $ a & cardsUnderScenarioReferenceL <>~ cards & setAsideCardsL %~ filter (`notElem` cards)
+  {- Chaos tokens sealed on the scenario reference card. Mirrors the asset,
+  enemy, location and investigator seal targets: a token sealed elsewhere is
+  dropped from here, and releasing one raises the usual released windows. -}
+  SealedChaosToken token _ ScenarioTarget -> do
+    pure $ a & sealedChaosTokensL %~ addSealedChaosToken token
+  SealedChaosToken token _ _ -> do
+    pure $ a & sealedChaosTokensL %~ filter (/= token)
+  UnsealChaosToken token -> do
+    when (token `elem` scenarioSealedChaosTokens) do
+      checkWhen $ Window.ChaosTokenReleased ScenarioTarget token
+      checkAfter $ Window.ChaosTokenReleased ScenarioTarget token
+    pure $ a & sealedChaosTokensL %~ filter (/= token)
+  RemoveAllChaosTokens face -> do
+    pure $ a & sealedChaosTokensL %~ filter ((/= face) . (.face))
   PlaceUnderneath _ cards -> do
     pure $ a & setAsideCardsL %~ filter (`notElem` cards)
   CardEnteredPlay _ card -> liftRunMessage (ObtainCard card.id) a
@@ -1075,13 +1090,30 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
               $ DrawCards iid
               $ drawing {cardDrawAlreadyDrawn = map toCard drew, cardDrawAmount = drawing.amount - length drew}
         pure $ a & (deckLens handler .~ Deck rest) & (inShuffleL .~ null rest)
-  Search (MkSearch searchType iid _ (toScenarioHandleDeck -> Just (deck, _)) _ _ _ _ _) -> do
+  Search (MkSearch searchType iid source (toScenarioHandleDeck -> Just (deck, _)) _ matcher _ _ _) -> do
     case searchType of
-      Searching -> wouldDo msg (Window.WouldSearchDeck iid deck) (Window.SearchedDeck iid deck)
+      {- Searching the encounter deck is also a dig through it for a card, so it
+      raises 'WouldFindEncounterCard' beside 'WouldSearchDeck' in the one batch:
+      an ability worded "instead" then catches every way of reaching the deck,
+      not just the 'FindEncounterCard' one. -}
+      Searching ->
+        wouldDoAny
+          msg
+          ( Window.WouldSearchDeck iid deck
+              : [ Window.WouldFindEncounterCard iid (sourceToTarget source) matcher
+                | isJust (encounterDeckToDigThrough deck)
+                ]
+          )
+          (Window.SearchedDeck iid deck)
       Looking -> wouldDo msg (Window.WouldLookAtDeck iid deck) (Window.LookedAtDeck iid deck)
-      Revealing -> do
-        batchId <- getRandom
-        push $ DoBatch batchId msg
+      {- Revealing raises no window of its own, but revealing from the encounter
+      deck to find a card is the same dig as searching it. -}
+      Revealing ->
+        wouldOnly
+          msg
+          [ Window.WouldFindEncounterCard iid (sourceToTarget source) matcher
+          | isJust (encounterDeckToDigThrough deck)
+          ]
     pure a
   DoBatch _ (Search (MkSearch _ iid _ (toScenarioHandleDeck -> Just (deck, _)) _ _ foundStrategy _ _)) -> do
     let isDrawing = isSearchDraw foundStrategy
@@ -1521,10 +1553,20 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
             encounterDeck <- withDeckM (shuffle . (card :)) scenarioEncounterDeck
             pure $ a & encounterDeckL .~ encounterDeck
       _ -> pure a
-  DiscardUntilFirst iid source Deck.EncounterDeck matcher -> do
-    push $ DiscardUntilFirst iid source (Deck.EncounterDeckByKey RegularEncounterDeck) matcher
-    pure a
-  DiscardUntilFirst iid source (Deck.EncounterDeckByKey RegularEncounterDeck) matcher -> do
+  {- "Discard from the encounter deck to find a card" is the same digging as a
+  search, so it raises 'WouldFindEncounterCard' in a batch of its own and an
+  ability worded "instead" can cancel it. The deck alias is resolved here rather
+  than re-pushed, or the re-push would frame a second batch. -}
+  DiscardUntilFirst iid source deck matcher
+    | Just deck' <- encounterDeckToDigThrough deck -> do
+        (batchId, wouldWindowMsgs) <-
+          wouldWindows (Window.WouldFindEncounterCard iid (sourceToTarget source) matcher)
+        push
+          $ Would batchId
+          $ wouldWindowMsgs
+          <> [DoBatch batchId $ DiscardUntilFirst iid source deck' matcher]
+        pure a
+  DoBatch _ (DiscardUntilFirst iid source (Deck.EncounterDeckByKey RegularEncounterDeck) matcher) -> do
     (discards, remainingDeck) <- breakM (`extendedCardMatch` matcher) (unDeck scenarioEncounterDeck)
     let len = length discards + if null remainingDeck then 0 else 1
     push $ DiscardTopOfEncounterDeckWithDiscardedCards iid len source Nothing []
@@ -1532,7 +1574,7 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
       [] -> push (RequestedEncounterCard source (Just iid) Nothing)
       x : _ -> push (RequestedEncounterCard source (Just iid) (Just x))
     pure a
-  DiscardUntilFirst iid source (Deck.EncounterDeckByKey k) matcher -> do
+  DoBatch _ (DiscardUntilFirst iid source (Deck.EncounterDeckByKey k) matcher) -> do
     (discards, remainingDeck) <-
       breakM (`extendedCardMatch` matcher) (unDeck $ a ^. encounterDeckLensFromKey k)
     case remainingDeck of
@@ -1578,15 +1620,22 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
   FoundAndDrewEncounterCard iid cardSource card -> do
     let
       cardId = toCardId card
+      withoutCard = filter ((/= cardId) . toCardId)
       discard = case cardSource of
-        FromDiscard -> filter ((/= cardId) . toCardId) scenarioDiscard
+        FromDiscard -> withoutCard scenarioDiscard
         _ -> scenarioDiscard
       encounterDeck = case cardSource of
-        FromEncounterDeck ->
-          filter ((/= cardId) . toCardId) (unDeck scenarioEncounterDeck)
+        FromEncounterDeck -> withoutCard (unDeck scenarioEncounterDeck)
         _ -> unDeck scenarioEncounterDeck
       encounterDecksF = case cardSource of
-        FromEncounterDeck -> encounterDecksL . each . _1 %~ withDeck (filter ((/= cardId) . toCardId))
+        FromEncounterDeck -> encounterDecksL . each . _1 %~ withDeck withoutCard
+        {- A keyed deck (the spectral deck in /The Wages of Sin/) is the deck
+        the card actually came out of, so it is the one that loses it and, just
+        below, the one that gets shuffled. Both used to fall on the regular
+        deck, which left the drawn card sitting in the keyed deck -- now plain
+        to see, since the search shows that deck in full. -}
+        FromKeyedEncounterDeck key ->
+          deckLens (specificEncounterDeckHandler key) %~ withDeck withoutCard
         _ -> id
       signifier = case cardSource of
         FromEncounterDeck -> Just Deck.EncounterDeck
@@ -1594,7 +1643,9 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
         FromDiscard -> Just Deck.EncounterDiscard
         _ -> Nothing
     shuffled <- shuffleM encounterDeck
-    push $ InvestigatorDrewEncounterCardFrom iid card signifier
+    pushAll
+      $ [ShuffleDeck (Deck.EncounterDeckByKey key) | FromKeyedEncounterDeck key <- [cardSource]]
+      <> [InvestigatorDrewEncounterCardFrom iid card signifier]
     pure $ a & (encounterDeckL .~ Deck shuffled) & (discardL .~ discard) & encounterDecksF
   FoundEncounterCardFrom iid target cardSource card -> do
     let
@@ -1609,7 +1660,16 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
     shuffled <- shuffleM encounterDeck
     push (FoundEncounterCard iid target card)
     pure $ a & (encounterDeckL .~ Deck shuffled) & (discardL .~ discard)
-  FindEncounterCard iid target zones matcher strategy -> do
+  {- Framed in a batch that raises 'WouldFindEncounterCard' first, so an ability
+  worded "instead" (Ages Unwound's /Just One Man/) can cancel the search and put
+  its own card in the treachery's hands. The work itself moved to the 'DoBatch'
+  case below. -}
+  FindEncounterCard iid target _ matcher _ -> do
+    (batchId, wouldWindowMsgs) <-
+      wouldWindows (Window.WouldFindEncounterCard iid target (Matcher.BasicCardMatch matcher))
+    push $ Would batchId $ wouldWindowMsgs <> [DoBatch batchId msg]
+    pure a
+  DoBatch _ (FindEncounterCard iid target zones matcher strategy) -> do
     let
       matchingDiscards =
         if Zone.FromEncounterDiscard `elem` zones
@@ -1694,9 +1754,9 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
         RegularEncounterDeck -> FromEncounterDeck
         other -> FromKeyedEncounterDeck other
       handler = specificEncounterDeckHandler deckKey'
+      deckCards = unDeck $ a ^. deckLens handler
       matchingDiscards = filter (`cardMatch` matcher) (a ^. discardLens handler)
-      matchingDeckCards =
-        filter (`cardMatch` matcher) (unDeck $ a ^. deckLens handler)
+      matchingDeckCards = filter (`cardMatch` matcher) deckCards
 
     let
       matches =
@@ -1712,21 +1772,37 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
              | card <- matchingDeckCards
              ]
 
+    {- The whole deck, not only what matched: looking for a card means looking
+    at every card, so the search is also how a player learns what is left to
+    come. Only the matches are offered as choices and the rest draw
+    unselectable, the same reveal 'FindEncounterCard' already does. The discard
+    stays filtered to the matches, since a discard pile is face up and showing
+    all of it would reveal nothing. -}
+    let
+      deckEntry = [(Zone.FromDeck, map EncounterCard deckCards) | notNull deckCards]
+      discardEntry =
+        [ (Zone.FromDiscard, map EncounterCard matchingDiscards)
+        | includeDiscard == IncludeDiscard
+        , notNull matchingDiscards
+        ]
+    push $ FoundCards $ Map.fromList (deckEntry <> discardEntry)
+
     if null matches
-      then chooseOne iid [Label "$label.noMatchesFound" []]
-      else do
-        let
-          deckEntry =
-            [ (Zone.FromDeck, map EncounterCard matchingDeckCards)
-            | not (null matchingDeckCards)
-            ]
-          discardEntry =
-            [ (Zone.FromDiscard, map EncounterCard matchingDiscards)
-            | includeDiscard == IncludeDiscard
-            , not (null matchingDiscards)
-            ]
-        push $ FoundCards $ Map.fromList (deckEntry <> discardEntry)
-        chooseOne iid matches
+      then
+        {- The deck was read whether or not anything matched, so it is shuffled
+        either way; the branch that draws gets its shuffle from
+        'FoundAndDrewEncounterCard'. -}
+        chooseOne
+          iid
+          [ Label
+              "$label.noMatchesFound"
+              [ ClearFound Zone.FromDeck
+              , ShuffleDeck $ case deckKey' of
+                  RegularEncounterDeck -> Deck.EncounterDeck
+                  other -> Deck.EncounterDeckByKey other
+              ]
+          ]
+      else chooseOne iid matches
     pure a
   DrawEncounterCards target n -> do
     let (cards, encounterDeck) = draw n scenarioEncounterDeck
@@ -2261,3 +2337,14 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
     pushEnd $ EndOfScenario mNextCampaignStep
     pure a
   _ -> pure a
+
+{- | The encounter deck a "dig through the deck until you find one" message is
+aimed at, with the plain alias resolved to the regular deck's key. 'Nothing' for
+any other deck: an investigator's own deck is not the encounter deck, so digging
+through it raises no 'WouldFindEncounterCard'.
+-}
+encounterDeckToDigThrough :: Deck.DeckSignifier -> Maybe Deck.DeckSignifier
+encounterDeckToDigThrough = \case
+  Deck.EncounterDeck -> Just $ Deck.EncounterDeckByKey RegularEncounterDeck
+  Deck.EncounterDeckByKey k -> Just $ Deck.EncounterDeckByKey k
+  _ -> Nothing

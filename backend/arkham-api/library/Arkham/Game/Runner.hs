@@ -52,6 +52,7 @@ import Arkham.Event.Types
 import Arkham.Game.Base
 import Arkham.Game.Diff
 import Arkham.Game.Json ()
+import Arkham.Game.Outcome
 import Arkham.Game.Settings (
   activeUltimatumsAndBoons,
   settingsAsIfRuling,
@@ -63,6 +64,7 @@ import Arkham.Game.Settings (
 import Arkham.Game.State
 import Arkham.Game.Utils
 import Arkham.GameEnv
+import Arkham.GameT (GameT)
 import Arkham.Helpers
 import Arkham.Helpers.Ability (abilityRidesAlong, isForcedAbility)
 import Arkham.Helpers.Action (getPreventedActions, getPreventedPlayerAbilities)
@@ -310,6 +312,41 @@ isPerTurnLimit :: CardLimit -> Bool
 isPerTurnLimit = \case
   MaxPerTurn _ -> True
   _ -> False
+
+{- | Stop the game, recording how it ended.
+
+@mverdict@ is what the ending declared, if it declared anything ('GameOverWith').
+Without one the outcome is inferred -- from the campaign's step and resolutions,
+or, for a standalone, from the resolution the scenario reached. The mode is
+collapsed to the campaign here, which drops the scenario, so the outcome is
+computed first.
+-}
+endGame :: Maybe Verdict -> Game -> GameT Game
+endGame mverdict g = do
+  clearQueue
+  pure $ g & (gameStateL .~ IsOver) & (modeL .~ newMode) & (outcomeL .~ outcome)
+ where
+  mode = g ^. modeL
+  newMode = case mode of
+    This c -> This c
+    That c -> That c
+    These c1 _ -> This c1
+  ending = g ^. lastResolutionL
+  outcome = case mverdict of
+    Just verdict -> Just $ GameOutcome verdict ending Recorded
+    Nothing -> case modeCampaign mode of
+      Just c ->
+        let attrs = toAttrs c
+         in withEnding
+              <$> inferCampaignOutcome
+                (campaignId attrs)
+                (campaignStep attrs)
+                (campaignCompletedSteps attrs)
+                (campaignResolutions attrs)
+      Nothing -> standaloneOutcome <$> ending
+  -- The resolution the game actually saw beats the one reconstructed from the
+  -- campaign's records, which cannot tell which scenario was last.
+  withEnding o = o {outcomeEnding = ending <|> outcomeEnding o}
 
 runGameMessage :: Runner Game
 runGameMessage msg g = case msg of
@@ -1225,7 +1262,9 @@ runGameMessage msg g = case msg of
         HistoryItem HistoryMoved 1
           : [HistoryItem HistoryMovedTo [lid] | lid <- maybeToList arrived]
       turn = isJust $ view turnPlayerInvestigatorIdL g
-      record item = (phaseHistoryL %~ insertHistory iid item) . (if turn then turnHistoryL %~ insertHistory iid item else id)
+      record item =
+        (phaseHistoryL %~ insertHistory iid item)
+          . (if turn then turnHistoryL %~ insertHistory iid item else id)
     pure $ foldr record g historyItems
   Arkham.Helpers.Message.Defeated (EnemyTarget eid) _ source _ -> do
     attrs <- toAttrs <$> getEnemy eid
@@ -1263,13 +1302,8 @@ runGameMessage msg g = case msg of
       $ g
       & (foundCardsL . each %~ deleteFirstMatch ((== cardId) . toCardId))
       . (focusedCardsL %~ map (filter ((/= cardId) . toCardId)))
-  GameOver -> do
-    clearQueue
-    let newMode = case g ^. modeL of
-          This c -> This c
-          That c -> That c
-          These c1 _ -> This c1
-    pure $ g & gameStateL .~ IsOver & modeL .~ newMode
+  GameOver -> endGame Nothing g
+  GameOverWith verdict -> endGame (Just verdict) g
   PlaceLocation lid card ->
     if isNothing $ g ^. entitiesL . locationsL . at lid
       then do
@@ -2668,7 +2702,7 @@ runGameMessage msg g = case msg of
           then pushAll msgs'
           else do
             askMap <-
-              fmap (QuestionLabel "$label.chooseAfterSkillTestEffect" Nothing . ChooseOneAtATime) . Map.unionsWith (<>) <$> forMaybeM (msg : options) \case
+              fmap (QuestionLabel "$label.chooseAfterSkillTestEffect" [] . ChooseOneAtATime) . Map.unionsWith (<>) <$> forMaybeM (msg : options) \case
                 AfterSkillTestOption iid lbl xs -> do
                   playerId <- getPlayer iid
                   pure $ Just $ singletonMap playerId [Label lbl xs]
@@ -3966,16 +4000,28 @@ runGameMessage msg g = case msg of
           assetId <- getRandom
           let asset = createAsset card assetId
           -- Story assets can be drawn from encounter decks while still having AssetType.
-          pushAll $ afterDraw
+          -- Active while the revelation resolves, so the card is visible in the
+          -- play area the way a resolving treachery or a spawning enemy is.
+          pushAll
+            $ afterDraw
             : (guard (not ignoreRevelation) *> resolve (Revelation iid $ AssetSource assetId))
-          pure $ g' & (entitiesL . assetsL . at assetId ?~ asset)
+              <> [UnsetActiveCard]
+          pure
+            $ g'
+            & (entitiesL . assetsL . at assetId ?~ asset)
+            & (activeCardL ?~ toCard card)
         EncounterAssetType -> do
           assetId <- getRandom
           let asset = createAsset card assetId
           -- Asset is assumed to have a revelation ability if drawn from encounter deck
-          pushAll $ afterDraw
+          pushAll
+            $ afterDraw
             : (guard (not ignoreRevelation) *> resolve (Revelation iid $ AssetSource assetId))
-          pure $ g' & (entitiesL . assetsL . at assetId ?~ asset)
+              <> [UnsetActiveCard]
+          pure
+            $ g'
+            & (entitiesL . assetsL . at assetId ?~ asset)
+            & (activeCardL ?~ toCard card)
         EncounterEventType -> do
           eventId <- getRandom
           let owner = fromMaybe iid (toCardOwner card)
@@ -4241,7 +4287,16 @@ runGameMessage msg g = case msg of
             VengeanceCard _ -> error "Vengeance card"
     pure g
   Discard miid source (TreacheryTarget tid) -> do
-    mcard <- fieldMay TreacheryCard tid
+    {- "Cannot be discarded from play, except by abilities printed on it." The
+    same rule the asset runner applies for 'CannotLeavePlay', and for the same
+    reason: a card that prints its own way off the table is the one thing
+    allowed to take it, so a discard the treachery sources itself goes through
+    and everything else is refused. -}
+    cannotLeavePlay <-
+      if source.treachery == Just tid
+        then pure False
+        else elem CannotLeavePlay <$> getModifiers (TreacheryTarget tid)
+    mcard <- if cannotLeavePlay then pure Nothing else fieldMay TreacheryCard tid
     for_ mcard \card -> do
       inVictory <- selectAny $ VictoryDisplayCardMatch $ basic $ CardWithId $ toCardId card
       unless inVictory do
@@ -4512,7 +4567,35 @@ runActionRemovedEntities msg g = case msg of
               , entitiesAssets = entitiesAssets removed' <> parkedAssets
               }
         }
+  -- A parked copy is never the entity entering play: a card that re-enters play gets a fresh
+  -- entity, so the `card.id == attrs.cardId` guard every "I entered play" handler uses fires on
+  -- the corpse as well. The King in Yellow, discarded by its own reaction and then redrawn after
+  -- a reshuffle in the same action, placed a second, dead copy into the threat area that way and
+  -- forced an unrelated hand asset to be discarded (#5899).
+  CardIsEnteringPlay _ card -> withoutCardId card.id
+  CardEnteredPlay _ card -> withoutCardId card.id
   _ -> actionRemovedEntitiesL (runMessage msg) g
+ where
+  withoutCardId cid = do
+    let
+      removed = gameActionRemovedEntities g
+      -- assets, events and skills are the card-backed entity kinds (cf. `loadedCardIds`)
+      (parkedAssets, ownAssets) = Map.partition (\x -> (toAttrs x).cardId == cid) (entitiesAssets removed)
+      (parkedEvents, ownEvents) = Map.partition (\x -> (toAttrs x).cardId == cid) (entitiesEvents removed)
+      (parkedSkills, ownSkills) = Map.partition (\x -> (toAttrs x).cardId == cid) (entitiesSkills removed)
+    removed' <-
+      runMessage
+        msg
+        removed {entitiesAssets = ownAssets, entitiesEvents = ownEvents, entitiesSkills = ownSkills}
+    pure
+      $ g
+        { gameActionRemovedEntities =
+            removed'
+              { entitiesAssets = entitiesAssets removed' <> parkedAssets
+              , entitiesEvents = entitiesEvents removed' <> parkedEvents
+              , entitiesSkills = entitiesSkills removed' <> parkedSkills
+              }
+        }
 
 -- NOTE: We need preloadEntities to be a the end because the game state is not
 -- "saved" between steps here. For example if we discard a card with in discard
@@ -4615,7 +4698,10 @@ runPreGameMessage msg g = case msg of
             _ -> Just xs
           Just (x : xs) -> Just (x : xs)
     pure $ g & windowDepthL -~ 1 & windowStackL .~ windowStack & (windowTickStackL %~ drop 1)
-  ScenarioResolution _ -> do
+  ScenarioResolution r -> do
+    -- Remember which resolution this was, so the game can name its ending once
+    -- it is over; see 'gameLastResolution'.
+    let ending = (\s -> Ending (attr scenarioId s) r) <$> modeScenario (g ^. modeL)
     pure
       $ g
       & (skillTestL .~ Nothing)
@@ -4623,6 +4709,7 @@ runPreGameMessage msg g = case msg of
       & (windowStackL .~ mempty)
       & (windowDepthL .~ 0)
       & (windowTickStackL .~ [])
+      & (lastResolutionL %~ \old -> ending <|> old)
   ResetInvestigators -> do
     -- if we reset and there is no player order, set it to the current investigator keys
     pure

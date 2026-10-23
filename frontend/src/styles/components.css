@@ -326,3 +326,158 @@ h2.title {
   pointer-events: auto !important;
   cursor: grab;
 }
+
+/* ------------------------------------------------- the builder's controls ---
+
+   One height for everything you can type in or pick from.
+
+   The builder's fields are dressed by a dozen components that each chose their
+   own padding, so a row could hold a 35px text box, a 33px select and a 30px
+   button that clears it -- three heights pretending to be one row. The height
+   is set here, once, rather than negotiated again in every component: the bare
+   controls take it directly, and the composite ones (a value and the toggle
+   beside it, a binding and its segments, a label and the two ways to fill it)
+   take it on the box while their parts stretch to fill it. */
+.card-builder {
+  --control-h: 36px;
+}
+
+/* A control that is one box. Checkboxes, radios and file inputs are their own
+   shape and are left alone, and a textarea grows on purpose. */
+.card-builder
+  :is(input:not([type='checkbox']):not([type='radio']):not([type='file']), select):not(
+    .field input,
+    .value-box input,
+    .binding input,
+    .filter-bar input
+  ) {
+  min-height: var(--control-h);
+}
+
+/* A control made of segments: the height belongs to the box, and the segments
+   stretch, so nothing inside it has to agree about padding. Set rather than
+   suggested -- these hold one line, and a part with a taller idea of itself is
+   exactly what made them stand a pixel or two off everything else. */
+.card-builder :is(.field, .binding) {
+  align-items: stretch;
+  height: var(--control-h);
+}
+
+/* The two that only usually hold one line. A picked value can be a whole
+   editor -- a matcher with a field of its own, a chip above a nested box --
+   and a set height cut the bottom off it, which is what put a number and its
+   spinners half out of view. They start at the common height and grow. */
+.card-builder :is(.value-box, .picked-row) {
+  align-items: stretch;
+  min-height: var(--control-h);
+}
+
+.card-builder :is(.field, .value-box, .binding, .picked-row) > * {
+  min-height: 0;
+}
+
+/* The buttons that stand BESIDE a field rather than inside one: the one that
+   clears a value, the one that takes a row out. They stood two thirds the
+   height of the box they sit against.
+
+   A segment inside a box is not one of these -- it stretches to the box, and
+   giving it a height of its own is what makes the box taller than the height
+   set above. */
+.card-builder :is(.clear-value, .pipe-remove, .remove) {
+  min-height: var(--control-h);
+}
+
+/* ------------------------------------------------------- tabbed sections ---
+
+   A strip of tabs over one panel, for a thing with parts: the options of a
+   Choose, the four moments of an elder sign. Each part carries steps of its
+   own and steps nest, so without this they run down the page with nothing to
+   say where one stops and the next begins.
+
+   The strip closes the gap its container leaves and laps the panel's top
+   border, so the open tab and the panel share an edge. */
+/* The strip and its panel are one block: whatever spaces the children of the
+   thing around them does not get to space these two apart. */
+.card-builder .tabbed {
+  display: flex;
+  flex-direction: column;
+}
+
+.card-builder .tabs {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+  margin-bottom: -1px;
+}
+
+.card-builder .tab {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid #374151;
+  border-bottom-color: transparent;
+  border-radius: 5px 5px 0 0;
+  color: #9ca3af;
+  display: flex;
+  font-size: 0.74rem;
+  gap: 0.35rem;
+  max-width: 16rem;
+  min-height: 0;
+  padding: 0.25rem 0.55rem;
+}
+
+.card-builder .tab:hover {
+  color: #eee;
+}
+
+.card-builder .tab.on {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: #4b5563;
+  color: #eee;
+}
+
+.card-builder .tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* How much is written in a part that is not open, so a card's elder sign says
+   which of its moments it uses without being clicked through. */
+.card-builder .tab-count {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  color: #9ca3af;
+  font-size: 0.66rem;
+  line-height: 1;
+  padding: 0.15rem 0.3rem;
+}
+
+/* Only the open tab offers to go: closing one that is not open would take away
+   something the author cannot see. */
+.card-builder .tab-remove {
+  color: #6b7280;
+  visibility: hidden;
+}
+
+.card-builder .tab-remove:hover {
+  color: #f87171;
+}
+
+.card-builder .tab.on .tab-remove {
+  visibility: visible;
+}
+
+.card-builder .add-tab {
+  color: #6b7280;
+  padding: 0.25rem 0.5rem;
+}
+
+.card-builder .tab-panel {
+  border: 1px solid #4b5563;
+  border-radius: 0 5px 5px 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.5rem 0.6rem;
+}

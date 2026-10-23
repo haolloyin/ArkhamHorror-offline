@@ -23,6 +23,7 @@ import Asset from '@/arkham/components/Asset.vue';
 import EventView from '@/arkham/components/Event.vue';
 import Skill from '@/arkham/components/Skill.vue';
 import HandCard from '@/arkham/components/HandCard.vue';
+import ProhibitedBadge from '@/arkham/components/ProhibitedBadge.vue';
 import CardRow from '@/arkham/components/CardRow.vue';
 import CardsUnderIndicator from '@/arkham/components/CardsUnderIndicator.vue';
 import CustomCardPicker from '@/arkham/components/debug/CustomCardPicker.vue';
@@ -33,6 +34,9 @@ import { TarotCard, tarotCardImage } from '@/arkham/types/TarotCard';
 import * as Arkham from '@/arkham/types/Investigator';
 import { useI18n } from 'vue-i18n';
 import Draw from '@/arkham/components/Draw.vue'
+import CardView from '@/arkham/components/Card.vue';
+import { CARD_FLIGHT_ATTR, cardFlightStyle, useCardFlightState } from '@/arkham/cardFlight';
+import { usePendingDraws } from '@/arkham/pendingDraws';
 import { IsMobile } from '@/arkham/isMobile';
 import { Modifier } from '@/arkham/types/Modifier';
 import { Enemy } from '@/arkham/types/Enemy';
@@ -289,6 +293,24 @@ const currentTreacheries = computed(() => {
     filter((t) => t.placement.tag === 'Limbo' && t.drawnBy === investigatorId.value && (props.playerId === props.investigator.playerId || !t.peril))
 })
 
+// The card this investigator is in the middle of drawing, during the `when you
+// draw` window that lets it be cancelled (Ward of Protection). It is in limbo --
+// no entity exists for it yet -- so it shows here, at the limbo end of the row,
+// instead of in the focused-card modal that would otherwise cover the board
+// while you decide. The card an enemy draw becomes takes over as a spawning
+// enemy once the window closes, so the two never show at once.
+//
+// It is also where the revelation overlay's card flies to, hence the flight
+// attribute and style below: the slot is already laid out (hidden) under the
+// overlay, so there is something to measure and to land on.
+const pendingDraws = usePendingDraws(() => props.game, () => props.playerId)
+const flightState = useCardFlightState()
+const drawnCards = computed(() =>
+  pendingDraws.value
+    .filter((draw) => draw.investigatorId === investigatorId.value)
+    .map((draw) => draw.card)
+)
+
 // Enemies mid-spawn are Unplaced (no location yet). Show them like a resolving
 // treachery. Keep the active enemy visible while a choice is being submitted:
 // the client clears the current question before the next one arrives, which
@@ -304,6 +326,26 @@ const spawningEnemies = computed(() => {
       e.placement.tag === 'OtherPlacement' &&
       e.placement.contents === 'Unplaced' &&
       (hasQuestion || (isResolvingActiveCard && activeCardId === e.cardId))
+  )
+})
+
+// An asset drawn from the encounter deck is Unplaced while its revelation
+// resolves — often asking where to put it — and belongs to no investigator yet,
+// so it shows in none of the entity lists. Surface it the same way as a
+// spawning enemy so you can see what you are resolving.
+const revelationAssets = computed(() => {
+  const hasQuestion = Boolean(props.game.question[props.investigator.playerId])
+  const activeCardId = props.game.activeCard ? CardT.cardId(props.game.activeCard) : null
+  const isResolvingActiveCard =
+    props.game.activeInvestigatorId === investigatorId.value && activeCardId !== null
+
+  return Object.values(props.game.assets).filter(
+    (a) =>
+      a.placement.tag === 'OtherPlacement' &&
+      a.placement.contents === 'Unplaced' &&
+      a.controller === null &&
+      activeCardId === a.cardId &&
+      (hasQuestion || isResolvingActiveCard)
   )
 })
 
@@ -1044,6 +1086,20 @@ function closeHand() {
           @dragenter.prevent
         >
           <transition-group @enter="onEnter" @leave="onLeave" @before-enter="onBeforeEnter">
+            <CardView
+              v-for="card in drawnCards"
+              :key="CardT.cardId(card)"
+              :card="card"
+              :game="game"
+              :data-index="CardT.cardId(card)"
+              :[CARD_FLIGHT_ATTR]="CardT.cardId(card)"
+              :style="cardFlightStyle(flightState, CardT.cardId(card))"
+              data-card-movement="draw"
+              :playerId="playerId"
+              class="drawn-card"
+              @choose="$emit('choose', $event)"
+            />
+
             <EnemyView
               v-for="enemy in spawningEnemies"
               :key="enemy.id"
@@ -1053,6 +1109,18 @@ function closeHand() {
               :playerId="playerId"
               class="spawning-enemy"
               @choose="$emit('choose', $event)"
+            />
+
+            <Asset
+              v-for="asset in revelationAssets"
+              :key="asset.id"
+              :asset="asset"
+              :game="game"
+              :data-index="asset.cardId"
+              :playerId="playerId"
+              class="revelation-asset"
+              @choose="$emit('choose', $event)"
+              @showCards="doShowCards"
             />
 
             <Story
@@ -1369,7 +1437,15 @@ function closeHand() {
               :game="game"
               :playerId="playerId"
               @choose="$emit('choose', $event)"
-            />
+            >
+              <template #cardOverlay="{ card }">
+                <ProhibitedBadge
+                  :game="game"
+                  :ownerId="investigator.id"
+                  :cardId="toCardContents(card).id"
+                />
+              </template>
+            </CardsUnderIndicator>
           </div>
           <HandCard
             v-for="card in playerHand"
@@ -1496,7 +1572,15 @@ function closeHand() {
             :game="game"
             :playerId="playerId"
             @choose="$emit('choose', $event)"
-          />
+          >
+            <template #cardOverlay="{ card }">
+              <ProhibitedBadge
+                :game="game"
+                :ownerId="investigator.id"
+                :cardId="toCardContents(card).id"
+              />
+            </template>
+          </CardsUnderIndicator>
         </div>
         <HandCard
           v-for="card in playerHand"
@@ -1707,7 +1791,26 @@ function closeHand() {
     border-radius: 1px;
   }
 
+  .drawn-card {
+    margin-right: 8px;
+  }
+
+  /* The receiver's cyan: this card is what a cancel played from hand is aimed
+     at, which is the `ability-target` treatment Asset.vue and Investigator.vue
+     use. On the image rather than the container, because the container is wider
+     than the card inside it (Card.vue gives the image a 2px margin) and a glow
+     out there reads as a dark border around the art. */
+  .drawn-card :deep(img.card) {
+    box-shadow: 0 0 0 2px var(--highlight), 0 0 6px 1px var(--highlight), var(--card-shadow);
+  }
+
   .spawning-enemy {
+    border-radius: 8px;
+    box-shadow: 0 0 12px 3px var(--important);
+    margin-right: 8px;
+  }
+
+  .revelation-asset {
     border-radius: 8px;
     box-shadow: 0 0 12px 3px var(--important);
     margin-right: 8px;

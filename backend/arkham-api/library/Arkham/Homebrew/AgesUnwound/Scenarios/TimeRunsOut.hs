@@ -244,14 +244,16 @@ instance RunMessage TimeRunsOut where
       case res of
         -- "If no resolution was reached (each investigator was defeated): Read
         -- Resolution 1."
-        NoResolution -> push R1
+        NoResolution -> do
+          resolution "noResolution"
+          push R1
         Resolution 1 -> do
           -- "record that all times are one. Each investigator is driven insane.
           -- The investigators lose the campaign."
           record AllTimesAreOne
           resolution "resolution1"
           eachInvestigator drivenInsane
-          gameOver
+          gameOverLost
         Resolution 2 -> do
           {- "record that the investigators bound Aforgomon in a prison of time. /
           For each investigator who ended the game with at least 1 copy of the

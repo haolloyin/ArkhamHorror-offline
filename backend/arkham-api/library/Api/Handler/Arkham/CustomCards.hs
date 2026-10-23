@@ -1,8 +1,11 @@
 module Api.Handler.Arkham.CustomCards (
   getApiV1ArkhamCustomCardsR,
+  getApiV1ArkhamCustomCardPortraitsR,
   postApiV1ArkhamCustomCardsR,
   postApiV1ArkhamCustomCardsArtR,
   deleteApiV1ArkhamCustomCardR,
+  forRendering,
+  setPayloadEtag,
   registerUserCustomCards,
   userCustomCards,
   ownedCardSet,
@@ -28,18 +31,20 @@ import Amazonka.S3
 import Amazonka.S3.PutObject (putObject_acl, putObject_contentType)
 import Control.Lens ((?~))
 
-import Arkham.Card.CardCode (CardCode (..))
-import Arkham.Card.CardDef (CardDef, cdArt, cdCardCode, cdMeta)
+import Arkham.Card.CardCode (CardCode (..), unCardCode)
+import Arkham.Card.CardDef (CardDef, cdArt, cdCardCode, cdMeta, cdName)
 import Arkham.Card.CustomCard (
   CustomCard (..),
-  customCardCodes,
+  customCardsByCode,
   isCustomCardCode,
   registerCustomCards,
   sanitizeCustomCardCode,
  )
 import Arkham.Custom.SetDefs qualified as SetDefs
+import Arkham.Name (toTitle)
 import Auth.ApiKey qualified as ApiKey
 import Crypto.Hash.SHA256 qualified as SHA256
+import Data.Aeson (encode)
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (parseMaybe, withObject)
 import Data.ByteString.Base16 qualified as B16
@@ -51,10 +56,11 @@ import Data.Text qualified as T
 import Data.Time.Clock
 import Data.Traversable (for)
 import Database.Persist qualified as DB
-import Database.Persist.Sql (SqlPersistT)
+import Database.Persist.Sql (Single (..), SqlPersistT, rawSql)
 import Import hiding ((==.))
 import Import qualified as P
 import System.Directory (createDirectoryIfMissing)
+import System.IO.Unsafe (unsafePerformIO)
 import UnliftIO.Exception (catch)
 
 {- | The requesting user's card library.
@@ -68,6 +74,66 @@ getApiV1ArkhamCustomCardsR :: Handler [Entity ArkhamCustomCard]
 getApiV1ArkhamCustomCardsR = do
   userId <- callerUserId <$> getScopedCaller [ApiKey.cardsRead]
   runDB $ P.selectList [ArkhamCustomCardUserId P.==. userId] [P.Desc ArkhamCustomCardUpdatedAt]
+
+{- | Portraits for the custom investigators named in @codes@.
+
+What a list of game rows needs, and the only thing it needs: a row draws a face
+and a name, and it was buying every card in the reader's library -- defs,
+script and all -- once per row to do it.
+
+Resolved from the reader's own library first, which is cached in process against
+'libraryStamp', so the ordinary case costs nothing but a hash. A code it does
+not hold belongs to somebody else's custom investigator sharing a game, and only
+then is the recorded copy on the games read.
+-}
+getApiV1ArkhamCustomCardPortraitsR :: Handler [CardPortrait]
+getApiV1ArkhamCustomCardPortraitsR = do
+  userId <- callerUserId <$> getScopedCaller [ApiKey.cardsRead]
+  codes <-
+    map (CardCode . bareCustomCode)
+      . filter (not . T.null)
+      . T.splitOn ","
+      . fromMaybe ""
+      <$> lookupGetParam "codes"
+  library <- userCustomCards userId
+  let
+    fromLibrary = [portraitOf code card | code <- codes, Just card <- [Map.lookup code library]]
+    missing = [code | code <- codes, isNothing (Map.lookup code library)]
+  fromGames <- if null missing then pure [] else recordedPortraits userId missing
+  let payload = fromLibrary <> fromGames
+  setPayloadEtag payload
+  pure payload
+
+{- | The portraits a reader's games have recorded, for cards that are not theirs.
+
+A custom card is written onto the game that uses it, which is what lets a table
+draw a card whose author is somebody else. Read through @gameCustomCards@ rather
+than by loading the games: that key is a few hundred bytes beside a column that
+averages 97kB, and decoding the games to reach it was the old cost of this whole
+request.
+
+@DISTINCT ON@ because the same card is recorded on every game it appears in, and
+any copy answers the question.
+-}
+recordedPortraits :: UserId -> [CardCode] -> Handler [CardPortrait]
+recordedPortraits userId codes = do
+  rows :: [(Single Text, Single Value)] <-
+    runDB
+      $ rawSql
+        "SELECT DISTINCT ON (e.key) e.key, e.value \
+        \FROM arkham_games g \
+        \CROSS JOIN LATERAL jsonb_each(g.current_data -> 'gameCustomCards') AS e(key, value) \
+        \WHERE EXISTS (SELECT 1 FROM arkham_players p WHERE p.arkham_game_id = g.id AND p.user_id = ?) \
+        \  AND e.key = ANY(string_to_array(?, ','))"
+        [ toPersistValue userId
+        , -- A jsonb map of 'CardCode' is keyed the way 'ToJSONKey' writes it,
+          -- which is with the same leading @c@ 'bareCustomCode' takes off.
+          toPersistValue (T.intercalate "," (map (T.cons 'c' . unCardCode) codes))
+        ]
+  pure do
+    (Single code, Single raw) <- rows
+    card <- maybeToList $ parseMaybe parseJSON raw
+    pure $ portraitOf (CardCode (bareCustomCode code)) card
 
 {- | Refuses anything that is not a custom card code, so this cannot be used to
 shadow a real card's def.
@@ -370,6 +436,21 @@ persistCard userId setId now (cardCode, card) = do
           now
           now
   P.getBy (UniqueUserCustomCard userId (unCardCode cardCode)) >>= \case
+    {- A card belongs to one set, and the row is keyed on its code alone, so
+    writing it into a second set does not copy it there -- it moves it, and
+    leaves the set it came from one card short without saying so. That is never
+    what an import means: a file whose cards are already somewhere else is a
+    file pointed at the wrong set. -}
+    Just (Entity _ existing)
+      | arkhamCustomCardCustomCardSetId existing /= setId -> do
+          -- `P` here is this project's prelude, whose `get` is MonadState's.
+          home <- P.getEntity (arkhamCustomCardCustomCardSetId existing)
+          invalidArgs
+            [ toTitle (cdName (customCardDef card))
+                <> " is already in "
+                <> maybe "another set" (arkhamCustomCardSetName . entityVal) home
+                <> ". A card belongs to one set, so importing it here would take it out of that one."
+            ]
     Just (Entity rowId existing) -> do
       P.update
         rowId
@@ -566,6 +647,111 @@ portraits still pointing at the exporter's library.
 artMetaKeys :: [Text]
 artMetaKeys = ["backArt", "portrait", "portraitBack"]
 
+-- ------------------------------------------------------- what a reader gets ---
+
+{- | The meta keys that say what a card /does/.
+
+These are the card builder's authoring surface, and the engine is the only thing
+that reads them: it interprets them server-side out of the library, so nothing
+outside the builder has ever needed them in a response. On a scripted card they
+are most of the def.
+
+@_locale@ and @_signatures@ are deliberately not here. The first carries the
+card's text, which every player at the table has to be able to read, and the
+second is how a deck resolves a signature card to its owner.
+-}
+dslMetaKeys :: [Text]
+dslMetaKeys =
+  [ "_abilities"
+  , "_handlers"
+  , "_modifiers"
+  , "_onPlay"
+  , "_onSetup"
+  , "_onRevelation"
+  , "_revelationPlacement"
+  , "_elderSign"
+  , "_elderSignSteps"
+  , "_elderSignRevealSteps"
+  , "_elderSignSuccessSteps"
+  , "_elderSignFailureSteps"
+  , "_setAside"
+  , "_keywords"
+  ]
+
+{- | A card as something other than the builder needs it: the printed face, its
+text and its signatures, and none of the script behind it.
+
+The registry this lands in is read to draw cards and to name them; the behaviour
+it used to carry was being sent to every player of every game on every page
+load, for nobody to read.
+-}
+forRendering :: CustomCard -> CustomCard
+forRendering card = card {customCardDef = def {cdMeta = foldr Map.delete (cdMeta def) dslMetaKeys}}
+ where
+  def = customCardDef card
+
+{- | What a game row needs of a custom investigator, which is its portrait and
+nothing else.
+
+'Api.Handler.Arkham.Games.Summary' names the investigators in a list of games
+but cannot draw their faces: a custom investigator's portrait lives on the def,
+in the author's library. This is that lookup, and it is the whole of it -- four
+fields against a def that can run to kilobytes of script.
+-}
+data CardPortrait = CardPortrait
+  { cardCode :: CardCode
+  , art :: Maybe Text
+  , portrait :: Maybe Text
+  , portraitBack :: Maybe Text
+  }
+  deriving stock (Show, Generic)
+  deriving anyclass ToJSON
+
+{- | A custom card code as the library is keyed by it.
+
+@ToJSON CardCode@ prepends a @c@ so a code never serializes as a bare number, so
+an id a reader is asking about comes back as @c*…@ while the card is stored
+under @*…@. The frontend normalises the same way round (@stripCardCodePrefix@),
+and the two have to agree or every lookup here misses.
+-}
+bareCustomCode :: Text -> Text
+bareCustomCode raw = maybe stripped ("*" <>) (T.stripPrefix "c*" stripped)
+ where
+  stripped = T.strip raw
+
+portraitOf :: CardCode -> CustomCard -> CardPortrait
+portraitOf code card =
+  CardPortrait
+    { cardCode = code
+    , art = customCardArt card
+    , portrait = metaText "portrait"
+    , portraitBack = metaText "portraitBack"
+    }
+ where
+  metaText k = case Map.lookup k (cdMeta (customCardDef card)) of
+    Just (String t) -> Just t
+    _ -> Nothing
+
+{- | Tag a response so a reader that already has it is told so.
+
+Two things have to be true together for that to happen, which is why they are
+set in one place: an @ETag@ to compare, and a @Cache-Control@ that lets the
+browser keep the response long enough to compare it. The global CORS headers say
+@no-store@, which forbids keeping anything at all; 'addCORSHeaders' leaves
+'Cache-Control' alone when a handler has set its own, so this wins for these
+endpoints without changing what every other endpoint promises.
+
+@private@ because a library belongs to one account, and @no-cache@ rather than a
+lifetime because an edit in the builder has to show at the table immediately --
+revalidate every time, and pay for the body only when it actually changed.
+
+'setEtag' answers 304 itself when the reader's @If-None-Match@ matches.
+-}
+setPayloadEtag :: ToJSON a => a -> Handler ()
+setPayloadEtag payload = do
+  addHeader "Cache-Control" "private, no-cache"
+  setEtag . decodeUtf8 . B16.encode . SHA256.hashlazy $ encode payload
+
 hostDefArt :: UserId -> CardDef -> Handler CardDef
 hostDefArt userId def = do
   meta <- foldlM host (cdMeta def) artMetaKeys
@@ -596,19 +782,49 @@ the registry first.
 -}
 userCustomCards :: UserId -> Handler (Map CardCode CustomCard)
 userCustomCards userId = do
+  stamp <- libraryStamp userId
+  remembered <- Map.lookup userId <$> readIORef userCustomCardsCache
+  case remembered of
+    Just (cachedStamp, cards) | cachedStamp == stamp -> pure cards
+    _ -> do
+      cards <- readUserCustomCards userId
+      atomicModifyIORef' userCustomCardsCache \m -> (Map.insert userId (stamp, cards) m, ())
+      pure cards
+
+{- | What a cached library is checked against before it is believed.
+
+The row count and the newest @updatedAt@ between them see every change a
+library can undergo: a save moves the timestamp, an addition moves both, a
+deletion lowers the count. A deletion paired with an addition holds the count
+still but cannot hold the timestamp, the new row's being the moment it was
+written.
+
+Two indexed aggregates, against reading and reparsing the whole library. That
+read was happening on every websocket answer -- the freshness it buys is the
+point (a card edited in the builder has to show at a table already using it),
+but the author's library is megabytes of defs and almost never differs from the
+answer before.
+-}
+type LibraryStamp = (Int, Maybe UTCTime)
+
+libraryStamp :: UserId -> Handler LibraryStamp
+libraryStamp userId = runDB do
+  n <- P.count [ArkhamCustomCardUserId P.==. userId]
+  newest <- P.selectFirst [ArkhamCustomCardUserId P.==. userId] [P.Desc ArkhamCustomCardUpdatedAt]
+  pure (n, arkhamCustomCardUpdatedAt . entityVal <$> newest)
+
+{-# NOINLINE userCustomCardsCache #-}
+userCustomCardsCache :: IORef (Map UserId (LibraryStamp, Map CardCode CustomCard))
+userCustomCardsCache = unsafePerformIO (newIORef mempty)
+
+readUserCustomCards :: UserId -> Handler (Map CardCode CustomCard)
+readUserCustomCards userId = do
   rows <- runDB $ P.selectList [ArkhamCustomCardUserId P.==. userId] []
   let cards = do
         Entity _ row <- rows
         def <- maybeToList $ parseMaybe parseJSON (arkhamCustomCardDef row)
         pure $ CustomCard def (arkhamCustomCardArt row)
-  {- Aliases underneath, so a card's own code always wins one. Importing the
-  arkham.build pack gives its card a code derived from the same id a hand-built
-  card can claim, and in that collision the imported card is the one the deck
-  means. Left-biased union rather than row order, which is `updatedAt` and says
-  nothing about which card is which. -}
-  pure
-    $ Map.fromList [(cdCardCode (customCardDef c), c) | c <- cards]
-    `Map.union` Map.fromList [(code, c) | c <- cards, code <- drop 1 (customCardCodes c)]
+  pure $ customCardsByCode cards
 
 registerUserCustomCards :: UserId -> Handler ()
 registerUserCustomCards userId = registerCustomCards =<< userCustomCards userId

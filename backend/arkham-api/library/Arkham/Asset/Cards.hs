@@ -1089,6 +1089,17 @@ allPlayerAssetCards =
         rubyStandish
       , andyVanNortwick
       , johnRaymondLegrasse
+      , -- The Expedition Items are printed on player backs, so they belong here
+        -- rather than in 'allEncounterAssetCards': 'lookupCard' decides
+        -- player-vs-encounter by which map holds the def, and an asset's 'toCard'
+        -- goes through it, so a def filed as an encounter card sends a spent
+        -- Laudanum or a destroyed Diving Suit to the encounter discard -- to be
+        -- dealt back out as a mythos card on the next reshuffle, #5869.
+        -- Generating them with 'genCard' does not help on its own, #5711.
+        expeditionGear
+      , laudanum
+      , alienTablet
+      , divingSuitTheDrownedCity
       , --- Mi-Go Incursion
         universalSolvent
       , petOozeling
@@ -1098,6 +1109,8 @@ allPlayerAssetCards =
         gMen
       , corrosiveCloud
       , alienInstruments
+      , --- Traces to Nowhere
+        azizaSteerHardboiled
       ]
 
 -- with encounter backs
@@ -1210,10 +1223,6 @@ allEncounterAssetCards =
       , proveYourWorth
       , dreamsOfDestruction
       , plumbTheDepths
-      , expeditionGear
-      , laudanum
-      , alienTablet
-      , divingSuitTheDrownedCity
       , noPlaceLikeHomeCompleted
       , walkInFaithCompleted
       , toeTheLineCompleted
@@ -1233,6 +1242,18 @@ allEncounterAssetCards =
       , obsidianClaw
       , obsidianClawPower
       , horrorInClay
+      , --- Traces to Nowhere
+        albrechtHusserlRecklessGambler
+      , eliasHusserlJrFleeingTheCity
+      , eugenePeelHidingSomething
+      , linaHusserlTheNextBigThing
+      , matildeCorreaInvestigativeReporter
+      , vicarYangTryingToDoTheRightThing
+      , josephineHusserlMiffedMatriarch
+      , adeleHusserlEstrangedDaughter
+      , gladysWashingtonCuriousCoroner
+      , charlesTammJustHereToGetPaid
+      , azizaSteerHasABoneToPick
       ]
 
 allSpecialPlayerAssetCards :: Map CardCode CardDef

@@ -98,6 +98,7 @@ data LocationMatcher
   | LocationWithPrintedShroud ValueMatcher
   | LocationWithShroudLessThanOrEqualToLessThanEnemyMaybeField EnemyId (Field Enemy (Maybe Int))
   | LocationWithMostClues LocationMatcher
+  | LocationWithMostCardsUnderneath LocationMatcher
   | LocationWithMostInvestigators LocationMatcher
   | LocationWithMostEnemies LocationMatcher EnemyMatcher
   | LocationWithFewestEnemies LocationMatcher EnemyMatcher
@@ -205,6 +206,9 @@ data LocationMatcher
 
 location_ :: LocationMatcher -> LocationMatcher
 location_ = id
+
+instance IsLabel "empty" LocationMatcher where
+  fromLabel = EmptyLocation
 
 instance IsLabel "revealed" LocationMatcher where
   fromLabel = RevealedLocation

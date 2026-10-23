@@ -1,9 +1,9 @@
 import api from '@/api';
 import { logRowDecoder, type LogRow } from '@/arkham/types/GameLog';
-import { Game, GameDetailsEntry, gameDecoder, gameDetailsEntryDecoder } from '@/arkham/types/Game';
+import { Game, GameDetails, GameDetailsEntry, gameDecoder, gameDetailsEntryDecoder } from '@/arkham/types/Game';
 import { ArkhamDbDecklist, Deck, deckDecoder } from '@/arkham/types/Deck';
 import { CardDef, cardDefDecoder } from '@/arkham/types/CardDef';
-import { CustomCard, customCardDecoder } from '@/arkham/customCards';
+import { CardPortrait, CustomCard, customCardDecoder } from '@/arkham/customCards';
 import { Difficulty } from '@/arkham/types/Difficulty';
 import { Source } from '@/arkham/types/Source';
 import { Token } from '@/arkham/types/Token';
@@ -193,6 +193,42 @@ export const fetchGames = async (): Promise<GameDetailsEntry[]> => {
   const { data } = await api.get('arkham/games')
   return JsonDecoder.array(gameDetailsEntryDecoder, 'GameEntryDetails[]').decodePromise(data)
 }
+
+/* Games whose players have said they are happy to be watched. Already filtered
+ * server-side to games in play that you have no seat in, so the home page shows
+ * what comes back as-is. */
+export const fetchSpectatableGames = async (): Promise<GameDetails[]> => {
+  const { data } = await api.get('arkham/games/spectatable')
+  const entries = await JsonDecoder.array(gameDetailsEntryDecoder, 'GameEntryDetails[]').decodePromise(data)
+  return entries.filter((entry) => entry.tag === 'game') as GameDetails[]
+}
+
+/* A game on the watch list, and how many seconds since anybody at that table
+ * did anything. Seconds since, rather than the timestamp, so nothing here
+ * depends on the watcher's clock agreeing with the server's. */
+export type SpectatableGameActivity = {
+  id: string;
+  idleSeconds: number;
+}
+
+const spectatableGameActivityDecoder = JsonDecoder.object<SpectatableGameActivity>(
+  {
+    id: JsonDecoder.string(),
+    idleSeconds: JsonDecoder.number(),
+  },
+  'SpectatableGameActivity',
+)
+
+/* The "has the list changed?" probe, for the same reason fetchGameStep exists:
+ * the list above decodes a whole game per row, so the watch page asks for the
+ * ids first and pays for the list only when the set of them moves. The idle
+ * times ride along, because that is the one thing about a game on the list the
+ * watcher cannot get from the rows it already has. */
+export const fetchSpectatableGameActivity = async (): Promise<SpectatableGameActivity[]> => {
+  const { data } = await api.get('arkham/games/spectatable/digest', { params: { _: Date.now() } })
+  return JsonDecoder.array(spectatableGameActivityDecoder, 'SpectatableGameActivity[]').decodePromise(data)
+}
+
 
 export const fetchDecks = async (): Promise<Deck[]> => {
   const { data } = await api.get('arkham/decks')
@@ -849,6 +885,14 @@ export type StatTotals = {
   // Never got past deck selection: games nobody actually sat down to.
   neverStarted: number
   players: number
+  // Finished games whose outcome is known, and those that ended before outcomes
+  // were tracked and have not been reconstructed yet.
+  won: number
+  // Of the wins, how many the Campaign Guide prints as "The investigators win
+  // the campaign…?" rather than stating outright.
+  wonUncertain: number
+  lost: number
+  outcomeUnknown: number
 }
 
 export type CampaignStat = {
@@ -861,6 +905,11 @@ export type CampaignStat = {
   // mean something for a campaign nobody has finished yet.
   scenariosPlayed: number
   scenariosWon: number
+  // Runs that reached a winning ending, a losing one, and ones that finished
+  // with no outcome on record.
+  won: number
+  lost: number
+  outcomeUnknown: number
   players1: number
   players2: number
   players3: number
@@ -875,6 +924,8 @@ export type StandaloneStat = {
   id: string
   games: number
   finished: number
+  won: number
+  lost: number
   isSideStory: boolean
 }
 
@@ -896,6 +947,20 @@ export type CampaignProgress = {
   games: number
 }
 
+/* Which ending a campaign's runs stopped on. `resolution` is null for a scenario
+ * lost or resigned out of, the one ending with no number. Only games with a known
+ * outcome appear. */
+export type CampaignEnding = {
+  campaignId: string
+  scenarioId: string
+  resolution: number | null
+  result: 'Won' | 'Lost'
+  certainty: 'Certain' | 'Uncertain'
+  /** i18n key for the clause the guide attaches to the verdict, if any. */
+  note: string | null
+  count: number
+}
+
 export type AchievementStat = { id: string; earned: number; inProgress: number }
 
 export type GameStats = {
@@ -911,6 +976,7 @@ export type GameStats = {
   sideStoriesInCampaigns: SideStoryInCampaign[]
   scenarioOutcomes: ScenarioOutcome[]
   campaignProgress: CampaignProgress[]
+  campaignEndings: CampaignEnding[]
   achievements: AchievementStat[]
   // Users who have earned at least one achievement: the denominator that does
   // not count people who never played as having failed to earn it.
@@ -929,6 +995,22 @@ export const fetchGameStats = async (): Promise<GameStats> => {
 // Rebuilds the view and returns the fresh numbers in the same response.
 export const refreshGameStats = async (): Promise<GameStats> => {
   const { data } = await api.post('admin/game-stats/refresh', {})
+  return data
+}
+
+/* One pass of the outcomes backfill, for games that finished before the engine
+ * recorded how they ended. Bounded per call, so the panel repeats it until
+ * `remaining` stops falling. `undecided` is games it looked at and would not
+ * guess about — a campaign abandoned between scenarios with nothing resolved. */
+export type OutcomesBackfill = {
+  computed: number
+  undecided: number
+  remaining: number
+  durationMs: number
+}
+
+export const backfillGameOutcomes = async (): Promise<OutcomesBackfill> => {
+  const { data } = await api.post('admin/game-stats/outcomes', {})
   return data
 }
 
@@ -1016,6 +1098,74 @@ export const denyCardSetSubmission = async (
   return data
 }
 
+/* ------------------------------------------------- everyone's card sets ---
+
+   Admin only. The other half of the review queue: every set on the instance,
+   not just the ones somebody chose to publish. Paginated, because this grows
+   with every account, and scoped, because most sets are copies -- a
+   subscription or a share link leaves a row per subscriber. */
+
+export type AdminCardSetScope = 'originals' | 'published' | 'copies' | 'all'
+
+/* What a copy follows. Absent on a set its owner actually made, which is what
+ * the `originals` scope selects. */
+export type AdminCardSetFollows = 'marketplace' | 'link'
+
+export type AdminCardSet = {
+  id: string
+  name: string
+  description: string | null
+  url: string | null
+  icon: string | null
+  investigatorExpansion: boolean
+  // Set when the set came from an arkham.build pack rather than being built here.
+  sourceCode: string | null
+  userId: string
+  author: string
+  // Shown because it is searched: a row that matched on email has to say so.
+  authorEmail: string
+  cardCount: number
+  createdAt: string
+  updatedAt: string
+  follows: AdminCardSetFollows | null
+  // This set's own marketplace listing, if its author has published it.
+  publishedCardSetId: string | null
+  approvedVersion: number | null
+  submissionVersion: number | null
+  submissionStatus: ReviewStatus | null
+  preview: { def: any; art: string | null }[]
+}
+
+export type AdminCardSetPage = {
+  sets: AdminCardSet[]
+  // Under the same filters as the rows, so the page count works out reachable.
+  total: number
+  page: number
+  perPage: number
+}
+
+export const fetchAdminCustomCardSets = async (params: {
+  page?: number
+  scope?: AdminCardSetScope
+  q?: string
+}): Promise<AdminCardSetPage> => {
+  const query = new URLSearchParams()
+  if (params.page !== undefined) query.set('page', String(params.page))
+  if (params.scope !== undefined) query.set('scope', params.scope)
+  if (params.q) query.set('q', params.q)
+  const suffix = query.size === 0 ? '' : `?${query}`
+  const { data } = await api.get(`admin/custom-card-sets${suffix}`)
+  return data
+}
+
+// One set with every card in it, which is what actually looking at one takes.
+export const fetchAdminCustomCardSet = async (
+  id: string,
+): Promise<{ set: AdminCardSet; cards: { def: any; art: string | null }[] }> => {
+  const { data } = await api.get(`admin/custom-card-sets/${id}`)
+  return data
+}
+
 /* A card row names its set the way the entity spells the field; `setId` is what
  * it is called here. */
 const toStoredCustomCard = (row: any): StoredCustomCard => ({
@@ -1061,6 +1211,25 @@ export const uploadCustomCardArt = async (file: File | Blob, filename = 'art.web
 export const fetchCustomCards = async (gameId: string): Promise<CustomCard[]> => {
   const { data } = await api.get(`arkham/games/${gameId}/custom-cards`)
   return JsonDecoder.array(customCardDecoder, 'ArkhamCustomCard[]').decodePromise(data)
+}
+
+/* What a game row needs of a custom investigator: its portrait, and nothing
+ * else. A row draws a face and a name, and it used to buy every card in your
+ * library -- script included -- once per row to do it. */
+const cardPortraitDecoder = JsonDecoder.object<CardPortrait>(
+  {
+    cardCode: JsonDecoder.string(),
+    art: JsonDecoder.nullable(JsonDecoder.string()),
+    portrait: JsonDecoder.nullable(JsonDecoder.string()),
+    portraitBack: JsonDecoder.nullable(JsonDecoder.string()),
+  },
+  'CardPortrait',
+)
+
+export const fetchCustomCardPortraits = async (codes: string[]): Promise<CardPortrait[]> => {
+  if (codes.length === 0) return []
+  const { data } = await api.get('arkham/custom-cards/portraits', { params: { codes: codes.join(',') } })
+  return JsonDecoder.array(cardPortraitDecoder, 'CardPortrait[]').decodePromise(data)
 }
 
 export const fetchCard = async (cardCode: string): Promise<CardDef> => {
@@ -1263,7 +1432,10 @@ export const newGame = async (
   ultimatumsAndBoons?: string[],
   // Achievement tracking (only meaningful for campaigns with an achievement
   // catalog); backend defaults to true when omitted.
-  achievementsEnabled = true
+  achievementsEnabled = true,
+  // List the game on the home page for anyone to watch. Backend defaults to
+  // false when omitted.
+  allowSpectators = false
 ): Promise<Game> => {
   const { data } = await api.post('arkham/games', {
     deckIds,
@@ -1278,7 +1450,8 @@ export const newGame = async (
     strictAsIfAt,
     asIfRuling: strictAsIfAt == null ? undefined : strictAsIfAt ? 'chapter2' : 'chapter1',
     ultimatumsAndBoons,
-    achievementsEnabled
+    achievementsEnabled,
+    allowSpectators
   })
   return gameDecoder.decodePromise(data)
 }

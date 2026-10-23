@@ -180,7 +180,6 @@ bonnieWalsh =
             "Bonnie Walsh: focus one skill first"
             [ MarkAssetUsed iid cid
             , ResolveEffect (EffectCtx iid (SourceCard cid) Nothing) (Focus Nothing False)
-            , ContinueTest
             ]
         | not used
         ]
@@ -426,8 +425,8 @@ captivatingMelody =
 
 {- | "Once per round, while resolving a test, you may reroll one success to spawn or
 research one clue. If this talent is discarded, return The Watcher to the game
-box." The reroll is offered as a plain reroll, so the engine does not check that
-the die chosen was a success.
+box." The success is the price of the clue, so it is only offered with one on the
+table, and the engine narrows the reroll to the successes.
 -}
 ominousDreams :: AssetBehavior
 ominousDreams =
@@ -440,13 +439,13 @@ ominousDreams =
                  "ominous-dreams"
                  "Ominous Dreams: reroll one success for a clue"
                  [ MarkAssetUsed iid cid
-                 , RerollUpTo (SourceCard cid) 1
+                 , RerollASuccess (SourceCard cid)
                  , ResolveEffect
                      (EffectCtx iid (SourceCard cid) Nothing)
                      (Choose [("Spawn one clue", SpawnOneClue), ("Research one clue", PlaceCluesOnSheet (N 1))])
                  ]
              | not used
-             , liveDiceCount ts > 0
+             , maybe False (\need -> any (\d -> not d.removed && d.value >= need) ts.dice) ts.successNeeded
              ]
        )
     & #onDiscard
@@ -588,7 +587,7 @@ snowNorRain =
         [ Reaction
             "snow-nor-rain"
             "Snow Nor Rain: discard a will focus for one success"
-            [MarkAssetUsed iid cid, DiscardFocus iid Will, AddTestSuccesses 1, ContinueTest]
+            [MarkAssetUsed iid cid, DiscardFocus iid Will, AddTestSuccesses 1]
         | not used
         , Map.findWithDefault 0 Will i.focus > 0
         ]

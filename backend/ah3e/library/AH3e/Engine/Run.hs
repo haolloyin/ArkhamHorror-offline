@@ -68,6 +68,8 @@ actsOnTestInProgress = \case
   RerollDie _ _ -> True
   RerollUpTo _ _ -> True
   RerollUpToNow _ _ -> True
+  RerollASuccess _ -> True
+  RerollASuccessNow _ -> True
   RerollOneOf {} -> True
   RerollAll _ -> True
   RaiseInsteadOfReroll {} -> True
@@ -1126,13 +1128,19 @@ dispatch msg = case msg of
             <> [CheckReactions (AfterEvadeMonster iid mid) []]
         unless (null ms) $ investigatorL iid . #bonusActions += 1
       else
-        when (n > 0)
-          $ chooseFor
-            iid
-            "Choose a monster to evade"
-            [ Choice (MonsterLabel m) [EvadedMonster iid m, EvadeMonsters iid (n - 1)]
-            | m <- ms
-            ]
+        if n > 0
+          then
+            chooseFor
+              iid
+              "Choose a monster to evade"
+              [ Choice (MonsterLabel m) [EvadedMonster iid m, EvadeMonsters iid (n - 1)]
+              | m <- ms
+              ]
+          else
+            {- Out of successes with monsters still engaged: those are the ones the
+            evade action failed against, whether it scored nothing at all or ran dry
+            part way through. -}
+            for_ ms \mid -> monsterBehavior mid >>= \b -> b.afterFailedEvade mid iid >>= pushAll
   MonstersWatchAction iid kind -> do
     ms <- engagedMonsters iid
     answers <- for ms \m -> monsterBehavior m.card >>= \b -> b.afterAction m.card iid kind
@@ -1366,7 +1374,8 @@ dispatch msg = case msg of
       board <- use #board
       let spaces = neighborhoodSpaces e.neighborhood board
           expanded = any (\s -> maybe False ((== MysterySpace) . (.kind)) (Map.lookup s board.spaces)) spaces
-      logText ("Gate burst in " <> coerce e.neighborhood)
+      name <- neighborhoodName e.neighborhood
+      logText ("Gate burst in " <> name)
       pushAll
         [ if expanded then ChooseGateBurstSpaces [] spaces else PlaceDoomInOrder SourceMythos spaces
         , ClearActiveCard cid
@@ -1639,17 +1648,24 @@ dispatch msg = case msg of
   ResolveReckonings [] -> pure ()
   -- askLeader, not chooseGroup: the last reckoning is asked for too, since the
   -- prompt is what points it out on the table
-  ResolveReckonings ss -> do
-    -- a card may ask to go last, which the leader's free choice of order would break
-    late <- filterM isLateReckoning ss
-    let offer = case filter (`notElem` late) ss of [] -> ss; early -> early
-    askLeader
-      "Choose the next reckoning to resolve"
-      [Choice (SourceLabel s) [ResolveReckoning s, ResolveReckonings (filter (/= s) ss)] | s <- offer]
+  ResolveReckonings ss0 -> do
+    -- the order was settled over every source at once, so an earlier reckoning may have
+    -- discarded a later one's card by now (a dark pact that devours its owner)
+    ss <- filterM reckoningStillInPlay ss0
+    unless (null ss) do
+      -- a card may ask to go last, which the leader's free choice of order would break
+      late <- filterM isLateReckoning ss
+      let offer = case filter (`notElem` late) ss of [] -> ss; early -> early
+      askLeader
+        "Choose the next reckoning to resolve"
+        [Choice (SourceLabel s) [ResolveReckoning s, ResolveReckonings (filter (/= s) ss)] | s <- offer]
   ResolveReckoning src -> do
+    inPlay <- reckoningStillInPlay src
     held <- uses #sheetTokens (Map.member (reckoningHeldKey src))
-    offers <- if held then pure [] else reckoningOffers src
+    offers <- if held || not inPlay then pure [] else reckoningOffers src
     if
+      -- the card left the table before its turn in the order came up: nothing to point at
+      | not inPlay -> pure ()
       | held -> logText "That reckoning does not resolve this mythos phase"
       | null offers -> push (ResolveReckoningNow src)
       | otherwise ->
@@ -1686,8 +1702,7 @@ dispatch msg = case msg of
     ts <- fromJustNote "no test" <$> use #test
     payRerollCost ts.investigator cost
     investigatorL ts.investigator . #usedAssets %= (<> [cid])
-    #test . _Just . #dice . ix idx . #value += 1
-    testPrompt
+    raiseDie idx
   ToggleTestAsset cid -> toggleTestAsset cid
   SetTestSkill skill -> do
     #test . _Just . #skill .= skill
@@ -1702,6 +1717,8 @@ dispatch msg = case msg of
   RerollDie cost idx -> rerollDie cost idx
   RerollUpTo src n -> rerollUpToPaying src n
   RerollUpToNow src n -> rerollUpTo src n
+  RerollASuccess src -> rerollASuccessPaying src
+  RerollASuccessNow src -> rerollASuccess src
   RerollOneOf src n idx -> rerollOneOf src n idx
   RerollAll src -> rerollAll src
   RollAdditionalDice src n -> rollAdditionalDice src n
@@ -2451,10 +2468,18 @@ reckoningSources = do
   assetSources <- fmap concat $ for invs \i -> fmap catMaybes $ for i.assets \cid -> do
     b <- assetBehavior cid
     pure $ SourceCard cid <$ b.reckoning
+  -- a rumor that prints no Reckoning line is no reckoning (Truckers' Strike, Stocks Stutter)
+  rumorSources <- case rumorNow of
+    Nothing -> pure []
+    Just r -> do
+      d <- getCardDef r.card
+      pure case d.kind of
+        HeadlineCard h -> [SourceHeadline r.card | isJust h.reckoning]
+        _ -> []
   pure
     $ [SourceScenario]
     <> [SourceCodex e.number | e <- codex, isJust ((codexBehavior e.number).reckoning e)]
-    <> [SourceHeadline r.card | Just r <- [rumorNow]]
+    <> rumorSources
     <> assetSources
 
 resolveReckoning :: Source -> GameM ()
@@ -2496,8 +2521,14 @@ spawnOneClue onTop = withEventDeck \case
     nd <- use (#decks . #neighborhoods . at e.neighborhood . non [])
     nd' <- if onTop then pure (cid : nd) else shuffleIntoTopTwo cid nd
     #decks . #neighborhoods . at e.neighborhood ?= nd'
-    logText ("A clue spawns in " <> coerce e.neighborhood)
-    push (ClearActiveCard cid)
+    name <- neighborhoodName e.neighborhood
+    logText ("A clue spawns in " <> name)
+    {- The table draws the card and reads the neighborhood off it before shuffling
+    it away, so the spawn needs a stop of its own: without one the card is made
+    active and cleared inside the same drain, and no view ever carries it. -}
+    askLeader
+      ("A clue spawns in " <> name)
+      [Choice (DoneLabel "Continue") [ClearActiveCard cid]]
 
 withEventDeck :: ([CardId] -> GameM ()) -> GameM ()
 withEventDeck f = do

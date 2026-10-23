@@ -4,6 +4,7 @@ import Arkham.Campaign.Import.Lifted
 import Arkham.CampaignLog (CampaignLog (..))
 import Arkham.CampaignLogKey (toCampaignLogKey)
 import Arkham.Card (toCard)
+import Arkham.ChaosToken
 import Arkham.Deck qualified as Deck
 import Arkham.Helpers.FlavorText
 import Arkham.Homebrew.AgesUnwound.CampaignSteps
@@ -71,15 +72,18 @@ instance RunMessage AgesUnwound where
       pure c
     -- Interlude I: An Unknown Benefactor
     CampaignStep (InterludeStep 1 _) -> scope "anUnknownBenefactor" do
-      flavor $ setTitle "title" >> p "body"
-      storyWithChooseOneM (setTitle "title" >> p "theChoice") do
+      storyWithChooseOneM (setTitle "title" >> p "body") do
         labeled "goingItAlone" do
           flavor $ setTitle "title" >> p "goingItAlone"
           record TheInvestigatorsDeclinedAnOfferOfHelp
+          removeAllChaosTokens Cultist
+          addChaosToken Tablet
         labeled "leapOfFaith" do
           flavor $ setTitle "title" >> p "leapOfFaith"
           record TheInvestigatorsAcceptedAnOfferOfHelp
           incrementRecordCount StrangeAssistance 1
+          removeAllChaosTokens Tablet
+          addChaosToken Cultist
       nextCampaignStep
       pure c
     {- TODO(ages-unwound): the epilogue's full text. It branches three ways on
@@ -93,7 +97,7 @@ instance RunMessage AgesUnwound where
       silverTwilight <- getHasRecord YouHaveAdvancedTheSchemesOfTheSilverTwilightLodge
       flavor $ setTitle "title" >> p (if bound then "bound" else "allTimesAreOne")
       when silverTwilight $ flavor $ setTitle "title" >> p "silverTwilight"
-      gameOver
+      gameOverWon
       pure c
     {- "When a card from the dummy deck would leave play, instead shuffle it back
     into the dummy deck." Every player card that leaves play funnels through

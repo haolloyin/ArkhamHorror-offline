@@ -44,6 +44,7 @@
       /custom-cards ApiV1ArkhamCustomCardsP:
         / ApiV1ArkhamCustomCardsR GET POST
         !/art ApiV1ArkhamCustomCardsArtR POST
+        !/portraits ApiV1ArkhamCustomCardPortraitsR GET
         /#ArkhamCustomCardId ApiV1ArkhamCustomCardR DELETE
       /custom-card-sets ApiV1ArkhamCustomCardSetsP:
         / ApiV1ArkhamCustomCardSetsR GET POST
@@ -84,6 +85,8 @@
         !/fix ApiV1ArkhamGamesFixR POST
         !/reload ApiV1ArkhamGamesReloadR GET
         !/old ApiV1ArkhamGamesOldR GET
+        !/spectatable ApiV1ArkhamSpectatableGamesR GET
+        !/spectatable/digest ApiV1ArkhamSpectatableGamesDigestR GET
         /#ArkhamGameId ApiV1ArkhamGameP:
           / ApiV1ArkhamGameR GET PUT DELETE
           /raw ApiV1ArkhamGameRawR PUT
@@ -131,10 +134,13 @@
       /rooms ApiV1AdminRoomsP:
         / ApiV1AdminRoomsR GET
         /#ArkhamGameId ApiV1AdminRoomP:
-          / ApiV1AdminRoomR DELETE
+          / ApiV1AdminRoomR GET DELETE
+          /probe ApiV1AdminRoomProbeR POST
+          /sweep ApiV1AdminRoomSweepR POST
       /game-stats ApiV1AdminGameStatsP:
         / ApiV1AdminGameStatsR GET
         !/refresh ApiV1AdminGameStatsRefreshR POST
+        !/outcomes ApiV1AdminGameStatsOutcomesR POST
       /archives ApiV1AdminArchivesP:
         / ApiV1AdminArchivesR GET
         !/run ApiV1AdminArchivesRunR POST
@@ -148,6 +154,9 @@
           / ApiV1AdminCardSetSubmissionR GET
           /approve ApiV1AdminCardSetSubmissionApproveR POST
           /deny ApiV1AdminCardSetSubmissionDenyR POST
+      /custom-card-sets ApiV1AdminCustomCardSetsP:
+        / ApiV1AdminCustomCardSetsR GET
+        /#ArkhamCustomCardSetId ApiV1AdminCustomCardSetR GET
       /users ApiV1AdminUsersP:
         / ApiV1AdminUsersR GET
         /#UserId/features ApiV1AdminUserFeaturesR PUT

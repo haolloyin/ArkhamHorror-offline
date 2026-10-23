@@ -131,6 +131,7 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (parseMaybe)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
+import System.IO.Unsafe (unsafePerformIO)
 
 abilitiesMetaKey :: Text
 abilitiesMetaKey = "_abilities"
@@ -140,12 +141,6 @@ handlersMetaKey = "_handlers"
 
 modifiersMetaKey :: Text
 modifiersMetaKey = "_modifiers"
-
-revelationMetaKey :: Text
-revelationMetaKey = "_onRevelation"
-
-revelationPlacementMetaKey :: Text
-revelationPlacementMetaKey = "_revelationPlacement"
 
 data AbilitySpec = AbilitySpec
   { specType :: Value
@@ -288,12 +283,63 @@ metaSpecs key def = fromMaybe [] do
   v <- Map.lookup key (cdMeta def)
   parseMaybe parseJSON v
 
+{- | Everything a card's meta has to be taken apart to answer, taken apart once.
+
+The three spec lists and the @request@ blocks are what the engine asks a custom
+card for, and it asks constantly: the abilities of every entity on every
+'Arkham.Helpers.Action.getActions', the modifiers of every entity on every
+preload, the handlers of every entity on every message. Each ask was a fresh
+parse of a meta key -- or, for the request blocks, a walk of the whole blob --
+of a def that had not changed since the last one.
+
+The fields are lazy, so a card still pays only for the lists something actually
+asks it for, and pays for each of them once.
+-}
+data CompiledCard = CompiledCard
+  { compiledAbilities :: ~[AbilitySpec]
+  , compiledModifiers :: ~[ModifierSpec]
+  , compiledHandlers :: ~[HandlerSpec]
+  , compiledRequests :: ~[Value]
+  }
+
+{- | Keyed by card code and stamped with the registry generation it was read
+under, so a card-builder save drops every compiled card at once rather than
+leaving one behaving the way it used to.
+-}
+{-# NOINLINE compiledCardCache #-}
+compiledCardCache :: IORef (Int, Map CardCode CompiledCard)
+compiledCardCache = unsafePerformIO (newIORef (-1, mempty))
+
+{-# NOINLINE compiledCard #-}
+compiledCard :: CardDef -> CompiledCard
+compiledCard def = unsafePerformIO do
+  generation <- customCardRegistryGeneration
+  (cachedGeneration, compiled) <- readIORef compiledCardCache
+  case Map.lookup code compiled of
+    Just c | cachedGeneration == generation -> pure c
+    _ -> do
+      let
+        c =
+          CompiledCard
+            { compiledAbilities = metaSpecs abilitiesMetaKey def
+            , compiledModifiers = metaSpecs modifiersMetaKey def
+            , compiledHandlers = metaSpecs handlersMetaKey def
+            , compiledRequests = requestBlocks (toJSON (cdMeta def))
+            }
+      atomicModifyIORef' compiledCardCache \(generation', compiled') ->
+        let kept = if generation' == generation then compiled' else mempty
+         in ((generation, Map.insert code c kept), ())
+      pure c
+ where
+  code = toCardCode def
+
 type CustomEntity a = (HasCardDef a, Sourceable a, Targetable a, HasCardCode a, ToJSON a)
 
 {- | The entity's own serialized fields, so @$id@ and friends resolve, plus the
 source and target it is addressed by (which are not fields of the attrs) and, for
 a signature card, the investigator it belongs to as @$investigator@.
 -}
+
 {- | What a card's own abilities, modifiers and steps can name.
 
 The entity's serialized fields, plus the handful the engine supplies, plus
@@ -331,7 +377,7 @@ bindings a = KeyMap.fromList (own <> signatureOf) <> fields <> remembered
 customAbilities :: CustomEntity a => a -> [Ability]
 customAbilities a =
   [ applySpec spec (mkAbility a idx abilityType)
-  | (idx, spec) <- zip [1 ..] (metaSpecs abilitiesMetaKey (toCardDef a))
+  | (idx, spec) <- zip [1 ..] (compiledAbilities (compiledCard (toCardDef a)))
   , Just abilityType <- [decodeWith env (specType spec)]
   ]
  where
@@ -342,7 +388,7 @@ customAbilities a =
           zoneCriterion (specZone spec)
             <> fromMaybe (abilityCriteria ab) (decodeWith env =<< specCriteria spec)
       , abilityLimit = fromMaybe (abilityLimit ab) (decodeWith env =<< specLimit spec)
-      , abilityTooltip = specTooltip spec <|> abilityTooltip ab
+      , abilityTooltip = ownText env <$> specTooltip spec <|> abilityTooltip ab
       , abilityDoesNotProvokeAttacksOfOpportunity = noAttacksOfOpportunity spec
       }
 
@@ -515,6 +561,10 @@ customRevelationPlacement def iid
   | otherwise = case customMetaMaybe revelationPlacementMetaKey def of
       Just ("threatArea" :: Text) -> Just (InThreatArea iid)
       Just "playArea" -> Just (InPlayArea iid)
+      -- What the builder writes for a card its own steps place, and for a
+      -- treachery that is discarded once it resolves: no placement, said out
+      -- loud so it is one of the answers rather than the absence of one.
+      Just "none" -> Nothing
       _ -> Nothing
 
 {- | Pick up a @distribute@ block where its ask left off.
@@ -547,6 +597,7 @@ entity -- by its target, its source, or its id. Without that check a handler
 would fire for every copy of the card and for messages aimed at other entities
 entirely.
 -}
+
 {- | Pick up a @search@ block where its ask left off.
 
 The two answers a search can give -- these cards, or none -- are the two
@@ -590,13 +641,21 @@ runCustomHandlers a msg = do
   resumeDistribute a msg
   resumeSearch a msg
   resumeCustomSteps a msg
-  case toJSON msg of
+  {- Nothing below can fire for a card that listens for nothing, and deciding
+  that costs a map lookup. Serializing the message and searching it for a
+  mention of this card costs a great deal more, and was being done for every
+  message the game ran against every custom entity on the table. -}
+  unless (null handlerSpecs && null blocks) $ case toJSON msg of
     Object o -> handlers o
     _ -> pure ()
  where
+  compiled = compiledCard (toCardDef a)
+  handlerSpecs = compiledHandlers compiled
+  blocks = compiledRequests compiled
+
   handlers o = do
     let mentioned = any (`isSubValue` Object o) [toJSON (toTarget a), toJSON (toSource a)]
-    for_ (metaSpecs @HandlerSpec handlersMetaKey (toCardDef a)) \handler ->
+    for_ handlerSpecs \handler ->
       when (mentioned || handlerGlobal handler) $ for_ (matched (handlerOn handler) o) \fields -> do
         let env = messageBindings o fields <> bindings a
             {- Both sides are worked out, not merely substituted. A pair that
@@ -611,7 +670,7 @@ runCustomHandlers a msg = do
        the message that asked rather than in a section of their own. Every pair
        in the engine routes its answer by source or by target -- both of which
        are this card -- so the mention check is the whole of the matching. -}
-    when mentioned $ for_ (requestBlocks (toJSON (cdMeta (toCardDef a)))) \block -> do
+    when mentioned $ for_ blocks \block -> do
       let b = specObject block
       for_ (KeyMap.lookup "on" b >>= parseMaybe parseJSON) \(name :: Text) ->
         for_ (matched name o) \fields ->
@@ -646,7 +705,7 @@ selects. This is how a custom card reaches other cards -- giving an enemy a
 keyword, say -- rather than only acting on itself.
 -}
 customModifiers :: (CustomEntity a, HasModifiersM m) => a -> m ()
-customModifiers a = for_ (metaSpecs @ModifierSpec modifiersMetaKey (toCardDef a)) \spec -> do
+customModifiers a = for_ (compiledModifiers (compiledCard (toCardDef a))) \spec -> do
   let holds (l, r) = sameValue (substitute baseEnv l) (substitute baseEnv r)
   -- @requires@ first, because it is the one gate that asks the game nothing.
   when (all holds (modRequires spec)) do

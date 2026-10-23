@@ -4,11 +4,12 @@
  * Branches and choices carry their own steps, so this renders itself for those
  * — which is what lets an ability say "if it is ready, attack; otherwise ready
  * it" or "choose an event, then play it". */
-import { computed, ref } from 'vue'
+import { computed, inject, reactive, ref } from 'vue'
 import { vFocus } from '@/arkham/components/debug/vFocus'
 import { onClickOutside } from '@vueuse/core'
 import ExpressionEditor from '@/arkham/components/debug/ExpressionEditor.vue'
 import BoolField from '@/arkham/components/debug/BoolField.vue'
+import LabelField from '@/arkham/components/debug/LabelField.vue'
 import CardCodeField from '@/arkham/components/debug/CardCodeField.vue'
 import ConditionField from '@/arkham/components/debug/ConditionField.vue'
 import ScopeBar from '@/arkham/components/debug/ScopeBar.vue'
@@ -22,6 +23,16 @@ import {
   type Binding,
 } from '@/arkham/customCardBindings'
 import { QUERY_TYPES } from '@/arkham/customCardExpressions'
+import { useI18n } from 'vue-i18n'
+import {
+  isOwnTextKey,
+  isSharedTextKey,
+  ownTextKey,
+  parseSharedLabel,
+  readableParams,
+  type CardTextAccess,
+  CARD_TEXT,
+} from '@/arkham/customText'
 
 const props = defineProps<{
   modelValue: any[]
@@ -53,6 +64,7 @@ type StepKind =
   | 'case'
   | 'forEach'
   | 'repeat'
+  | 'call'
   | 'distribute'
   | 'search'
   | 'request'
@@ -100,6 +112,7 @@ const KIND_LABELS: Record<StepKind, string> = {
   case: 'Case',
   forEach: 'For each',
   repeat: 'Repeat',
+  call: 'Again',
   distribute: 'Distribute',
   search: 'Search',
   request: 'Ask the game',
@@ -146,6 +159,7 @@ function kindOf(step: any): StepKind {
     'case',
     'forEach',
     'repeat',
+    'call',
     'distribute',
     'search',
     'request',
@@ -200,6 +214,7 @@ const blankStep = (kind: StepKind) =>
     forEach: { forEach: { query: { kind: 'enemy', matcher: null }, bind: 'each', steps: [] } },
     modify: { modify: { target: null, modifiers: [] } },
     repeat: { repeat: { times: 1, bind: 'i', steps: [] } },
+    call: { call: '' },
     distribute: { distribute: { total: 1, among: { kind: 'investigator', matcher: null }, label: '', bind: 'who', amount: 'amount', steps: [] } },
     search: {
       search: {
@@ -255,7 +270,8 @@ const KIND_HELP: Record<StepKind, string> = {
   when: 'Runs its steps only when a matcher finds something. An If with no else.',
   case: 'Takes the first branch whose condition holds.',
   forEach: 'Runs its steps once per thing found, from a matcher or a list, bound inside.',
-  repeat: 'Runs its steps a number of times, with the pass number bound inside.',
+  repeat: 'Runs its steps a number of times, with the pass number bound inside. Named, it runs when something calls it instead.',
+  call: 'Runs another pass of a named repeat. Nothing happens once its passes are spent.',
   distribute: 'Splits a total between investigators, then runs its steps on each share.',
   search: 'Searches a zone for cards, and says what happens to what it finds — and to finding nothing.',
   request: 'Pushes a message that is answered later, with the answer handled here.',
@@ -395,6 +411,19 @@ const revealScope = (index: number) => [
  *
  * A basic fight action is the exception: the enemy's own ability makes its own
  * test, and there is no test of this step's to hang anything on. */
+/* Switching a repeat between its two readings. The name IS the switch -- the
+ * engine runs the steps where they stand unless one is bound to call -- so
+ * dropping it is how "all of it now" is said. */
+function setRepeatMode(index: number, step: any, mode: string) {
+  const repeat = { ...step.repeat }
+  if (mode === 'called') repeat.as = repeat.as || 'again'
+  else delete repeat.as
+  set(index, { ...step, repeat })
+}
+
+// The repeats a step here could ask for another pass of.
+const repeatsInScope = (index: number) => scopeFor(index).filter((b) => b.type === 'Repeat')
+
 const TEST_KINDS = ['test', 'fight', 'investigate', 'evade', 'parley']
 
 const startsTest = (step: any) => TEST_KINDS.includes(kindOf(step)) && !step.fight?.basic
@@ -416,6 +445,12 @@ const outcomes = (step: any, which: 'onSuccess' | 'onFailure'): any[] => {
   if (Array.isArray(held)) return held
   return held ? [held] : []
 }
+
+/* Both give v-for a definite array: iterating `step.x ?? []` off an `any`
+ * types the loop index `string | number`, which then will not do arithmetic. */
+const branches = (step: any): any[] => step.case ?? []
+
+const setAsideCards = (step: any): string[] => step.setAside?.cards ?? []
 
 const setOutcomes = (index: number, which: 'onSuccess' | 'onFailure', riders: any[]) => {
   const step = steps.value[index]
@@ -667,9 +702,18 @@ function bindsOf(
   // Given what is in scope here, so a `let` can say what its expression came
   // out as rather than only that it bound something.
   const { after, inside } = stepBindings(step, '', scopeFor(index))
+  // A name bound for both is one name, not two: a named repeat is in scope for
+  // the steps it repeats AND for the ones that start it.
+  const both = new Set(after.map((b) => b.name).filter((n) => inside.some((b) => b.name === n)))
   return [
-    ...after.map((b) => ({ name: b.name, scope: 'later steps', type: b.type })),
-    ...inside.map((b) => ({ name: b.name, scope: 'the steps inside', type: b.type })),
+    ...after.map((b) => ({
+      name: b.name,
+      scope: both.has(b.name) ? 'the steps inside and after' : 'later steps',
+      type: b.type,
+    })),
+    ...inside
+      .filter((b) => !both.has(b.name))
+      .map((b) => ({ name: b.name, scope: 'the steps inside', type: b.type })),
   ]
 }
 
@@ -730,8 +774,66 @@ function setOptionSource(step: any, oi: number, at: number, kind: string) {
 const addOption = (step: any, at: number) =>
   set(at, { ...step, choose: { ...step.choose, options: [...optionsOf(step), { label: '', steps: [] }] } })
 
-const removeOption = (step: any, index: number, at: number) =>
+const removeOption = (step: any, index: number, at: number) => {
   set(at, { ...step, choose: { ...step.choose, options: optionsOf(step).filter((_, i) => i !== index) } })
+  showOption(at, Math.max(index - 1, 0))
+}
+
+/* One option at a time, under a strip of tabs.
+ *
+ * Every option carries steps of its own, and steps nest, so a Choose with
+ * three of them used to run down the page with nothing to say where one
+ * stopped and the next began. A tab is that line. */
+const shownOption = reactive<Record<string, number>>({})
+
+const activeOption = (step: any, at: number) => {
+  const held = shownOption[innerPath(at, 'choose')] ?? 0
+  return Math.min(held, Math.max(optionsOf(step).length - 1, 0))
+}
+
+const showOption = (at: number, oi: number) => {
+  shownOption[innerPath(at, 'choose')] = oi
+}
+
+const addAndShowOption = (step: any, at: number) => {
+  addOption(step, at)
+  showOption(at, optionsOf(step).length)
+}
+
+/* What to call an option without asking: what it says, or what it stands for.
+ * Written text is read as written, a key is read through whatever answers it,
+ * and an option that is one-per-thing is named for the thing. */
+const { t, te } = useI18n()
+const cardText = inject<CardTextAccess | null>(CARD_TEXT, null)
+
+const saidBy = (label: string): string => {
+  if (isOwnTextKey(label)) return cardText?.read(ownTextKey(label)) ?? ''
+  if (isSharedTextKey(label)) {
+    const held = parseSharedLabel(label)
+    return held && te(held.key) ? t(held.key, readableParams(held.params)) : ''
+  }
+  return label
+}
+
+const optionName = (option: any, oi: number): string => {
+  if (option?.query) return `each ${option.query.kind || 'thing'}`
+  const said = saidBy(option?.label ?? '')
+    .replace(/[*_]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return said || `Option ${oi + 1}`
+}
+
+/* Two options can say the same thing and differ only in a matcher further
+ * down, which is more than a tab can hold. They are counted off instead, so
+ * the strip still says which is which. */
+const optionTitle = (step: any, option: any, oi: number): string => {
+  const name = optionName(option, oi)
+  const alike = optionsOf(step).filter((o, i) => optionName(o, i) === name)
+  if (alike.length < 2) return name
+  const nth = optionsOf(step).filter((o, i) => i <= oi && optionName(o, i) === name).length
+  return `${name} (${nth})`
+}
 </script>
 
 <template>
@@ -949,7 +1051,7 @@ const removeOption = (step: any, index: number, at: number) =>
 
       <template v-else-if="kindOf(step) === 'case'">
         <p class="hint">The first branch whose condition holds.</p>
-        <div v-for="(b, bi) in step.case ?? []" :key="bi" class="option">
+        <div v-for="(b, bi) in branches(step)" :key="bi" class="option">
           <div class="row">
             <span class="branch-label">Branch {{ bi + 1 }}</span>
             <button type="button" @click="set(index, { ...step, case: step.case.filter((_: any, i: number) => i !== bi) })">×</button>
@@ -1382,9 +1484,33 @@ const removeOption = (step: any, index: number, at: number) =>
           Runs the steps below over and over. "A total of 8 resources, distributed as you wish"
           is eight passes of choosing who gets one, which is how the engine plays it.
         </p>
+        <!-- The two readings of "repeat": all of it now, or a pass at a time
+             when something asks. The second is a name, because the steps that
+             ask for a pass have to say which repeat they mean. -->
+        <div class="row">
+          <label>
+            Runs
+            <select
+              :value="step.repeat?.as ? 'called' : 'now'"
+              @change="setRepeatMode(index, step, ($event.target as HTMLSelectElement).value)"
+            >
+              <option value="now">every pass, one after another</option>
+              <option value="called">one pass each time it is called</option>
+            </select>
+          </label>
+          <label v-if="step.repeat?.as !== undefined">
+            Called as
+            <input
+              :value="step.repeat?.as"
+              placeholder="again"
+              @input="set(index, { ...step, repeat: { ...step.repeat, as: ($event.target as HTMLInputElement).value } })"
+              @keydown.stop
+            />
+          </label>
+        </div>
         <ExpressionEditor
           :queryKinds="queryKinds"
-          label="How many times"
+          :label="step.repeat?.as ? 'How many passes at most' : 'How many times'"
           expect="Int"
           :bindings="scopeFor(index)"
           :modelValue="step.repeat?.times"
@@ -1408,6 +1534,24 @@ const removeOption = (step: any, index: number, at: number) =>
           :modelValue="step.repeat?.steps ?? []"
           @update:modelValue="set(index, { ...step, repeat: { ...step.repeat, steps: $event } })"
         />
+      </template>
+
+      <template v-else-if="kindOf(step) === 'call'">
+        <label>
+          Another pass of
+          <select
+            :value="typeof step.call === 'string' ? step.call : ''"
+            @change="set(index, { call: ($event.target as HTMLSelectElement).value })"
+          >
+            <option value="">— choose a repeat —</option>
+            <option v-for="loop in repeatsInScope(index)" :key="loop.name" :value="`$${loop.name}`">
+              ${{ loop.name }}
+            </option>
+          </select>
+        </label>
+        <p v-if="!repeatsInScope(index).length" class="hint">
+          No repeat in scope is called by name. Set one to run a pass at a time and it appears here.
+        </p>
       </template>
 
       <template v-else-if="kindOf(step) === 'modify'">
@@ -1446,92 +1590,123 @@ const removeOption = (step: any, index: number, at: number) =>
           thing a matcher finds, bound for that option's steps — which is what lets a single prompt
           span several kinds of thing, where a Choose from can only span one.
         </p>
-        <div v-for="(option, oi) in optionsOf(step)" :key="oi" class="option">
-          <div class="row">
-            <label>
-              This option is
-              <select
-                :value="option.query ? 'query' : 'one'"
-                @change="setOptionSource(step, oi, index, ($event.target as HTMLSelectElement).value)"
+        <!-- One tab per option, named for what the option says. The panel below
+             is the one option being written, so where it begins and ends is the
+             edge of the panel rather than a reader's guess. -->
+        <div class="tabbed">
+          <div class="tabs" role="tablist">
+            <button
+              v-for="(option, oi) in optionsOf(step)"
+              :key="oi"
+              type="button"
+              class="tab"
+              role="tab"
+              :class="{ on: activeOption(step, index) === oi }"
+              :aria-selected="activeOption(step, index) === oi"
+              :title="optionTitle(step, option, oi)"
+              @click="showOption(index, oi)"
+            >
+              <span class="tab-name">{{ optionTitle(step, option, oi) }}</span>
+              <span
+                class="tab-remove"
+                title="Remove this option"
+                @click.stop="removeOption(step, oi, index)"
+                >&times;</span
               >
-                <option value="one">one named option</option>
-                <option value="query">one per thing a matcher finds</option>
-              </select>
-            </label>
-            <label v-if="!option.query">
-              Option label
-              <input
-                :value="option.label"
-                @input="setOption(step, oi, { ...option, label: ($event.target as HTMLInputElement).value }, index)"
-                @keydown.stop
-              />
-            </label>
-            <label v-if="option.query">
-              Kind
-              <select
-                :value="option.query?.kind"
-                @change="setOption(step, oi, { ...option, query: { kind: ($event.target as HTMLSelectElement).value, matcher: null } }, index)"
-              >
-                <option v-for="(_, kind) in queryKinds" :key="kind" :value="kind">{{ kind }}</option>
-              </select>
-            </label>
-            <label v-if="option.query">
-              Bind to
-              <input
-                :value="option.bind"
-                placeholder="chosen"
-                @input="setOption(step, oi, { ...option, bind: ($event.target as HTMLInputElement).value }, index)"
-                @keydown.stop
-              />
-            </label>
-            <button type="button" @click="removeOption(step, oi, index)">×</button>
+            </button>
+            <button type="button" class="tab add-tab" title="Add an option" @click="addAndShowOption(step, index)">
+              +
+            </button>
           </div>
+          <div
+            v-for="(option, oi) in optionsOf(step)"
+            v-show="activeOption(step, index) === oi"
+            :key="oi"
+            class="option tab-panel"
+          >
+            <div class="row">
+              <label>
+                This option is
+                <select
+                  :value="option.query ? 'query' : 'one'"
+                  @change="setOptionSource(step, oi, index, ($event.target as HTMLSelectElement).value)"
+                >
+                  <option value="one">one named option</option>
+                  <option value="query">one per thing a matcher finds</option>
+                </select>
+              </label>
+              <LabelField
+                v-if="!option.query"
+                label="Option label"
+                :bindings="optionScope(index, option, oi)"
+                :modelValue="option.label"
+                @update:modelValue="setOption(step, oi, { ...option, label: $event }, index)"
+              />
+              <label v-if="option.query">
+                Kind
+                <select
+                  :value="option.query?.kind"
+                  @change="setOption(step, oi, { ...option, query: { kind: ($event.target as HTMLSelectElement).value, matcher: null } }, index)"
+                >
+                  <option v-for="(_, kind) in queryKinds" :key="kind" :value="kind">{{ kind }}</option>
+                </select>
+              </label>
+              <label v-if="option.query">
+                Bind to
+                <input
+                  :value="option.bind"
+                  placeholder="chosen"
+                  @input="setOption(step, oi, { ...option, bind: ($event.target as HTMLInputElement).value }, index)"
+                  @keydown.stop
+                />
+              </label>
+            </div>
 
-          <ValueEditor
-            v-if="option.query"
-            :bindings="innerScope(index)"
-            :type="matcherType(option.query?.kind)"
-            label="Matcher"
-            :modelValue="option.query?.matcher"
-            @update:modelValue="setOption(step, oi, { ...option, query: { ...option.query, matcher: $event } }, index)"
-          />
+            <ValueEditor
+              v-if="option.query"
+              :bindings="innerScope(index)"
+              :type="matcherType(option.query?.kind)"
+              label="Matcher"
+              :modelValue="option.query?.matcher"
+              @update:modelValue="setOption(step, oi, { ...option, query: { ...option.query, matcher: $event } }, index)"
+            />
 
-          <!-- Whether this option is on the table at all. Read before the query
-               runs, so it cannot name what the option binds. -->
-          <ValueEditor
-            optional
-            type="Criterion"
-            label="Only offered when (optional)"
-            :bindings="innerScope(index)"
-            :modelValue="option.criteria?.criteria ?? (option.criteria?.tag ? option.criteria : undefined)"
-            @update:modelValue="setOption(step, oi, { ...option, criteria: $event ? { criteria: $event } : undefined }, index)"
-          />
-          <!-- Said where it is created, the way every other binding in the
-               builder is: an option with a query stands for one option per thing
-               found, and that thing is what its steps are written against. -->
-          <div v-if="optionBinding(index, option, oi)" class="step-foot">
-            <span class="binds">
-              <span class="binds-label">binds</span>
-              <code class="binds-name"
-                >${{ optionBinding(index, option, oi)!.name
-                }}<span v-if="optionBinding(index, option, oi)!.type" class="binds-type">
-                  :: {{ optionBinding(index, option, oi)!.type }}</span
-                ></code
-              >
-              <span class="binds-scope">for this option's steps</span>
-            </span>
+            <!-- Whether this option is on the table at all. Read before the query
+                 runs, so it cannot name what the option binds. -->
+            <ValueEditor
+              optional
+              type="Criterion"
+              label="Only offered when (optional)"
+              :bindings="innerScope(index)"
+              :modelValue="option.criteria?.criteria ?? (option.criteria?.tag ? option.criteria : undefined)"
+              @update:modelValue="setOption(step, oi, { ...option, criteria: $event ? { criteria: $event } : undefined }, index)"
+            />
+            <!-- Said where it is created, the way every other binding in the
+                 builder is: an option with a query stands for one option per thing
+                 found, and that thing is what its steps are written against. -->
+            <div v-if="optionBinding(index, option, oi)" class="step-foot">
+              <span class="binds">
+                <span class="binds-label">binds</span>
+                <code class="binds-name"
+                  >${{ optionBinding(index, option, oi)!.name
+                  }}<span v-if="optionBinding(index, option, oi)!.type" class="binds-type">
+                    :: {{ optionBinding(index, option, oi)!.type }}</span
+                  ></code
+                >
+                <span class="binds-scope">for this option's steps</span>
+              </span>
+            </div>
+            <StepsEditor
+            :slotSteps="slotSteps"
+            :bindings="optionScope(index, option, oi)"
+            :path="innerPath(index, `option${oi}`)"
+            :announce="optionBinding(index, option, oi) ? [optionBinding(index, option, oi)!] : []"
+              :queryKinds="queryKinds"
+              :modelValue="option.steps ?? []"
+              @update:modelValue="setOption(step, oi, { ...option, steps: $event }, index)"
+            />
           </div>
-          <StepsEditor
-          :slotSteps="slotSteps"
-          :bindings="optionScope(index, option, oi)"
-          :path="innerPath(index, `option${oi}`)"
-          :announce="optionBinding(index, option, oi) ? [optionBinding(index, option, oi)!] : []"
-            :queryKinds="queryKinds"
-            :modelValue="option.steps ?? []"
-            @update:modelValue="setOption(step, oi, { ...option, steps: $event }, index)"
-          />
         </div>
-        <button type="button" class="add" @click="addOption(step, index)">+ Option</button>
       </template>
 
       <p v-else-if="kindOf(step) === 'cancelBatch'" class="hint">
@@ -1565,15 +1740,14 @@ const removeOption = (step: any, index: number, at: number) =>
             :modelValue="!!step.useAbility?.optional"
             @update:modelValue="set(index, { ...step, useAbility: { ...step.useAbility, optional: $event } })"
           />
-          <label v-if="step.useAbility?.optional">
-            Decline label
-            <input
-              :value="step.useAbility?.declineLabel"
-              placeholder="Do not"
-              @input="set(index, { ...step, useAbility: { ...step.useAbility, declineLabel: ($event.target as HTMLInputElement).value } })"
-              @keydown.stop
-            />
-          </label>
+          <LabelField
+            v-if="step.useAbility?.optional"
+            label="Decline label"
+            placeholder="Do not"
+            :bindings="scopeFor(index)"
+            :modelValue="step.useAbility?.declineLabel"
+            @update:modelValue="set(index, { ...step, useAbility: { ...step.useAbility, declineLabel: $event } })"
+          />
         </div>
         <div class="row">
           <BoolField
@@ -1622,15 +1796,14 @@ const removeOption = (step: any, index: number, at: number) =>
             :modelValue="!!step.playCard?.optional"
             @update:modelValue="set(index, { ...step, playCard: { ...step.playCard, optional: $event } })"
           />
-          <label v-if="step.playCard?.optional">
-            Decline label
-            <input
-              :value="step.playCard?.declineLabel"
-              placeholder="Do not"
-              @input="set(index, { ...step, playCard: { ...step.playCard, declineLabel: ($event.target as HTMLInputElement).value } })"
-              @keydown.stop
-            />
-          </label>
+          <LabelField
+            v-if="step.playCard?.optional"
+            label="Decline label"
+            placeholder="Do not"
+            :bindings="scopeFor(index)"
+            :modelValue="step.playCard?.declineLabel"
+            @update:modelValue="set(index, { ...step, playCard: { ...step.playCard, declineLabel: $event } })"
+          />
         </div>
         <ValueEditor
           :bindings="scopeFor(index)"
@@ -1678,6 +1851,12 @@ const removeOption = (step: any, index: number, at: number) =>
           label="Which enemies (optional)"
           :modelValue="step.fight?.matcher"
           @update:modelValue="set(index, { ...step, fight: { ...step.fight, matcher: $event } })"
+        />
+        <BoolField
+          v-if="!step.fight?.basic"
+          label="ignore the aloof keyword for this attack"
+          :modelValue="!!step.fight?.ignoreAloof"
+          @update:modelValue="set(index, { ...step, fight: { ...step.fight, ignoreAloof: $event } })"
         />
         <ValueEditor
           :bindings="scopeFor(index)"
@@ -2111,14 +2290,14 @@ const removeOption = (step: any, index: number, at: number) =>
           anywhere yet to be moved.
         </p>
         <label class="cap">Which cards</label>
-        <div v-for="(code, ci) in (step.setAside?.cards ?? [])" :key="ci" class="row">
+        <div v-for="(code, ci) in setAsideCards(step)" :key="ci" class="row">
           <CardCodeField
             :modelValue="code"
             @update:modelValue="setAsideCard(index, ci, $event)"
           />
           <button type="button" class="drop" @click="setAsideCard(index, ci, null)">remove</button>
         </div>
-        <button type="button" class="add-rider" @click="setAsideCard(index, (step.setAside?.cards ?? []).length, '')">
+        <button type="button" class="add-rider" @click="setAsideCard(index, setAsideCards(step).length, '')">
           + a card
         </button>
         <p class="hint">
@@ -2183,15 +2362,13 @@ const removeOption = (step: any, index: number, at: number) =>
           the list the investigator puts in order — beside a chaos token's effect and the
           investigation's own clue.
         </p>
-        <label>
-          Label
-          <input
-            :value="step.skillTestOption?.label"
-            placeholder="Resolve"
-            @input="set(index, { ...step, skillTestOption: { ...step.skillTestOption, label: ($event.target as HTMLInputElement).value } })"
-            @keydown.stop
-          />
-        </label>
+        <LabelField
+          label="Label"
+          placeholder="Resolve"
+          :bindings="scopeFor(index)"
+          :modelValue="step.skillTestOption?.label"
+          @update:modelValue="set(index, { ...step, skillTestOption: { ...step.skillTestOption, label: $event } })"
+        />
         <StepsEditor
           :slotSteps="slotSteps"
           :bindings="innerScope(index)"
@@ -2244,15 +2421,14 @@ const removeOption = (step: any, index: number, at: number) =>
             :modelValue="!!step.activateAbility?.optional"
             @update:modelValue="set(index, { ...step, activateAbility: { ...step.activateAbility, optional: $event } })"
           />
-          <label v-if="step.activateAbility?.optional">
-            Decline label
-            <input
-              :value="step.activateAbility?.declineLabel"
-              placeholder="Do not"
-              @input="set(index, { ...step, activateAbility: { ...step.activateAbility, declineLabel: ($event.target as HTMLInputElement).value } })"
-              @keydown.stop
-            />
-          </label>
+          <LabelField
+            v-if="step.activateAbility?.optional"
+            label="Decline label"
+            placeholder="Do not"
+            :bindings="scopeFor(index)"
+            :modelValue="step.activateAbility?.declineLabel"
+            @update:modelValue="set(index, { ...step, activateAbility: { ...step.activateAbility, declineLabel: $event } })"
+          />
         </div>
       </template>
 
@@ -2376,15 +2552,14 @@ const removeOption = (step: any, index: number, at: number) =>
             :modelValue="!!step.chooseFrom?.optional"
             @update:modelValue="set(index, { ...step, chooseFrom: { ...step.chooseFrom, optional: $event } })"
           />
-          <label v-if="step.chooseFrom?.optional">
-            Decline label
-            <input
-              :value="step.chooseFrom?.declineLabel"
-              placeholder="Do not"
-              @input="set(index, { ...step, chooseFrom: { ...step.chooseFrom, declineLabel: ($event.target as HTMLInputElement).value } })"
-              @keydown.stop
-            />
-          </label>
+          <LabelField
+            v-if="step.chooseFrom?.optional"
+            label="Decline label"
+            placeholder="Do not"
+            :bindings="scopeFor(index)"
+            :modelValue="step.chooseFrom?.declineLabel"
+            @update:modelValue="set(index, { ...step, chooseFrom: { ...step.chooseFrom, declineLabel: $event } })"
+          />
         </div>
         <ValueEditor
           v-if="overSource(step.chooseFrom) === 'query'"
@@ -2742,13 +2917,9 @@ const removeOption = (step: any, index: number, at: number) =>
   }
 }
 
-.option {
-  border-left: 2px solid #374151;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  padding-left: 0.5rem;
-}
+/* The panel under the strip is `.tab-panel`, in the stylesheet, since the
+   elder sign's parts are tabbed the same way. */
+
 
 /* What a step binds for the steps under it, said on the step that binds it --
    so a $name in scope can be traced back to where it came from. */

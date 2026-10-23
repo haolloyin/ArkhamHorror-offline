@@ -58,7 +58,6 @@ import Arkham.Window (Window (..), mkWhen)
 import Arkham.Window qualified as Window
 import Control.Lens (non)
 import Control.Monad.State.Strict (evalStateT, get, put)
-import Data.List qualified as List
 import Data.List.Extra (nubOrd)
 import Data.Set qualified as Set
 
@@ -438,13 +437,28 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
           elem eid <$> select Matcher.EventReady
         EnemyTarget eid ->
           elem eid <$> select Matcher.ReadyEnemy
-        _ -> error $ "Not handled " <> show target
+        -- "this card" is authored as a 'CardIdTarget': the one target that matches
+        -- the card in every zone. 'isTarget' already honours it, so the exhaust that
+        -- gets pushed lands -- which leaves affordability as the only half that has
+        -- to learn it.
+        CardIdTarget cid ->
+          orM
+            [ selectAny $ Matcher.AssetWithCardId cid <> Matcher.AssetReady
+            , selectAny $ Matcher.EventWithCardId cid <> Matcher.EventReady
+            , selectAny $ Matcher.EnemyWithCardId cid <> Matcher.ReadyEnemy
+            ]
+        -- A target with nothing to exhaust is an unpayable cost, not a crash: the
+        -- card builder lets an author pick any 'Target' here.
+        _ -> pure False
       ExhaustAssetCost matcher ->
         selectAny $ Matcher.replaceYouMatcher iid matcher <> Matcher.AssetReady
       ExhaustXAssetCost matcher ->
         selectAny $ Matcher.replaceYouMatcher iid matcher <> Matcher.AssetReady
       DiscardAssetCost matcher ->
         selectAny $ Matcher.replaceYouMatcher iid matcher <> Matcher.DiscardableAsset
+      -- No 'DiscardableAsset' counterpart: exiling is not leaving play by
+      -- discard, so what the matcher names is the whole of what can be paid.
+      ExileAssetCost matcher -> selectAny $ Matcher.replaceYouMatcher iid matcher
       UseCost assetMatcher uType n -> do
         assets <- select (Matcher.replaceYouMatcher iid assetMatcher)
         uses <- getSpendableUseCount assets uType
@@ -795,17 +809,18 @@ getPlaceableClueCount iid = do
   z <- if canParallelRex then (`div` 2) <$> getRemainingCurseTokens else pure 0
   fieldMap InvestigatorClues (+ z) iid
 
+{- | The same 'Matcher.matchTarget' payment uses in
+'Arkham.ActiveCost.getActionCostSurcharges', so what is charged and what is checked
+for affordability cannot drift. Spelling out only 'IsAction' and
+'FirstOneOfPerformed' here left 'AnyActionTarget' unmatched, so Artificial Gravity
+Malfunction's surcharge was invisible until payment and a move was offered with one
+action left (#5895).
+-}
 applyActionCostModifier :: [[Action]] -> [[Action]] -> [Action] -> ModifierType -> Int -> Int
-applyActionCostModifier _ _ actions (ActionCostOf (IsAction action') m) n
-  | action' `elem` actions = n + m
-applyActionCostModifier _ performedActions actions (ActionCostOf (FirstOneOfPerformed as) m) n
-  | notNull (actions `List.intersect` as) && all (\a -> all (notElem a) performedActions) as =
-      n + m
-applyActionCostModifier _ _ actions (AdditionalActionCostOf (IsAction action') m) n
-  | action' `elem` actions = n + m
-applyActionCostModifier _ performedActions actions (AdditionalActionCostOf (FirstOneOfPerformed as) m) n
-  | notNull (actions `List.intersect` as) && all (\a -> all (notElem a) performedActions) as =
-      n + m
+applyActionCostModifier takenActions performedActions actions (ActionCostOf match m) n
+  | any (Matcher.matchTarget takenActions performedActions match) actions = n + m
+applyActionCostModifier takenActions performedActions actions (AdditionalActionCostOf match m) n
+  | any (Matcher.matchTarget takenActions performedActions match) actions = n + m
 applyActionCostModifier _ _ _ (ActionCostModifier m) n = n + m
 applyActionCostModifier _ _ _ _ n = n
 

@@ -9,6 +9,8 @@ module AH3e.Engine.Test (
   rerollDie,
   rerollUpTo,
   rerollUpToPaying,
+  rerollASuccess,
+  rerollASuccessPaying,
   rerollOneOf,
   rerollAll,
   chooseDieToRaise,
@@ -121,6 +123,13 @@ poolDeltaFor ts = do
     b <- assetBehavior cid
     b.poolDelta cid ts.investigator ts
 
+{- | What the test asks for at the step it has reached. An option a card offers here
+owes the test a way back to this prompt, and the engine owes that rather than each
+card: one whose work ends in a counter or in a question of its own (Won't Go Back's
+focus, Flannel Shirt's successes) would otherwise leave the test live with nothing
+asking about it, and whatever was queued behind the test would end the action over
+the top of it. A card that reaches the prompt by itself is simply asked again.
+-}
 testPrompt :: GameM ()
 testPrompt = do
   ts <- currentTest
@@ -148,7 +157,7 @@ testPrompt = do
         ("Roll " <> tshow pool <> " dice")
         ( Choice (DoneLabel "Roll dice") [RollDice]
             : toggles
-              <> [Choice (TextLabel r.label) r.messages | r <- fromCards]
+              <> [Choice (TextLabel r.label) (r.messages <> [ContinueTest]) | r <- fromCards]
         )
     ManipulateDice -> do
       i <- getInvestigator iid
@@ -162,7 +171,10 @@ testPrompt = do
           $ if b.freeRerollPerRound
             then Just (Choice (CardLabel c) [MarkAssetUsed iid c, SpendForReroll (FreeReroll (SourceCard c))])
             else Nothing
-      fromCards <- testOptionsFor ts
+      -- what a die must show to be a success, for a card that tells them apart
+      need <- successThreshold ts
+      #test . _Just . #successNeeded ?= need
+      fromCards <- testOptionsFor (ts & #successNeeded ?~ need)
       chooseFor
         iid
         "Modify your dice"
@@ -170,7 +182,7 @@ testPrompt = do
             : focusRerolls
               <> clueRerolls
               <> freeRerolls
-              <> [Choice (TextLabel r.label) r.messages | r <- fromCards]
+              <> [Choice (TextLabel r.label) (r.messages <> [ContinueTest]) | r <- fromCards]
         )
     TestResolved -> pure ()
 
@@ -194,7 +206,7 @@ rollTestDice = do
   investigatorL ts.investigator . #lastTestDice ?= pool
   -- the threshold rides along: blessed and cursed move it, and the log is read later
   need <- successThreshold ts
-  logText ("Rolled " <> tshow values <> " need " <> tshow need)
+  logFor ts.investigator ("Rolled " <> tshow values <> " need " <> tshow need)
   -- a card may compel a success to be rolled again; it is not offered, so the
   -- first one on the table is the one that goes back
   compelled <- hasAssetWith ts.investigator (.forcedRerollOfSuccess)
@@ -202,7 +214,7 @@ rollTestDice = do
   when compelled $ for_ (take 1 [idx | (idx, d) <- liveDice rolled, d.value >= need]) \idx -> do
     v <- rollDie
     #test . _Just . #dice . ix idx . #value .= v
-    logText ("A success is rolled again and comes up " <> tshow v)
+    logFor ts.investigator ("A success is rolled again and comes up " <> tshow v)
   -- a card of someone else's may answer this test (Intervene), and that is their
   -- decision, so each of them is asked before the roller carries on
   others <- filter ((/= ts.investigator) . (.id)) <$> playingInvestigators
@@ -221,7 +233,7 @@ rollAdditionalDice _ n = do
   values <- map (+ bonus) <$> replicateM (max 0 n) rollDie
   #test . _Just . #dice %= (<> [Die v False | v <- values])
   need <- successThreshold ts
-  logText ("Rolled " <> tshow values <> " more, need " <> tshow need)
+  logFor ts.investigator ("Rolled " <> tshow values <> " more, need " <> tshow need)
   testPrompt
 
 {- | "One additional die for each die that is not a success." What counts as a
@@ -283,7 +295,7 @@ rerollDie cost idx = do
   ts <- currentTest
   payRerollCost ts.investigator cost
   v <- rollDie
-  #test . _Just . #dice . ix idx . #value .= v
+  changeDie "Rerolled" idx (const v)
   {- All of this goes out in one push: a second one would prepend in front of what
   the first left, putting ContinueTest ahead of the cards answering the reroll and
   stranding their messages past the end of the test (Chef's Knife). -}
@@ -306,6 +318,26 @@ rerollDie cost idx = do
 
 liveDice :: TestState -> [(Int, Die)]
 liveDice ts = [(idx, d) | (idx, d) <- zip [0 ..] ts.dice, not d.removed]
+
+{- | A die taking a new face, logged with the face it had. By the time a test
+resolves its pool reads as a different roll, so each change says which die
+turned over and what it became; the threshold rides along as it does for a roll.
+-}
+changeDie :: Text -> Int -> (Int -> Int) -> GameM ()
+changeDie verb idx f = do
+  ts <- currentTest
+  need <- successThreshold ts
+  for_ [d.value | (i, d) <- zip [0 ..] ts.dice, i == idx] \old -> do
+    let new = f old
+    #test . _Just . #dice . ix idx . #value .= new
+    logFor ts.investigator
+      $ verb
+      <> " a "
+      <> tshow old
+      <> " into a "
+      <> tshow new
+      <> " need "
+      <> tshow need
 
 {- | Reroll dice one at a time until they stop or run out of allowance. A card
 that rerolls "any number" of dice passes the whole pool as the allowance.
@@ -333,12 +365,34 @@ rerollUpTo src n = do
         $ Choice (DoneLabel "Done rerolling") [ContinueTest]
         : [Choice (DieLabel idx d.value) [RerollOneOf src n idx] | (idx, d) <- live]
 
+{- | The reroll a card restricts to a success already on the table, which it charges
+for that success (Ominous Dreams). What counts as one moves with blessings and cards,
+so the dice are sorted here rather than on the card that asks.
+-}
+rerollASuccessPaying :: Source -> GameM ()
+rerollASuccessPaying src = do
+  ts <- currentTest
+  surcharge <- rerollSurcharge ts.investigator
+  if null surcharge
+    then rerollASuccess src
+    else pushAll (surcharge <> [RerollASuccessNow src])
+
+rerollASuccess :: Source -> GameM ()
+rerollASuccess src = do
+  ts <- currentTest
+  need <- successThreshold ts
+  case [(idx, d) | (idx, d) <- liveDice ts, d.value >= need] of
+    [] -> testPrompt
+    successes ->
+      chooseFor ts.investigator "Choose a success to reroll"
+        $ [Choice (DieLabel idx d.value) [RerollOneOf src 1 idx] | (idx, d) <- successes]
+
 rerollOneOf :: Source -> Int -> Int -> GameM ()
 rerollOneOf src n idx = do
   ts <- currentTest
   bonus <- dieBonusFor ts
   v <- rollDie
-  #test . _Just . #dice . ix idx . #value .= v + bonus
+  changeDie "Rerolled" idx (const (v + bonus))
   rerollUpTo src (n - 1)
 
 -- | Reroll every die still in the pool at once, for a card that offers no choice.
@@ -348,7 +402,7 @@ rerollAll _ = do
   bonus <- dieBonusFor ts
   for_ (liveDice ts) \(idx, _) -> do
     v <- rollDie
-    #test . _Just . #dice . ix idx . #value .= v + bonus
+    changeDie "Rerolled" idx (const (v + bonus))
   surcharge <- rerollSurcharge ts.investigator
   pushAll (surcharge <> [ContinueTest])
 
@@ -375,12 +429,12 @@ chooseDieToSet n = do
 
 setDieValue :: Int -> Int -> GameM ()
 setDieValue idx n = do
-  #test . _Just . #dice . ix idx . #value .= n
+  changeDie "Changed" idx (const n)
   testPrompt
 
 raiseDie :: Int -> GameM ()
 raiseDie idx = do
-  #test . _Just . #dice . ix idx . #value += 1
+  changeDie "Raised" idx (+ 1)
   testPrompt
 
 markUsedInTest :: CardId -> GameM ()

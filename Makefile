@@ -34,10 +34,13 @@ V2_PLATFORM    ?= linux/amd64
 # the sign-in cookie covers every subdomain, so 3ed.arkhamhorror.app shares it
 V2_BUILD_ARGS  ?= --build-arg AUTH_COOKIE_DOMAIN=.arkhamhorror.app
 V2_BUILDER     ?= arkham-multiarch
+V2_BUILDKITD_CONFIG ?= $(CURDIR)/infra/buildkitd.toml
+V2_BUILDKITD_FLAGS  ?= --allow-insecure-entitlement=network.host
 V2_DO_CLUSTER  ?= arkham-horror-doks
 V2_CACHE_DIR   ?= $(CURDIR)/.buildx-cache/v2
 V2_CACHE_NEXT  ?= $(V2_CACHE_DIR).new
 V2_CACHE_PREV  ?= $(V2_CACHE_DIR).prev
+V2_ASSET_BUCKET ?= arkham-horror-assets
 # A build that dies part-way leaves the .stack-work cache mounts half-written:
 # valid .hi files beside truncated .o files that GHC never notices are stale.
 # scripts/docker-build-api.sh repairs that on the next run, so one retry turns a
@@ -46,13 +49,65 @@ V2_CACHE_PREV  ?= $(V2_CACHE_DIR).prev
 V2_CACHE_POISON = ZCMain_main_closure|ld returned 1 exit status|failed in phase .Linker.|file format not recognized|truncated
 
 V2_CACHE_SETUP = CACHE_ARGS="--cache-to type=local,dest=$(V2_CACHE_NEXT),mode=max"; rm -rf "$(V2_CACHE_NEXT)"; if [ -d "$(V2_CACHE_DIR)" ]; then CACHE_ARGS="--cache-from type=local,src=$(V2_CACHE_DIR) $$CACHE_ARGS"; fi
+# Uploads this build's content-hashed bundles to the CDN bucket, which is what
+# lets any pod answer for any build's /assets/ (prod.nginxconf, @cdn_assets).
+# Deliberately BEFORE the rollout: for the length of the rollout the backend pool
+# holds both builds, so the old pods need the new bundles reachable before the
+# first new pod starts handing out an index.html that names them.
+V2_PUBLISH_ASSETS = ASSET_BUCKET="$(V2_ASSET_BUCKET)" V2_BUILDER="$(V2_BUILDER)" V2_CACHE_DIR="$(V2_CACHE_DIR)" BUILD_ARGS="$(V2_BUILD_ARGS)" ./scripts/publish-frontend-assets.sh
+
 V2_CACHE_PROMOTE = if [ -d "$(V2_CACHE_NEXT)" ]; then rm -rf "$(V2_CACHE_PREV)"; if [ -d "$(V2_CACHE_DIR)" ]; then mv "$(V2_CACHE_DIR)" "$(V2_CACHE_PREV)"; fi; if mv "$(V2_CACHE_NEXT)" "$(V2_CACHE_DIR)"; then rm -rf "$(V2_CACHE_PREV)"; else if [ -d "$(V2_CACHE_PREV)" ]; then mv "$(V2_CACHE_PREV)" "$(V2_CACHE_DIR)"; fi; exit 1; fi; fi
 
-## Ensure a docker-container buildx builder exists (required for multi-platform builds)
+# The builder MUST carry infra/buildkitd.toml. Without it BuildKit's default GC
+# caps all `type==exec.cachemount` records at 512MB and chases an unreachable
+# free-space target, so it continuously prunes the .stack-work caches the
+# Dockerfile depends on and every deploy recompiles ~9,400 modules at -O2 from
+# scratch (53-63 min instead of ~10). A builder created before that config
+# existed keeps the defaults -- the config is only read at container creation --
+# so warn loudly rather than silently deploying onto a cache that cannot hold.
+## Ensure a docker-container buildx builder exists, with the right GC policy
 v2-buildx-setup:
-	@docker buildx inspect $(V2_BUILDER) >/dev/null 2>&1 || \
-	  docker buildx create --name $(V2_BUILDER) --driver docker-container >/dev/null
+	@if ! docker buildx inspect $(V2_BUILDER) >/dev/null 2>&1; then \
+	  echo ">> creating builder $(V2_BUILDER) with $(V2_BUILDKITD_CONFIG)"; \
+	  docker buildx create --name $(V2_BUILDER) --driver docker-container \
+	    --buildkitd-config $(V2_BUILDKITD_CONFIG) \
+	    --buildkitd-flags '$(V2_BUILDKITD_FLAGS)' >/dev/null; \
+	elif docker buildx inspect $(V2_BUILDER) 2>/dev/null | grep -q 'Max Used Space:[[:space:]]*488.3MiB'; then \
+	  echo "$(YELLOW)>> WARNING: builder $(V2_BUILDER) is running BuildKit's DEFAULT GC policy.$(RESET)"; \
+	  echo "$(YELLOW)>>   It caps the Haskell build caches at 512MB, so this deploy will$(RESET)"; \
+	  echo "$(YELLOW)>>   recompile every module from scratch (expect ~1 hour, not ~10 min).$(RESET)"; \
+	  echo "$(YELLOW)>>   Fix once with: make v2-buildx-recreate$(RESET)"; \
+	fi
 .PHONY: v2-buildx-setup
+
+# BuildKit reads its config when the container is created, so there is no way to
+# apply a changed GC policy to a running builder. This destroys the current
+# build cache: the next deploy is cold, and every deploy after it is warm.
+## Recreate the buildx builder so infra/buildkitd.toml takes effect (one cold build)
+v2-buildx-recreate:
+	@if docker buildx inspect $(V2_BUILDER) 2>/dev/null | grep -q 'Status:[[:space:]]*running' && \
+	    docker buildx history ls --builder $(V2_BUILDER) 2>/dev/null | grep -q 'Running'; then \
+	  echo "$(RED)>> a build is still running on $(V2_BUILDER) -- wait for it to finish$(RESET)"; exit 1; \
+	fi
+	@test -f $(V2_BUILDKITD_CONFIG) || { echo "$(RED)>> missing $(V2_BUILDKITD_CONFIG)$(RESET)"; exit 1; }
+	@echo ">> removing builder $(V2_BUILDER) (discards its build cache)"
+	@docker buildx rm $(V2_BUILDER) >/dev/null 2>&1 || true
+	@docker buildx create --name $(V2_BUILDER) --driver docker-container \
+	  --buildkitd-config $(V2_BUILDKITD_CONFIG) \
+	  --buildkitd-flags '$(V2_BUILDKITD_FLAGS)' >/dev/null
+	@docker buildx inspect --bootstrap $(V2_BUILDER) >/dev/null
+	@echo ">> builder recreated; GC policy now:"
+	@docker buildx inspect $(V2_BUILDER) | sed -n '/GC Policy/,$$p'
+.PHONY: v2-buildx-recreate
+
+## Show what the builder is keeping (cache mounts are the ones that matter)
+v2-buildx-du:
+	@docker buildx du --builder $(V2_BUILDER) --verbose 2>/dev/null | awk '\
+	  /^ID:/{id=$$2} /^Size:/{size=$$2} /^Usage count:/{uc=$$3} \
+	  /^Description:/{sub(/^Description:[ \t]*/,"");d=$$0} \
+	  /^Type:.*cachemount/{printf "  %-10s uses=%-3s %s\n", size, uc, substr(d,index(d,"with id")+8)}'
+	@docker buildx du --builder $(V2_BUILDER) 2>/dev/null | tail -2
+.PHONY: v2-buildx-du
 
 ## Ensure kubeconfig exists and its token is still valid (DO tokens expire ~7 days)
 v2-kubeconfig-ensure:
@@ -78,6 +133,7 @@ v2-deploy: v2-buildx-setup v2-kubeconfig-ensure
 	    --tag $(V2_IMAGE):latest \
 	    --push . ; \
 	  $(V2_CACHE_PROMOTE); \
+	  $(V2_PUBLISH_ASSETS); \
 	  echo ">> rolling $(V2_DEPLOYMENT) (image stays :latest, restart forces pull)"; \
 	  KUBECONFIG=$(V2_KUBECONFIG) kubectl -n $(V2_NAMESPACE) \
 	    rollout restart deployment/$(V2_DEPLOYMENT); \
@@ -115,6 +171,7 @@ v2-deploy-committed: v2-buildx-setup v2-kubeconfig-ensure
 	    ATTEMPT=2; \
 	  done; \
 	  $(V2_CACHE_PROMOTE); \
+	  $(V2_PUBLISH_ASSETS) "$$REF"; \
 	  echo ">> rolling $(V2_DEPLOYMENT) (image stays :latest, restart forces pull)"; \
 	  KUBECONFIG=$(V2_KUBECONFIG) kubectl -n $(V2_NAMESPACE) \
 	    rollout restart deployment/$(V2_DEPLOYMENT); \
@@ -142,6 +199,11 @@ v2-push-multiarch: v2-buildx-setup
 	  $(V2_CACHE_PROMOTE)
 .PHONY: v2-push-multiarch
 
+## Upload the frontend's hashed bundles to the CDN bucket (no build, no rollout)
+v2-publish-assets: v2-buildx-setup
+	@$(V2_PUBLISH_ASSETS) $(V2_GIT_REF)
+.PHONY: v2-publish-assets
+
 ## Tail logs from the DigitalOcean k8s deployment
 v2-logs: v2-kubeconfig-ensure
 	KUBECONFIG=$(V2_KUBECONFIG) kubectl -n $(V2_NAMESPACE) logs \
@@ -159,11 +221,52 @@ db-unstick-kill:
 .PHONY: db-unstick-kill
 
 ## Sync local images to s3 bucket (public/ plus homebrew campaign and third edition images)
-sync-images:
-	cd frontend/public && aws s3 sync . s3://arkham-horror-assets --acl public-read --exclude ".DS_Store" --exclude "img/custom/*"
+##
+## Card faces are split in two: the clean masters go to the PRIVATE originals
+## bucket, and only the watermarked, resolution-capped renditions built by
+## scripts/watermark-cards.sh reach the public bucket. Everything else (boxes,
+## sets, portraits, homebrew, 3ed) syncs from public/ as before.
+##
+## No --acl public-read anywhere: CloudFront reads the bucket through its origin
+## access identity, so objects do not need to be world-readable, and dropping it
+## closes the direct s3.amazonaws.com path. scripts/fetch-assets.sh is unaffected
+## -- it lists via S3 (still public) and downloads via CloudFront.
+# Card faces are supplied by the watermarked tree, so they are held back from
+# the public/ sync -- except back_*, the face-down card back, which must stay
+# unmarked and has no rendition. Stale .jpg/.png under some card dirs are no
+# longer served and simply stop being re-synced.
+CARD_EXCLUDES = --exclude "img/arkham/cards/*" --include "img/arkham/cards/back_*" \
+                --exclude "img/arkham/es/cards/*" --exclude "img/arkham/fr/cards/*" \
+                --exclude "img/arkham/ita/cards/*" --exclude "img/arkham/ko/cards/*" \
+                --exclude "img/arkham/rus/cards/*" --exclude "img/arkham/zh/cards/*"
+
+# Card art is not content-addressed -- a card keeps its URL when its art is
+# replaced -- so `immutable` or a year would mean a year of stale art after any
+# re-upload. A week removes the repeat downloads without that trap. Only files
+# a sync actually uploads get this; `make set-cache-control` backfills the rest.
+IMAGE_CACHE_CONTROL = public, max-age=604800
+
+sync-images: watermark-cards
+	cd frontend/public && aws s3 sync . s3://arkham-horror-assets --exclude "*.DS_Store" --exclude "img/custom/*" --cache-control "$(IMAGE_CACHE_CONTROL)" $(CARD_EXCLUDES)
+	aws s3 sync frontend/.watermarked/img/arkham s3://arkham-horror-assets/img/arkham --exclude "*.DS_Store" --exclude ".build-settings" --cache-control "$(IMAGE_CACHE_CONTROL)"
+	cd frontend/public && aws s3 sync . s3://arkham-horror-originals --exclude "*" \
+		--include "img/arkham/cards/*" --include "img/arkham/es/cards/*" \
+		--include "img/arkham/fr/cards/*" --include "img/arkham/ita/cards/*" \
+		--include "img/arkham/ko/cards/*" --include "img/arkham/rus/cards/*" \
+		--include "img/arkham/zh/cards/*" --exclude "*.DS_Store"
 	./scripts/sync-homebrew-images.sh
-	aws s3 sync frontend-3ed/public/img/ah3e s3://arkham-horror-assets/img/ah3e --acl public-read --exclude ".DS_Store"
+	aws s3 sync frontend-3ed/public/img/ah3e s3://arkham-horror-assets/img/ah3e --exclude "*.DS_Store" --cache-control "$(IMAGE_CACHE_CONTROL)"
 .PHONY: sync-images
+
+## Build the watermarked, resolution-capped card renditions (incremental)
+watermark-cards:
+	./scripts/watermark-cards.sh
+.PHONY: watermark-cards
+
+## Backfill Cache-Control on images already in the bucket (see --canary first)
+set-cache-control:
+	./scripts/set-cache-control.sh
+.PHONY: set-cache-control
 
 ## Fetch all images via CloudFront (requires aws + curl)
 fetch-images:

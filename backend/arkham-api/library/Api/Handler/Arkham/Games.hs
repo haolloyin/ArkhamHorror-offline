@@ -9,6 +9,9 @@ module Api.Handler.Arkham.Games (
   getApiV1ArkhamGameLogBeforeR,
   getApiV1ArkhamGameStepR,
   getApiV1ArkhamGamesR,
+  getApiV1ArkhamSpectatableGamesR,
+  getApiV1ArkhamSpectatableGamesDigestR,
+  SpectatableGameActivity (..),
   postApiV1ArkhamGamesR,
   putApiV1ArkhamGameR,
   deleteApiV1ArkhamGameR,
@@ -21,6 +24,11 @@ import Api.Arkham.Helpers
 import Api.Arkham.Types.MultiplayerVariant
 import Api.Handler.Arkham.CustomCards (userCustomCards)
 import Api.Handler.Arkham.Games.Shared
+import Api.Handler.Arkham.Games.Summary (
+  ownGameSummaries,
+  spectatableGameSummaries,
+  spectatableGamesLimit,
+ )
 import Arkham.Campaign.Option
 import Arkham.Card
 import Arkham.Classes.HasQueue
@@ -35,6 +43,7 @@ import Arkham.Game.Settings (
   settingsAsIfRuling,
   settingsUltimatumsAndBoons,
  )
+import Arkham.Game.State (GameState (IsActive))
 import Arkham.GameEnv (getCard)
 import Arkham.Helpers.Playable (getPlayabilityChecks)
 import Arkham.Id
@@ -50,14 +59,14 @@ import Control.Monad.Random (mkStdGen)
 import Control.Monad.Random.Class (getRandom)
 import Data.Aeson (withObject, (.!=), (.:?))
 import Data.Coerce
-import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Time.Clock
 import Database.Esqueleto.Experimental hiding (update, (=.))
+import Database.Esqueleto.Internal.Internal (unsafeSqlBinOp, unsafeSqlValue)
 import Entity.Answer
 import Entity.Arkham.GameRaw
 import Entity.Arkham.Step
-import Import hiding (delete, exists, on, (==.))
-import Yesod.WebSockets
+import Import hiding (Value, delete, exists, on, (==.))
 
 {- | Step counter only: one indexed Int column, no game JSON touched, no lock.
 
@@ -85,8 +94,7 @@ newtype GameStepJson = GameStepJson
 getApiV1ArkhamGameR :: ArkhamGameId -> Handler GetGameJson
 getApiV1ArkhamGameR gameId = do
   userId <- getRequestUserId
-  wsOptions <- websocketConnectionOptions
-  webSocketsOptions wsOptions $ gameStream gameId
+  servePongAware $ gameStream gameId
   runDB do
     g <- get404 gameId
     gameLog <- getGameLogTail gameId gameLogTailSize
@@ -118,10 +126,18 @@ getApiV1ArkhamGameLogBeforeR gameId before = do
     void $ getBy404 (UniquePlayer userId gameId)
     (.entries) <$> getGameLogBefore gameId before gameLogTailSize
 
+{- | Watch a game without a seat in it.
+
+Reaching this needs only the game's id, as it always has -- a link somebody
+shared still works. @allowSpectators@ governs whether the game is *advertised*
+on the home page's watch list, not whether this read is allowed.
+
+The socket is 'spectatorStream', so a watcher cannot answer the game's
+questions.
+-}
 getApiV1ArkhamGameSpectateR :: ArkhamGameId -> Handler GetGameJson
 getApiV1ArkhamGameSpectateR gameId = do
-  wsOptions <- websocketConnectionOptions
-  webSocketsOptions wsOptions $ gameStream gameId
+  servePongAware $ spectatorStream gameId
   runDB do
     g <- get404 gameId
     let Game {..} = g.currentData
@@ -135,32 +151,161 @@ getApiV1ArkhamGameSpectateR gameId = do
         (PublicGame gameId g.name gameLog.entries g.currentData)
         (entityKey . fst <$> mEvt)
 
+{- | The home page's list.
+
+Reads a projection of each game rather than the game -- see
+"Api.Handler.Arkham.Games.Summary" for why, and for what it costs. Epic
+Multiplayer group games are surfaced through their event (one entry), not as
+standalone games here, which the query takes care of.
+-}
 getApiV1ArkhamGamesR :: Handler [GameDetailsEntry]
 getApiV1ArkhamGamesR = do
   userId <- getRequestUserId
-  games <- runDB $ select do
-    (players :& games) <-
-      distinct
-        $ from
-        $ table @ArkhamPlayer
-        `innerJoin` table @ArkhamGameRaw
-          `on` (\(players :& games) -> players.arkhamGameId ==. toBaseId games.id)
+  runDB $ ownGameSummaries userId
+
+{- | The rows the watch list's digest is built from: games whose players have
+opened them up to be watched.
+
+Deliberately not every game this user *could* reach: @allowSpectators@ is what
+puts a game here, and it is decided when the game is created and never changed.
+Three things are left out --
+
+  * games this user already has a seat in, which "Your Games" lists;
+  * Epic Multiplayer group games, which are reached through their event the
+    same way they are kept out of 'getApiV1ArkhamGamesR';
+  * anything not actually in play, so a watcher never opens a game that is
+    waiting on its decks or already over.
+
+The same four conditions the list itself applies, in
+'Api.Handler.Arkham.Games.Summary.spectatableGameSummaries'. They have to stay
+the same question: a digest answering "has the list changed?" about some other
+list is worse than no digest.
+
+What this query cannot answer is whether anybody is *there*. @IsActive@ is the
+game state -- not pending decks, not over -- and an abandoned game keeps it
+forever, so an advertised game nobody has opened in days still matched every
+condition above. Presence lives in the rooms (Redis, or this pod's map), which
+is a different store entirely, so both callers intersect these rows with
+'getLiveGameRooms'.
+
+The limit is applied before that intersection, which cannot lose a live game in
+practice: the order is @updatedAt@ descending and a game somebody is connected
+to is a game being played, so it sorts above the abandoned ones.
+-}
+spectatableGames :: UserId -> SqlQuery (SqlExpr (Entity ArkhamGameRaw))
+spectatableGames userId = do
+  games <- from $ table @ArkhamGameRaw
+  where_ games.allowSpectators
+  where_ $ isActiveGame games
+  where_ $ notExists do
+    players <- from $ table @ArkhamPlayer
+    where_ $ players.arkhamGameId ==. toBaseId games.id
     where_ $ players.userId ==. val userId
-    -- Epic Multiplayer group games are surfaced through their event (one
-    -- entry), not as standalone games in this list.
-    where_ $ notExists $ do
-      grp <- from $ table @ArkhamEpicGroup
-      where_ $ grp.arkhamGameId ==. just (toBaseId games.id)
-    orderBy [desc games.updatedAt]
-    pure games
-  let gameIds = map (coerce . entityKey) games :: [ArkhamGameId]
-  playerCounts <- runDB $ select do
-    p <- from $ table @ArkhamPlayer
-    where_ $ p.arkhamGameId `in_` valList gameIds
-    groupBy p.arkhamGameId
-    pure (p.arkhamGameId, countRows @Int)
-  let countMap = Map.fromList [(gid, n) | (Value gid, Value n) <- playerCounts]
-  traverse (\g -> tryGameDetailsEntry g (fromMaybe 0 $ Map.lookup (coerce $ entityKey g) countMap)) games
+  where_ $ notExists do
+    grp <- from $ table @ArkhamEpicGroup
+    where_ $ grp.arkhamGameId ==. just (toBaseId games.id)
+  orderBy [desc games.updatedAt]
+  limit spectatableGamesLimit
+  pure games
+
+{- | @current_data #>> '{gameGameState,tag}' = 'IsActive'@.
+
+Whether play has stopped lives inside @current_data@ and nowhere else, so the
+alternative is decoding every candidate game to find out -- 28kB of jsonb each.
+Postgres reads the one path instead, at about 0.7ms a row, which is what makes
+the digest cheap enough to poll. Same path the @arkham_game_stats@ view reads.
+
+Only ever paid for a row @allowSpectators@ already let through: Postgres orders
+the cheap boolean qual ahead of this one in the same scan.
+-}
+isActiveGame :: SqlExpr (Entity ArkhamGameRaw) -> SqlExpr (Value Bool)
+isActiveGame games =
+  unsafeSqlBinOp "#>>" games.currentData (unsafeSqlValue "'{gameGameState,tag}'")
+    ==. val (Just ("IsActive" :: Text))
+
+{- | Games whose players have opened them up to be watched.
+
+A projection per row rather than a game apiece, so this is no longer the read
+that had to be kept off a timer; the watch page still polls
+'getApiV1ArkhamSpectatableGamesDigestR' and pays for the list only when the set
+of games moves, which is a smaller answer either way.
+-}
+getApiV1ArkhamSpectatableGamesR :: Handler [GameDetailsEntry]
+getApiV1ArkhamSpectatableGamesR = do
+  userId <- getRequestUserId
+  entries <- runDB $ spectatableGameSummaries userId
+  live <- getLiveGameRooms
+  pure $ filter (beingPlayed live) entries
+ where
+  {- The query already asked Postgres for games in play; this drops the rows
+  that failed to decode, which have no state to go on either way, and the ones
+  with nobody connected -- "in play" is a game state and says nothing about
+  whether anybody is at the table. -}
+  beingPlayed live = \case
+    SuccessGameDetails gd -> gd.gameState == IsActive && gd.id `Set.member` live
+    FailedGameDetails {} -> False
+
+{- | Which games the watch list would show.
+
+The list itself is too expensive to sit on a timer, so the watch page asks this
+instead and pays for the list only when the answer changes -- the same bargain
+'getApiV1ArkhamGameStepR' strikes for a game. Nothing here reads a game: it is
+the membership query returning keys, so it stays a handful of uuids however
+many games are open.
+
+Sorted by id, so membership is the whole of what the client compares. The list
+is ordered by @updatedAt@, which every action in a watched game moves, and a
+digest reporting that order would buy the whole list again every time anybody
+took a turn. A game appearing or ending is what a watcher waiting for a table
+needs to see; two of them trading places in the list is not.
+
+Ids rather than a hash, because the client only needs to know *that* the set
+moved and a hash of 50 uuids is not meaningfully smaller than the uuids.
+
+Each id carries 'idleSeconds' alongside it -- see 'SpectatableGameActivity' --
+which is the one thing besides membership a watcher cannot work out from the
+list it already has.
+-}
+getApiV1ArkhamSpectatableGamesDigestR :: Handler [SpectatableGameActivity]
+getApiV1ArkhamSpectatableGamesDigestR = do
+  userId <- getRequestUserId
+  rows <- runDB $ select do
+    games <- spectatableGames userId
+    pure (games.id, games.updatedAt)
+  -- The same presence filter the list applies, for the same reason.
+  live <- getLiveGameRooms
+  now <- liftIO getCurrentTime
+  pure
+    $ sortOn
+      (.id)
+      [ activity now gid (unValue updatedAt)
+      | (gameId, updatedAt) <- rows
+      , let gid = coerce (unValue gameId)
+      , gid `Set.member` live
+      ]
+ where
+  activity now gid updatedAt =
+    SpectatableGameActivity
+      { id = gid
+      , idleSeconds = max 0 $ round $ nominalDiffTimeToSeconds $ diffUTCTime now updatedAt
+      }
+
+{- | A game on the watch list, and how long it has been quiet.
+
+@updatedAt@ moves on every action in a game, so the gap between it and now is
+how long nobody at that table has done anything -- which is how the watch page
+tells a game somebody is playing from one whose players wandered off, both of
+which are @IsActive@ and look identical in the list.
+
+Elapsed seconds rather than the timestamp itself, so the answer does not depend
+on the watcher's clock agreeing with the server's.
+-}
+data SpectatableGameActivity = SpectatableGameActivity
+  { id :: ArkhamGameId
+  , idleSeconds :: Int
+  }
+  deriving stock (Show, Generic)
+  deriving anyclass ToJSON
 
 data CreateGamePost = CreateGamePost
   { deckIds :: [Maybe ArkhamDeckId]
@@ -176,6 +321,11 @@ data CreateGamePost = CreateGamePost
   , asIfRuling :: Maybe AsIfRuling
   , ultimatumsAndBoons :: Set UltimatumOrBoon
   , achievementsEnabled :: Bool
+  , allowSpectators :: Bool
+  {- ^ list this game on the home page for anyone to watch. Off unless asked
+  for, which is also what the account default starts as. Decided here and only
+  here: nothing changes it once the game exists.
+  -}
   }
   deriving stock (Show, Generic)
 
@@ -197,6 +347,7 @@ instance FromJSON CreateGamePost where
     asIfRuling <- o .:? "asIfRuling"
     ultimatumsAndBoons <- o .:? "ultimatumsAndBoons" .!= mempty
     achievementsEnabled <- o .:? "achievementsEnabled" .!= True
+    allowSpectators <- o .:? "allowSpectators" .!= False
     pure CreateGamePost {..}
 
 -- | New Game
@@ -228,7 +379,7 @@ postApiV1ArkhamGamesR = do
               , settingsAchievementsEnabled = achievementsEnabled
               }
         }
-    ag = ArkhamGame campaignName game 0 multiplayerVariant now now
+    ag = ArkhamGame campaignName game 0 multiplayerVariant now now allowSpectators
     repeatCount = if multiplayerVariant == WithFriends then 1 else playerCount
 
   runDB do

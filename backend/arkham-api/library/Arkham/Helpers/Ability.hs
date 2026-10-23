@@ -106,6 +106,25 @@ applyCriteriaOverride = \case
   SetAbilityCriteria (CriteriaOverride c) -> const c
   _ -> id
 
+{- | The haunted abilities on a location that @iid@ may actually resolve.
+
+Haunted abilities are collected by ability type and source, which skips the
+criteria check the normal ability path does in 'getCanPerformAbility', so a
+@restricted@ haunted ability resolved with its condition unmet. Only the
+criteria are tested here: a haunted ability is forced, free and matches any
+window, so the rest of 'getCanPerformAbility' has nothing to say about it, and
+a modifier that stops an investigator triggering abilities must not stop one.
+-}
+getResolvableHauntedAbilities :: HasGame m => InvestigatorId -> LocationId -> m [Ability]
+getResolvableHauntedAbilities iid lid = do
+  abilities <-
+    select $ Matcher.HauntedAbility <> Matcher.AbilityOnLocation (Matcher.LocationWithId lid)
+  flip filterM abilities \ability -> do
+    abilityModifiers <- getModifiers (AbilityTarget iid ability.ref)
+    let criteria = foldr applyCriteriaOverride (abilityCriteria ability) abilityModifiers
+    withActiveInvestigator iid
+      $ passesCriteria iid Nothing (toSource ability) ability.requestor [] criteria
+
 getCanPerformAbility
   :: (HasCallStack, HasGame m) => InvestigatorId -> [Window] -> Ability -> m Bool
 getCanPerformAbility !iid !ws !ability = do
@@ -440,6 +459,7 @@ getCanAffordAbilityCost iid a@Ability {..} ws = do
             pure $ [m | not doDelayAdditionalCosts, AdditionalCostToLeave m <- mods]
           _ -> pure []
       else pure []
+  let moveCosts = [m | #move `elem` abilityActions a, not doDelayAdditionalCosts, AdditionalCostToMove m <- imods]
   performActionCosts <- do
     -- riders can sit on the investigator (a treachery in their threat area) or
     -- on their location, so both are consulted
@@ -466,17 +486,18 @@ getCanAffordAbilityCost iid a@Ability {..} ws = do
     fixEnemy =
       (maybe id Matcher.replaceThatInvestigator $ getThatInvestigator ws)
         . (maybe id Matcher.replaceThatEnemy mThatEnemy)
+    actionCosts =
+      investigateCosts
+        <> exploreCosts
+        <> resignCosts
+        <> enterCosts
+        <> leaveCosts
+        <> moveCosts
+        <> performActionCosts
     costF =
       case find isSetCost modifiers of
-        Just (SetAbilityCost c) ->
-          fixEnemy
-            . fold
-            . (: investigateCosts <> exploreCosts <> resignCosts <> enterCosts <> leaveCosts <> performActionCosts)
-            . const c
-        _ ->
-          fixEnemy
-            . fold
-            . (: investigateCosts <> exploreCosts <> resignCosts <> enterCosts <> leaveCosts <> performActionCosts)
+        Just (SetAbilityCost c) -> fixEnemy . fold . (: actionCosts) . const c
+        _ -> fixEnemy . fold . (: actionCosts)
     isSetCost = \case
       SetAbilityCost _ -> True
       _ -> False
@@ -492,7 +513,10 @@ getCanAffordAbilityCost iid a@Ability {..} ws = do
     ServitorAbility _ -> pure True
     Haunted -> pure True
     Cosmos -> pure True
-    ActionAbility actions _ cost -> getCanAffordCost iid (toSource a) (actionsToList actions) ws (f cost)
+    -- 'a.actions', not the bare designators: payment charges against the list that
+    -- includes #activate, so checking affordability without it offered an [action]
+    -- ability the investigator could not pay for (#5895).
+    ActionAbility _ _ cost -> getCanAffordCost iid (toSource a) a.actions ws (f cost)
     ReactionAbility _ cost actions -> getCanAffordCost iid (toSource a) (actionsToList actions) ws (f cost)
     CustomizationReaction _ _ cost -> getCanAffordCost iid (toSource a) [] ws (f cost)
     ConstantReaction _ _ cost -> getCanAffordCost iid (toSource a) [] ws (f cost)

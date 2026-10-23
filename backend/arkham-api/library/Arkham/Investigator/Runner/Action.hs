@@ -408,8 +408,24 @@ handleSetActions a@InvestigatorAttrs {..} iid = do
 handleSetActionsV2 a@InvestigatorAttrs {..} iid n = do
   pure $ a & remainingActionsL .~ n
 
-handleGainActions a@InvestigatorAttrs {..} iid n = do
-  -- TODO: If we add a window here we need to reconsider Ace of Rods, likely it would need a Do variant
+{- | Shaped like 'handleTakeResourcesV2': the increment becomes a @Do@ of its
+own behind a @#when@ window, so an ability there can cancel the gain by dropping
+that @Do@ -- and the @#after@ window is raised from the @Do@, so a cancelled
+gain raises no "after" window either. A negative gain is a debug adjustment
+rather than a gain, and raises neither.
+-}
+handleGainActions a@InvestigatorAttrs {..} iid source n msg = do
+  beforeWindowMsgs <-
+    if n > 0
+      then pure <$> checkWindows [mkWhen $ Window.GainsActions iid source n]
+      else pure []
+  pushAll $ beforeWindowMsgs <> [Do msg]
+  pure a
+
+handleDoGainActions a@InvestigatorAttrs {..} iid source n = do
+  when (n > 0) do
+    afterWindowMsg <- checkWindows [mkAfter $ Window.GainsActions iid source n]
+    push afterWindowMsg
   pure $ a & remainingActionsL %~ max 0 . (+ n)
 
 handleLoseAdditionalAction a@InvestigatorAttrs {..} iid n = do
@@ -544,26 +560,35 @@ handlePlayerWindow a@InvestigatorAttrs {..} iid additionalActions isAdditional i
           then pure playableCards
           else playableCards & filterM (cardIsFast' promoteCanBecomeFast)
 
+      let
+        beforeEndTurn =
+          additionalActions
+            <> [ ResourceLabel iid [TakeResources iid 1 (ResourceSource iid) usesAction]
+               | canAffordTakeResources && canTakeResource
+               ]
+            <> [ ComponentLabel (InvestigatorDeckComponent iid) [drawing]
+               | canAffordDrawCards
+               , canDraw
+               , none (`elem` modifiers) [CannotDrawCards, CannotManipulateDeck]
+               ]
+            <> [ targetLabel (toCardId c) [InitiatePlayCardWithWindows iid c Nothing NoPayment windows usesAction]
+               | c <- playableCards'
+               ]
+        afterEndTurn = map ((\f -> f windows [] []) . AbilityLabel iid) actions' <> effectActions
+        {- 'CannotEndTurn' takes the button away only while there is something
+        else to do -- /Ritual Circle: A Harnessed Future/ holds you there while
+        you still have actions. With nothing else on offer the window would
+        carry no option at all and the turn could not go anywhere, so the
+        button comes back. -}
+        canEndTurn = CannotEndTurn `notElem` modifiers || null (beforeEndTurn <> afterEndTurn)
       push
         $ AskPlayer
         $ Ask player
         $ PlayerWindowChooseOne
         $ nub
-        $ additionalActions
-        <> [ ResourceLabel iid [TakeResources iid 1 (ResourceSource iid) usesAction]
-           | canAffordTakeResources && canTakeResource
-           ]
-        <> [ ComponentLabel (InvestigatorDeckComponent iid) [drawing]
-           | canAffordDrawCards
-           , canDraw
-           , none (`elem` modifiers) [CannotDrawCards, CannotManipulateDeck]
-           ]
-        <> [ targetLabel (toCardId c) [InitiatePlayCardWithWindows iid c Nothing NoPayment windows usesAction]
-           | c <- playableCards'
-           ]
-        <> [EndTurnButton iid [ChooseEndTurn iid]]
-        <> map ((\f -> f windows [] []) . AbilityLabel iid) actions'
-        <> effectActions
+        $ beforeEndTurn
+        <> [EndTurnButton iid [ChooseEndTurn iid] | canEndTurn]
+        <> afterEndTurn
   pure a
 
 handlePlayerWindowV2 a@InvestigatorAttrs {..} iid additionalActions isAdditional = do

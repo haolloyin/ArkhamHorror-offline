@@ -38,6 +38,7 @@ import Arkham.Matcher.Action
 import Arkham.Matcher.Card
 import Arkham.Matcher.Enemy
 import Arkham.Matcher.Window
+import Arkham.Metrics (timedPure)
 import Arkham.Modifier (Modifier (..))
 import Arkham.Prelude
 import Arkham.Projection
@@ -161,6 +162,23 @@ getAdditionalActions attrs = do
   if CannotGainAdditionalActions `elem` mods
     then pure []
     else pure $ filter (`notElem` investigatorUsedAdditionalActions attrs) additionalActions
+
+{- | An investigator's /standard actions/: their remaining actions plus every
+unspent additional action without a limitation on its use.
+
+> A standard action is any action that does not have a limitation on its use,
+> regardless of its source.
+
+The read-side counterpart of 'Arkham.Message.LoseStandardActions'. Ages Unwound
+is what introduces the term, and several of its cards count them ("for each
+standard action you have remaining"); 'getAdditionalActions' is what makes the
+count exclude the ones already spent.
+-}
+getStandardActions :: HasGame m => InvestigatorId -> m Int
+getStandardActions iid = do
+  remaining <- field InvestigatorRemainingActions iid
+  additional <- count isStandardAdditionalAction <$> field InvestigatorAdditionalActions iid
+  pure $ remaining + additional
 
 getActionCost :: HasGame m => InvestigatorAttrs -> [Action] -> m Int
 getActionCost attrs as = do
@@ -333,6 +351,10 @@ getActionsWith iid ws f = do
         _ -> Nothing
 
   unfilteredActions <- map f <$> getAllAbilities
+  {- TEMPORARY profiling instrumentation. Enumerating every ability in the game
+  is pure work, otherwise paid for piecemeal by whatever forces the list below;
+  forcing it here puts the whole of it in one span. -}
+  let !_enumerated = timedPure "actions/enumerate" (length unfilteredActions)
   actions' <-
     if null abilityFilters
       then pure unfilteredActions

@@ -27,12 +27,14 @@ import Api.Arkham.Helpers (
   loadMaintenance,
   markPubSubAlive,
   onMaintenanceMessage,
+  onRoomOpMessage,
   pubSubHealthChannel,
   pubSubSupervisor,
   roomHeartbeat,
   roomSourcesFrom,
  )
 import Api.Arkham.Maintenance (maintenanceChannel)
+import Api.Arkham.RoomOps (roomOpsChannel)
 import Arkham.Metrics qualified as Metrics
 import Config
 import Control.Concurrent.MVar (newMVar)
@@ -43,6 +45,8 @@ import Data.Default.Class (def)
 import Data.List (lookup)
 import Data.Text qualified as T
 import Data.Time.Clock (getCurrentTime)
+import Data.UUID qualified as UUID
+import Data.UUID.V4 qualified as UUID
 import Data.X509.CertificateStore (readCertificateStore)
 import Database.Persist.Postgresql (
   SqlBackend,
@@ -60,10 +64,18 @@ import Database.Redis (
 import Import hiding (newMVar, sendResponse)
 import Language.Haskell.TH.Syntax (qLocation)
 import Network.HTTP.Client.TLS (getGlobalManager)
-import Network.HTTP.Types (ResponseHeaders, status200)
+import Network.HTTP.Types (ResponseHeaders, status200, status304)
 import Network.TLS (ClientParams (..), Shared (..), Supported (..), defaultParamsClient)
 import Network.TLS.Extra.Cipher (ciphersuite_strong)
-import Network.Wai (Middleware, requestHeaders, requestMethod, responseLBS)
+import Network.Wai (
+  Middleware,
+  mapResponseHeaders,
+  requestHeaders,
+  requestMethod,
+  responseHeaders,
+  responseLBS,
+  responseStatus,
+ )
 import Network.Wai.Handler.Warp (
   Settings,
   defaultSettings,
@@ -74,7 +86,6 @@ import Network.Wai.Handler.Warp (
   setOnException,
   setPort,
  )
-import Network.Wai.Middleware.AddHeaders (addHeaders)
 import Network.Wai.Middleware.Gzip (gzip)
 import Network.Wai.Middleware.RequestLogger (
   Destination (Logger),
@@ -93,6 +104,7 @@ import Text.Regex.Posix ((=~))
 import Api.Handler.ApiKeys
 import Api.Handler.Arkham.Achievements
 import Api.Handler.Arkham.Admin.Archives
+import Api.Handler.Arkham.Admin.CustomCardSets
 import Api.Handler.Arkham.Admin.GameStats
 import Api.Handler.Arkham.Admin.Metrics
 import Api.Handler.Arkham.Admin.Users
@@ -134,6 +146,19 @@ import ThirdEdition.Store qualified as ThirdEdition
 -- comments there for more details.
 mkYesodDispatch "App" resourcesApp
 
+{- | A name for this replica, for the cross-pod room ops in "Api.Arkham.RoomOps".
+
+@HOSTNAME@ is the pod name under Kubernetes, which is the name an operator
+already has in front of them in @kubectl@. The suffix is this process: a pod
+that restarts keeps its name, and an admin comparing two answers five minutes
+apart should be able to see that the pod behind them is not the same one.
+-}
+currentPodId :: IO Text
+currentPodId = do
+  podHost <- lookupEnv "HOSTNAME"
+  podSuffix <- T.take 6 . UUID.toText <$> UUID.nextRandom
+  pure $ maybe "pod" T.pack podHost <> "/" <> podSuffix
+
 {- | This function allocates resources (such as a database connection pool),
  performs initialization and returns a foundation datatype value. This is also
  the place to put your migrate statements to have automatic database
@@ -152,6 +177,7 @@ makeFoundation appSettings = do
   appThirdEditionRooms <- newMVar mempty
   appPubSubHealth <- newTVarIO =<< getCurrentTime
   appMaintenance <- newTVarIO Nothing
+  appPodId <- currentPodId
 
   -- Closed over by the pub/sub handler below, which is built before the
   -- foundation exists -- so it gets the room maps, not the 'App'.
@@ -174,6 +200,7 @@ makeFoundation appSettings = do
         newPubSubController
           [ (pubSubHealthChannel, const $ markPubSubAlive appPubSubHealth)
           , (maintenanceChannel, onMaintenanceMessage appMaintenance maintenanceRooms)
+          , (roomOpsChannel, onRoomOpMessage conn appPodId appGameRooms)
           ]
           []
       -- Supervised, not bare: 'pubSubForever' exits on connection loss and
@@ -207,21 +234,16 @@ makeFoundation appSettings = do
   -- Perform database migration using our application's logging settings.
   -- runLoggingT (runSqlPool (runMigration migrateAll) pool) logFunc
 
-  -- Third-edition tables are state, so they live in the database. Whatever is
-  -- still in Redis from before that was true is brought across once.
+  -- Third-edition tables are state, so they live in the database.
   thirdEditionStore <- ThirdEdition.newPostgresStore pool
-  case appMessageBroker of
-    RedisBroker conn _ -> do
-      brought <- ThirdEdition.importRedisTables conn thirdEditionStore
-      when (brought > 0) $ putStrLn ("Imported " <> show brought <> " third-edition tables from Redis")
-    WebSocketBroker -> pure ()
 
   let foundation = mkFoundation pool thirdEditionStore
 
-  -- Per-pod heartbeat for the cross-server room registry: refreshes the
-  -- 'arkham:rooms:seen' timestamps for any game this pod is still
-  -- serving, so admin counts age out automatically when a pod crashes.
-  -- No-op when no Redis broker is configured.
+  -- Per-pod room upkeep, on one timer. Refreshes the 'arkham:rooms:seen'
+  -- timestamps for any game this pod is still serving, so admin counts age out
+  -- automatically when a pod crashes (that half needs Redis and is skipped
+  -- without it), and closes the rooms whose players have all left, which does
+  -- not.
   _ <- forkIO (roomHeartbeat foundation)
 
   -- The daily sweep that offloads old games' undo history, and the worker that
@@ -287,11 +309,38 @@ handleOptions app req sendResponse =
   toHeaders :: [(ByteString, ByteString)] -> ResponseHeaders
   toHeaders = map (first mk)
 
+{- | CORS headers, and the no-caching default that rides with them.
+
+Appending, as this does, means a handler that has set its own 'Cache-Control' would end
+up with two -- and since the default here says @no-store@, the strictest of the
+pair is the one a browser keeps, which is the opposite of what the handler asked
+for. So the default is dropped for a response that already carries one.
+
+That is what lets an endpoint opt into revalidation (an @ETag@ plus
+@private, no-cache@, as 'Api.Handler.Arkham.CustomCards.setPayloadEtag' does)
+without changing what every other endpoint promises, which is still that nothing
+is stored anywhere.
+-}
 addCORSHeaders :: Middleware
 addCORSHeaders app req sendResponse =
   case lookup "Origin" (requestHeaders req) of
     Nothing -> app req sendResponse
-    Just origin -> addHeaders (corsResponseHeaders origin) app req sendResponse
+    Just origin -> app req \res ->
+      let
+        -- 'HeaderName' is case-insensitive in its own Eq, so this needs no folding.
+        setsOwnCacheControl = any ((== "cache-control") . fst) (responseHeaders res)
+        {- A 304 is the answer to a revalidation, and it carries no body to say
+        anything about. Telling the reader not to store it would be read as
+        applying to the entry it just revalidated, which is the copy the 304
+        exists to let them keep. -}
+        revalidated = responseStatus res == status304
+        headers =
+          [ (mk name, value)
+          | (name, value) <- corsResponseHeaders origin
+          , not ((setsOwnCacheControl || revalidated) && foldCase name == "cache-control")
+          ]
+       in
+        sendResponse $ mapResponseHeaders (headers <>) res
 
 makeLogWare :: App -> IO Middleware
 makeLogWare foundation =

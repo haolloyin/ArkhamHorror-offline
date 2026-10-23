@@ -26,6 +26,15 @@ import BoolField from '@/arkham/components/debug/BoolField.vue'
 import CardCodeField from '@/arkham/components/debug/CardCodeField.vue'
 import ValueEditor from '@/arkham/components/debug/ValueEditor.vue'
 import { loadSchema } from '@/arkham/schema'
+import { provide } from 'vue'
+import {
+  CARD_TEXT,
+  LOCALE_META_KEY,
+  PRIMARY_LANGUAGE,
+  TEXT_LANGUAGES,
+  textKeysUsed,
+  type CardTextAccess,
+} from '@/arkham/customText'
 import KeywordEffectEditor from '@/arkham/components/debug/KeywordEffectEditor.vue'
 import type { CustomSetKeyword, CustomSetToken } from '@/arkham/api'
 
@@ -62,6 +71,17 @@ const ALWAYS_WEAKNESS = ['PlayerTreacheryType', 'PlayerEnemyType']
  * take the default, overridable through the raw block. */
 // The actions a card can be played as; an event is the usual case.
 const ACTIONS = ['Fight', 'Evade', 'Investigate', 'Move', 'Parley', 'Resign', 'Draw', 'Play', 'Activate']
+
+/* The form writes a bare array, but the server stores the tagged Actions it
+ * decoded, so a card read back is never the shape it was written as. */
+const actionList = (v: any): string[] =>
+  Array.isArray(v)
+    ? v.flatMap(actionList)
+    : typeof v === 'string'
+      ? [v]
+      : v && typeof v === 'object'
+        ? actionList(v.contents)
+        : []
 
 const CLASSES = ['Guardian', 'Seeker', 'Rogue', 'Mystic', 'Survivor', 'Neutral']
 const SLOTS = ['HandSlot', 'BodySlot', 'AllySlot', 'AccessorySlot', 'ArcaneSlot', 'TarotSlot', 'HeadSlot']
@@ -109,6 +129,72 @@ const canPrintKeyword = (keyword: string, cardType: string) =>
   !KEYWORD_TYPES[keyword] || KEYWORD_TYPES[keyword].includes(cardType)
 
 
+/* The text this card says, reachable from any field in the editor. Writing one
+ * here is the same edit as writing it in the Text box below -- both are the
+ * card's own `_locale`, so a key filled in beside the label it belongs to
+ * appears there too. */
+/* Which language the Text box is written in. The previews beside each label
+ * follow it, so switching here is how the card is read back in French. */
+const textLanguage = ref(PRIMARY_LANGUAGE)
+
+provide(CARD_TEXT, {
+  read: (key: string) => form.text[textLanguage.value]?.[key] ?? '',
+  write: (key: string, value: string) => {
+    const language = (form.text[textLanguage.value] ??= {})
+    language[key] = value
+  },
+} satisfies CardTextAccess)
+
+/* Every key the card names, and any left over from an earlier wording. A key
+ * nothing names any more is still shown -- with its words, which are the part
+ * worth keeping -- rather than quietly dropped while a label still reads it. */
+/* Which of its own keys the card names, read off the form rather than off a
+ * built def: the def is where the text ends up, so building one to decide what
+ * text to put in it would be a circle. */
+const textUsed = computed(() => {
+  const written = (() => {
+    try {
+      return form.rawJson.trim() ? JSON.parse(form.rawJson) : null
+    } catch {
+      return null
+    }
+  })()
+  return textKeysUsed({
+    meta: {
+      _onPlay: form.onPlaySteps,
+      _abilities: form.abilities,
+      _handlers: form.handlers,
+      _modifiers: form.modifiers,
+      _keywords: form.keywordEffects,
+      _onRevelation: form.revelationSteps,
+      _elderSignSteps: form.elderSignSteps,
+      _elderSignRevealSteps: form.elderSignRevealSteps,
+      _elderSignSuccessSteps: form.elderSignSuccessSteps,
+      _elderSignFailureSteps: form.elderSignFailureSteps,
+    },
+    raw: written,
+  })
+})
+
+/* The keys the card names, and only those. A label rewritten or taken away
+ * leaves its words behind, which would otherwise sit in the Text box forever
+ * as something nothing can show. They stay in the form while it is open, so
+ * putting the label back puts the words back, and go on the next save. */
+const textKeys = computed(() => textUsed.value)
+
+const textFor = (key: string) => form.text[textLanguage.value]?.[key] ?? ''
+
+const writeText = (key: string, value: string) => {
+  const language = (form.text[textLanguage.value] ??= {})
+  language[key] = value
+}
+
+/* Which languages this card already says something in, marked in the picker so
+ * a translation that exists is not written twice. Counted the way saving counts
+ * it: a key left blank is one nobody has written yet. */
+const written = (language: string) =>
+  Object.values(form.text[language] ?? {}).some((value) => typeof value === 'string' && value.trim())
+
 const blankForm = () => ({
   title: '',
   subtitle: '',
@@ -139,6 +225,7 @@ const blankForm = () => ({
   assetSanity: '',
   useType: '',
   useCount: '',
+  useLimit: '',
   // abilities
   abilities: [] as any[],
   handlers: [] as any[],
@@ -151,6 +238,12 @@ const blankForm = () => ({
   revelationPlacement: '',
   revelationSteps: [] as any[],
   actions: [] as string[],
+  /* What this card's own labels say, by language. The form edits the primary
+   * one; the rest ride along untouched so a translation is never dropped by
+   * someone editing in English. */
+  text: {} as Record<string, Record<string, string>>,
+  // Actions are all required unless the card says to pick one of them.
+  actionsOr: false,
   // grouping, so a set of cards made together can be found together
   cardNumber: '',
   arkhamBuildId: '',
@@ -159,6 +252,7 @@ const blankForm = () => ({
   elderSignRevealSteps: [] as any[],
   elderSignSteps: [] as any[],
   elderSignSuccessSteps: [] as any[],
+  elderSignFailureSteps: [] as any[],
   prey: null as any,
   spawnAt: null as any,
   onPlaySteps: [] as any[],
@@ -226,6 +320,10 @@ function chooseType(cardType: string) {
   form.weaknessKind = ALWAYS_WEAKNESS.includes(cardType) ? 'Weakness' : ''
   // Drop what the new type cannot print rather than keeping it where nothing shows it.
   form.keywords = form.keywords.filter((k) => canPrintKeyword(k, cardType))
+  if (cardType === 'InvestigatorType') {
+    form.keywords = []
+    form.keywordEffects = []
+  }
 }
 
 const artFor = (slot: string) => form.artUploaded[slot] || form.artUrls[slot]?.trim() || null
@@ -254,16 +352,19 @@ const isInvestigator = computed(() => form.cardType === 'InvestigatorType')
  * Where they differ is underneath. An engine keyword is a flag on the def; a
  * set's is an entry in `_keywords` that may have slots to fill, and a block for
  * those appears below once it is on. */
-const keywordChoices = computed(() => [
-  // An investigator prints none of the engine's keywords; a set's it might.
-  ...(isInvestigator.value
+const keywordChoices = computed(() =>
+  // An investigator prints no keywords at all -- not the engine's, and not its
+  // own set's: a keyword is printed above the text of a card that has text.
+  isInvestigator.value
     ? []
-    : KEYWORDS.filter((k) => canPrintKeyword(k, form.cardType)).map((name) => ({
-        name,
-        fromSet: false,
-      }))),
-  ...props.setKeywords.map((keyword) => ({ name: keyword.name, fromSet: true })),
-])
+    : [
+        ...KEYWORDS.filter((k) => canPrintKeyword(k, form.cardType)).map((name) => ({
+          name,
+          fromSet: false,
+        })),
+        ...props.setKeywords.map((keyword) => ({ name: keyword.name, fromSet: true })),
+      ],
+)
 
 const setKeywordNames = computed(() => props.setKeywords.map((k) => k.name))
 
@@ -276,7 +377,7 @@ const hasKeyword = (keyword: { name: string; fromSet: boolean }) =>
  * and no result of its own is said by the chip alone, and a block holding only
  * its own name would be noise. */
 const keywordsNeedingInput = computed(() =>
-  form.keywordEffects.filter((entry: any) => {
+  (isInvestigator.value ? [] : form.keywordEffects).filter((entry: any) => {
     const declared = props.setKeywords.find((k) => k.name === entry.keyword)
     // One this set no longer declares still gets a block: it is on the card, and
     // hiding it would leave no way to take it off.
@@ -501,6 +602,8 @@ const num = (v: string): number | null => {
   return Number.isFinite(n) ? n : null
 }
 
+const fixed = (n: number) => ({ tag: 'Fixed', contents: n })
+
 const gameValue = (v: string, perPlayer: boolean) => {
   const n = num(v)
   if (n === null) return null
@@ -525,7 +628,7 @@ function buildDef(cardCode: string): Record<string, any> {
     name: { title: form.title.trim() || 'Custom Card', subtitle: form.subtitle.trim() || null },
     cardTraits: parsedTraits.value.map((t) => t.name),
     skills: hasSkillIcons.value ? form.icons.map(iconJson) : [],
-    keywords: form.keywords.map((k) => ({ tag: k, contents: [] })),
+    keywords: isInvestigator.value ? [] : form.keywords.map((k) => ({ tag: k, contents: [] })),
     unique: form.unique,
     permanent: form.permanent,
     doubleSided: false,
@@ -533,8 +636,13 @@ function buildDef(cardCode: string): Record<string, any> {
   }
 
   if (hasClass.value) def.classSymbols = [form.classSymbol]
-  // Actions decode from a bare array; each entry is a bare string.
-  if (form.actions.length) def.actions = form.actions
+  if (form.actions.length) {
+    // A bare array decodes as AndActions; OrActions has to stay tagged.
+    def.actions =
+      form.actionsOr && form.actions.length > 1
+        ? { tag: 'OrActions', contents: form.actions.map((a) => ({ tag: 'SingleAction', contents: a })) }
+        : form.actions
+  }
 
   if (isWeakness.value) def.cardSubType = form.weaknessKind
 
@@ -562,8 +670,11 @@ function buildDef(cardCode: string): Record<string, any> {
     if (form.slots.length) def.slots = form.slots
     setIf(def.meta, 'health', num(form.assetHealth))
     setIf(def.meta, 'sanity', num(form.assetSanity))
-    if (form.useType && num(form.useCount) !== null) {
-      def.uses = { type: form.useType, amount: num(form.useCount) }
+    const useCount = num(form.useCount)
+    if (form.useType && useCount !== null) {
+      def.uses = { type: form.useType, amount: fixed(useCount) }
+      const useLimit = num(form.useLimit)
+      if (useLimit !== null) def.uses.limit = fixed(useLimit)
     }
   }
 
@@ -581,6 +692,7 @@ function buildDef(cardCode: string): Record<string, any> {
       def.meta._elderSignRevealSteps = form.elderSignRevealSteps
     if (form.elderSignSteps.length) def.meta._elderSignSteps = form.elderSignSteps
     if (form.elderSignSuccessSteps.length) def.meta._elderSignSuccessSteps = form.elderSignSuccessSteps
+    if (form.elderSignFailureSteps.length) def.meta._elderSignFailureSteps = form.elderSignFailureSteps
     def.meta.health = num(form.investigatorHealth) ?? 0
     def.meta.sanity = num(form.investigatorSanity) ?? 0
     def.meta.willpower = num(form.willpower) ?? 0
@@ -616,17 +728,34 @@ function buildDef(cardCode: string): Record<string, any> {
     if (bonded.length) def.bondedWith = bonded
   }
 
+  /* Empty keys are dropped rather than saved blank: one with no words is a key
+     nobody has written yet, and the editor offers it again from the labels. */
+  const text: Record<string, Record<string, string>> = {}
+  const named = textUsed.value
+  for (const [language, entries] of Object.entries(form.text)) {
+    const written = Object.fromEntries(
+      Object.entries(entries ?? {})
+        // A key no label names any more is not this card's text.
+        .filter(([key]) => named.includes(key))
+        .filter(([, value]) => typeof value === 'string' && value.trim()),
+    )
+    if (Object.keys(written).length) text[language] = written
+  }
+  if (Object.keys(text).length) def.meta[LOCALE_META_KEY] = text
+
   if (form.onPlaySteps.length) def.meta._onPlay = form.onPlaySteps
   if (form.abilities.length) def.meta._abilities = form.abilities
   if (form.handlers.length) def.meta._handlers = form.handlers
   if (form.modifiers.length) def.meta._modifiers = form.modifiers
-  if (form.keywordEffects.length) def.meta._keywords = form.keywordEffects
+  if (form.keywordEffects.length && !isInvestigator.value) def.meta._keywords = form.keywordEffects
 
   return def
 }
 
-/* The raw block wins over the form, so a field the form does not offer can
- * still be set (and one it does can be overridden). */
+/* Whatever the form does not model, kept as it was read and merged back over
+ * what the form builds. No longer typed in here -- the raw editor in the head
+ * opens the whole def -- but still carried, so a key this editor has never
+ * heard of survives a save. */
 function mergeRaw(def: Record<string, any>): Record<string, any> {
   const raw = form.rawJson.trim()
   if (!raw) return def
@@ -714,12 +843,24 @@ const FORM_META_KEYS = [
      does not put them in the raw block either, which would freeze a stale copy
      onto the card that the set could no longer correct. */
   'setTokens', 'setKeywords',
+  // The card's own text, edited in its own fieldset.
+  '_locale',
   '_abilities', '_handlers', '_modifiers', '_keywords', '_signatures', '_onRevelation', '_revelationPlacement',
-  '_elderSign', '_elderSignRevealSteps', '_elderSignSteps', '_elderSignSuccessSteps', '_onPlay',
+  '_elderSign', '_elderSignRevealSteps', '_elderSignSteps', '_elderSignSuccessSteps',
+  '_elderSignFailureSteps', '_onPlay',
 ]
 
 const gameValueNumber = (v: any) => (v && typeof v.contents === 'number' ? String(v.contents) : '')
 const isPerPlayer = (v: any) => v?.tag === 'PerPlayer'
+
+/* A `uses` amount is a GameCalculation, which decodes from a bare number but always
+ * encodes back tagged -- so a card read from the server arrives as {tag:'Fixed'}, and
+ * reading it as a plain number is what used to blank the field on every reopen. */
+const fixedNumber = (v: any) => {
+  if (typeof v === 'number') return String(v)
+  if (v?.tag === 'Fixed' && typeof v.contents === 'number') return String(v.contents)
+  return ''
+}
 
 async function loadCard(card: CustomCard) {
   await loadTraits()
@@ -742,7 +883,12 @@ async function loadCard(card: CustomCard) {
   form.revelation = !!def.revelation && def.revelation !== 'NoRevelation'
   form.revelationPlacement = meta._revelationPlacement ?? ''
   form.revelationSteps = meta._onRevelation ?? []
-  form.actions = Array.isArray(def.actions) ? def.actions : []
+  form.actions = actionList(def.actions)
+  form.text =
+    meta[LOCALE_META_KEY] && typeof meta[LOCALE_META_KEY] === 'object'
+      ? JSON.parse(JSON.stringify(meta[LOCALE_META_KEY]))
+      : {}
+  form.actionsOr = def.actions?.tag === 'OrActions'
   form.traits = (def.cardTraits ?? []).map((t: string) => traitDisplay.value.get(t) ?? t).join('. ')
   form.icons = (def.skills ?? []).map((s: any) => (s.tag === 'SkillIcon' ? s.contents : 'Wild'))
   form.keywords = (def.keywords ?? []).map((k: any) => k.tag).filter((k: string) => KEYWORDS.includes(k))
@@ -765,7 +911,8 @@ async function loadCard(card: CustomCard) {
   form.assetHealth = meta.health === undefined ? '' : String(meta.health)
   form.assetSanity = meta.sanity === undefined ? '' : String(meta.sanity)
   form.useType = def.uses?.type ?? ''
-  form.useCount = def.uses?.amount === undefined ? '' : String(def.uses.amount)
+  form.useCount = fixedNumber(def.uses?.amount)
+  form.useLimit = fixedNumber(def.uses?.limit)
 
   form.willpower = meta.willpower === undefined ? '3' : String(meta.willpower)
   form.intellect = meta.intellect === undefined ? '3' : String(meta.intellect)
@@ -781,6 +928,7 @@ async function loadCard(card: CustomCard) {
   form.elderSignRevealSteps = meta._elderSignRevealSteps ?? []
   form.elderSignSteps = meta._elderSignSteps ?? []
   form.elderSignSuccessSteps = meta._elderSignSuccessSteps ?? []
+  form.elderSignFailureSteps = meta._elderSignFailureSteps ?? []
 
   form.artUploaded = { art: card.art }
   form.artUrls = {}
@@ -884,7 +1032,15 @@ function snapshot(): string {
   return JSON.stringify({ form, art: art.value })
 }
 
-defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(() => form.cardType) })
+defineExpose({
+  loadCard,
+  reset,
+  buildCustomCard,
+  snapshot,
+  cardType: computed(() => form.cardType),
+  // What the head says it is editing, as it is typed rather than as it was saved.
+  cardTitle: computed(() => form.title),
+})
 </script>
 <template>
   <div class="custom-card-body">
@@ -1015,27 +1171,31 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
               Card number
               <input v-model="form.cardNumber" type="text" placeholder="1" @keydown.stop />
             </label>
-            <label v-if="canClaimArkhamBuildId">
-              arkham.build card id
-              <input
-                v-model="form.arkhamBuildId"
-                type="text"
-                placeholder="6afb2ea0-d5c6-434a-aea9-2b1beff8c74a"
-                spellcheck="false"
-                @keydown.stop
-              />
-            </label>
+            <!-- The note is about the id, so it stays in the id's column rather
+                 than running under the card number as well. -->
+            <div v-if="canClaimArkhamBuildId" class="with-note">
+              <label>
+                arkham.build card id
+                <input
+                  v-model="form.arkhamBuildId"
+                  type="text"
+                  placeholder="6afb2ea0-d5c6-434a-aea9-2b1beff8c74a"
+                  spellcheck="false"
+                  @keydown.stop
+                />
+              </label>
+              <p class="hint" :class="{ bad: badArkhamBuildId }">
+                <template v-if="badArkhamBuildId">
+                  Not an arkham.build id — a uuid, or the 32- or 8-character form a pack's cards
+                  come through with. Left out until it is one.
+                </template>
+                <template v-else>
+                  Optional. If this same card is published on arkham.build, paste its id and a deck
+                  built there will find this copy instead of failing as an unimplemented card.
+                </template>
+              </p>
+            </div>
           </div>
-          <p v-if="canClaimArkhamBuildId" class="hint" :class="{ bad: badArkhamBuildId }">
-            <template v-if="badArkhamBuildId">
-              Not an arkham.build id — a uuid, or the 32- or 8-character form a pack's cards
-              come through with. Left out until it is one.
-            </template>
-            <template v-else>
-              Optional. If this same card is published on arkham.build, paste its id and a deck
-              built there will find this copy instead of failing as an unimplemented card.
-            </template>
-          </p>
 
           <label>
             Traits
@@ -1129,6 +1289,11 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
                 {{ action }}
               </button>
             </div>
+            <BoolField
+              v-if="form.actions.length > 1"
+              label="Any one of them, rather than all of them"
+              v-model="form.actionsOr"
+            />
             <p class="hint">What happens when it is played:</p>
             <StepsEditor
               :queryKinds="QUERY_KINDS"
@@ -1258,6 +1423,10 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
                 Amount
                 <input v-model="form.useCount" type="number" @keydown.stop />
               </label>
+              <label v-if="form.useType">
+                Limit
+                <input v-model="form.useLimit" type="number" placeholder="—" @keydown.stop />
+              </label>
             </div>
           </fieldset>
 
@@ -1311,7 +1480,6 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
           <fieldset>
             <legend>Abilities</legend>
             <AbilityEditor
-              section="abilities"
               :cardType="form.cardType"
               :extraBindings="remembered"
               :canRevelation="canHaveRevelation"
@@ -1329,39 +1497,32 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
               v-model:elderSignRevealSteps="form.elderSignRevealSteps"
               v-model:elderSignSteps="form.elderSignSteps"
               v-model:elderSignSuccessSteps="form.elderSignSuccessSteps"
+              v-model:elderSignFailureSteps="form.elderSignFailureSteps"
             />
           </fieldset>
 
-          <!-- A listener is the card reacting to an engine message, not an
-               ability, so it gets a box of its own. -->
-          <fieldset>
-            <legend>Listens for</legend>
-            <p class="hint">
-              Engine messages this card reacts to directly, for effects that no ability window
-              covers.
-            </p>
-            <AbilityEditor
-              section="listeners"
-              :cardType="form.cardType"
-              :extraBindings="remembered"
-              :abilities="form.abilities"
-              :modifiers="form.modifiers"
-              v-model:handlers="form.handlers"
-            />
+          <!-- What the card's own labels say. The keys come from the card:
+               every `$.name` it writes is a line here. -->
+          <fieldset v-if="textKeys.length" class="card-text">
+            <legend>Text</legend>
+            <label class="text-language">
+              Language
+              <select v-model="textLanguage">
+                <option v-for="[code, name] in TEXT_LANGUAGES" :key="code" :value="code">
+                  {{ name }}{{ written(code) ? ' •' : '' }}
+                </option>
+              </select>
+            </label>
+            <label v-for="key in textKeys" :key="key" class="text-line" :class="{ missing: !textFor(key) }">
+              <code>$.{{ key }}</code>
+              <input
+                :value="textFor(key)"
+                placeholder="What it says"
+                @input="writeText(key, ($event.target as HTMLInputElement).value)"
+                @keydown.stop
+              />
+            </label>
           </fieldset>
-
-          <!-- A keyword the card's set prints, with this card's own condition
-               and result. Only offered once the set has declared one. -->
-          <details>
-            <summary>Raw CardDef JSON (merged over the form)</summary>
-            <textarea
-              v-model="form.rawJson"
-              rows="6"
-              spellcheck="false"
-              placeholder='{ "keywords": [{ "tag": "Swarming", "contents": { "tag": "Static", "contents": 2 } }] }'
-              @keydown.stop
-            />
-          </details>
           </template>
         </div>
   </div>
@@ -1511,6 +1672,16 @@ defineExpose({ loadCard, reset, buildCustomCard, snapshot, cardType: computed(()
 
   > label {
     flex: 1 1 90px;
+  }
+
+  /* A field that carries its own note: one column of the row, holding the
+     field and what is said about it. */
+  > .with-note {
+    display: flex;
+    flex: 1 1 90px;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 0;
   }
 }
 
@@ -1938,6 +2109,56 @@ details summary {
   cursor: pointer;
   font-size: 0.85rem;
   opacity: 0.85;
+}
+
+/* The card's own words. Keyed the same fuchsia as a label that names one, so
+   the two halves of the same thing look like it. */
+.card-text {
+  border: 1px solid #f0abfc44;
+  border-radius: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.4rem 0.6rem;
+
+  legend {
+    color: #f0abfc;
+    font-size: 0.72rem;
+    padding: 0 0.3rem;
+  }
+}
+
+.text-language {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  gap: 0.5rem;
+  text-align: left;
+}
+
+.text-line {
+  /* The surrounding form stacks its labels; a key and its words read as one
+     line, so this one does not. */
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  gap: 0.5rem;
+  text-align: left;
+
+  code {
+    color: #f0abfc;
+    flex: none;
+    font-size: 0.72rem;
+    min-width: 9rem;
+  }
+
+  input {
+    flex: 1;
+  }
+
+  &.missing input {
+    border-color: #f0abfc66;
+  }
 }
 
 .custom-card-actions {

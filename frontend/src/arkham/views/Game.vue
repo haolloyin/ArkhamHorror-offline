@@ -1,7 +1,6 @@
 <script lang="ts" setup>
 import {
   computed,
-  markRaw,
   nextTick,
   onMounted,
   onUnmounted,
@@ -10,7 +9,7 @@ import {
   shallowRef,
   watch,
 } from 'vue'
-import { useToast } from 'vue-toastification'
+import { useToast } from '@/toasts'
 import { storeToRefs } from 'pinia'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -97,6 +96,7 @@ import {
   CARD_FLIGHT_TRANSITION_CLASS,
   cardFlightTransitionName,
 } from '@/arkham/cardFlight'
+import { PENDING_DRAWS, pendingDraws, type PendingDraw } from '@/arkham/pendingDraws'
 import { customCardDef, isCustomCardCode } from '@/arkham/customCards'
 import * as Message from '@/arkham/types/Message'
 import type { Phase } from '@/arkham/types/Phase'
@@ -174,6 +174,10 @@ type ServerResult =
    * the wait is over and undo works again. */
   | { tag: 'GameUnarchived' }
   | { tag: 'GameUnarchiveFailed'; contents: string }
+  /* How many people are watching without a seat. Pushed by the server on every
+   * connect and disconnect -- including our own, so the first one arrives with
+   * the socket rather than being asked for. */
+  | { tag: 'GameWatcherCount'; contents: number }
   /* The room is gone -- the game was deleted, or an admin dropped it. The server
    * closes the socket right behind this, and `autoReconnect` would otherwise
    * recreate the very room that was just removed, so this leaves rather than
@@ -334,14 +338,26 @@ useNarrative(game)
 /* A custom card someone else created shows up in the game payload before this
  * client has its def; refetch the game's custom cards when an unknown one
  * appears. */
+let refetchedFor = ''
 watch(game, (g) => {
   if (!g) return
   const missing = (code: string) => isCustomCardCode(code) && !customCardDef(code)
   // A custom investigator never appears in `cards`; it is only a seat.
-  const unknown =
-    Object.values(g.cards).some((c) => missing(asCardCode(c)))
-    || Object.values(g.investigators).some((i) => missing(i.cardCode))
-  if (unknown) store.fetchCustomCards(props.gameId)
+  const unknown = [
+    ...Object.values(g.cards).map(asCardCode),
+    ...Object.values(g.investigators).map((i) => i.cardCode),
+  ]
+    .filter(missing)
+    .sort()
+    .join(',')
+  /* `fetchCustomCards` remembers its answer for the session, so this has to say
+   * it wants a fresh one -- the whole point here is that the answer changed.
+   * Keyed on which cards are missing so a def that is genuinely gone does not
+   * buy another copy of the set on every update for the rest of the game. */
+  if (unknown && unknown !== refetchedFor) {
+    refetchedFor = unknown
+    store.fetchCustomCards(props.gameId, true)
+  }
 })
 
 // "Ready to play": the group has reached the first investigation phase of an
@@ -449,6 +465,9 @@ const ready = ref(false)
 const resultQueue = ref<any>([])
 const showLog = ref(false)
 const showExportLog = ref(false)
+/* Spectators on this game right now, as the server last said. Zero until the
+ * first push, which our own join brings. */
+const watcherCount = ref(0)
 const showShortcuts = ref(false)
 const isMobileViewport = () =>
   typeof window !== 'undefined' && window.matchMedia('(max-width: 800px)').matches
@@ -492,7 +511,7 @@ watch(processing, (busy) => {
 const storyAnswerPending = ref(false)
 const oldQuestion = ref<Record<string, Question> | null>(null)
 const skipAllPending = ref<Set<string>>(new Set())
-const { t } = useI18n()
+const { t, te } = useI18n()
 const phaseNotification = ref<Phase | null>(null)
 const phaseNotificationQueue = ref<Phase[]>([])
 const phaseNotificationPlaying = ref(false)
@@ -546,6 +565,9 @@ const drawSpotlight = ref<DrawSpotlightEntry | null>(null)
 /* Cards an overlay is showing full-screen right now. Their board copies hide so
  * that a card is never on screen twice, and a placeholder holds the slot. */
 const previewedCardIds = ref<ReadonlySet<string>>(new Set())
+/* See `PENDING_DRAWS`. Kept here because only this component sees the update
+ * with its question still on it. */
+const heldPendingDraws = ref<PendingDraw[]>([])
 const flyingCardIds = ref<ReadonlySet<string>>(new Set())
 
 /* Returns whether the overlay actually opened, so a caller holding the lock on
@@ -719,6 +741,7 @@ function dismissDrawSpotlight() {
 /* Undo rewinds past the draw or reveal, so it goes with it. */
 function clearDrawSpotlight() {
   drawSpotlight.value = null
+  heldPendingDraws.value = []
   previewedCardIds.value = new Set()
   flyingCardIds.value = new Set()
   flightPlaceholders.value = []
@@ -855,6 +878,27 @@ const choices = computed(() => {
   return choicesByPlayer.value.get(playerId.value) ?? []
 })
 const gameOver = computed(() => game.value?.gameState.tag === 'IsOver')
+const outcome = computed(() => game.value?.outcome ?? null)
+// A standalone scenario has no campaign, so the verdict is about the scenario.
+const outcomeLabel = computed(() => {
+  const o = outcome.value
+  if (!o) return t('gameOver')
+  const subject = game.value?.campaign ? 'campaign' : 'scenario'
+  if (o.result === 'Lost') return t(`${subject}Lost`)
+  // "The investigators win the campaign…?" is printed that way; say so rather
+  // than flattening it to a plain win.
+  if (o.certainty === 'Uncertain' && subject === 'campaign') return t('campaignWonUncertain')
+  return t(`${subject}Won`)
+})
+
+/* The clause the Campaign Guide attaches to the verdict, as its own line — the
+ * verdict is the headline, the caveat is the printed small print. */
+const outcomeNote = computed(() => {
+  const o = outcome.value
+  if (o?.note && te(o.note)) return t(o.note)
+  if (o?.certainty === 'Uncertain') return t('outcomeUncertain')
+  return null
+})
 const questionPlayerId = computed(() => {
   const currentGame = game.value
   if (!currentGame) return playerId.value
@@ -1086,20 +1130,33 @@ watch(
     const [newId] = newVals
     if (!newId) return
     if (oldVals && newId === oldVals[0] && newVals[1] === oldVals[1]) return
-    await fetchGame(props.gameId, props.spectate).then(
-      async ({ game: newGame, playerId: newPlayerId, multiplayerMode, eventId }) => {
-        preloadImages(newGame)
-        ;(window as Window & { g?: Arkham.Game }).g = newGame
-        game.value = newGame
-        solo.value = multiplayerMode === 'Solo'
-        // Engage the Epic event this game belongs to even when the URL lacks
-        // ?event (e.g. entered via the join / take-a-seat path).
-        gamePayloadEventId.value = eventId
-        updateGameLog(newGame.log)
-        playerId.value = newPlayerId
-        ready.value = true
-      },
-    )
+    await fetchGame(props.gameId, props.spectate)
+      .then(
+        async ({ game: newGame, playerId: newPlayerId, multiplayerMode, eventId }) => {
+          preloadImages(newGame)
+          ;(window as Window & { g?: Arkham.Game }).g = newGame
+          game.value = newGame
+          solo.value = multiplayerMode === 'Solo'
+          // Engage the Epic event this game belongs to even when the URL lacks
+          // ?event (e.g. entered via the join / take-a-seat path).
+          gamePayloadEventId.value = eventId
+          updateGameLog(newGame.log)
+          playerId.value = newPlayerId
+          ready.value = true
+        },
+      )
+      .catch((err) => {
+        /* A game you hold no seat in answers 404: the handler looks for your
+         * player row and there is not one. An admin has somewhere to go with
+         * that -- the read-only admin view of the same game -- so send them
+         * there rather than leaving the page on its loading state. Everyone
+         * else keeps the error they were given. */
+        const status = (err as { response?: { status?: number } })?.response?.status
+        if (!props.spectate && userStore.isAdmin && status === 404) {
+          return router.replace({ name: 'AdminGame', params: { gameId: props.gameId } })
+        }
+        throw err
+      })
   },
   { immediate: true },
 )
@@ -1202,8 +1259,13 @@ function entitiesMoved(previous: Arkham.Game, current: Arkham.Game) {
 function applyGameUpdate(updatedGame: Arkham.Game, locked: boolean) {
   const nextGame = locked ? { ...updatedGame, question: {} } : updatedGame
   const previousGame = game.value
+  /* Read before the blanking: a draw lives in the question, and the board needs
+   * it precisely while an overlay has the question hidden -- that is when the
+   * card flying out of the overlay needs a slot laid out to land in. */
+  const draws = pendingDraws(updatedGame, playerId.value ?? '')
   const apply = async () => {
     game.value = nextGame
+    heldPendingDraws.value = draws
     storyAnswerPending.value = false
     await nextTick()
   }
@@ -1357,6 +1419,11 @@ const { send, close } = useWebSocket(websocketUrl, {
   onMessage,
 })
 
+/* Put up in place of leaving at once when the players have gone: a watcher
+ * whose board vanished mid-scenario is owed the reason, and a toast on the way
+ * out of the page is easy to miss. Dismissing it goes home. */
+const roomAbandoned = ref(false)
+
 /* The room was deleted. Close before navigating: `autoReconnect` would
  * otherwise bring the socket straight back up against a room the server has
  * just removed, and recreate it. Going home rather than showing a dead board,
@@ -1369,9 +1436,20 @@ function roomClosed(reason: string) {
    * socket carries this but no REST call has 503'd yet, so nothing else would. */
   if (reason === 'maintenance') {
     setMaintenance(true)
+  } else if (reason === 'abandoned') {
+    /* Only a spectator can receive this one -- it is sent because the last seat
+       left -- and the board behind the dialog is the last thing that happened,
+       which is worth leaving up while it is read. */
+    roomAbandoned.value = true
+    return
   } else {
     toast.info(t('gameClosed'), { timeout: 6000 })
   }
+  router.push({ name: 'Home' })
+}
+
+function leaveAbandonedRoom() {
+  roomAbandoned.value = false
   router.push({ name: 'Home' })
 }
 
@@ -1445,6 +1523,14 @@ function sendAnswer(payload: string) {
 }
 
 const handleResult = (result: ServerResult) => {
+  /* Ahead of the reset below: every other tag is the table moving, and clearing
+   * `processing` is how the board stops waiting. Somebody opening or closing a
+   * spectator tab is not that, and must not take the spinner off an answer that
+   * is still in flight. */
+  if (result.tag === 'GameWatcherCount') {
+    watcherCount.value = result.contents
+    return
+  }
   processing.value = false
   switch (result.tag) {
     case 'RoomClosed':
@@ -1545,19 +1631,17 @@ const handleResult = (result: ServerResult) => {
       return
 
     case 'GameAchievement': {
-      // Non-blocking gold toast; vue-toastification stacks multiple unlocks.
-      // Strings are translated here because the toast container has no i18n.
+      // Non-blocking gold toast; several unlocks at once stack. Translated here
+      // rather than in the component so the component stays a dumb presenter.
       const tag = result.contents
-      toast(
+      toast.custom(
+        AchievementToast,
         {
-          component: markRaw(AchievementToast),
-          props: {
-            title: t('achievements.toastTitle'),
-            name: t(`${achievementEntryScope(tag)}.name`),
-            text: t(`${achievementEntryScope(tag)}.text`),
-          },
+          title: t('achievements.toastTitle'),
+          name: t(`${achievementEntryScope(tag)}.name`),
+          text: t(`${achievementEntryScope(tag)}.text`),
         },
-        { timeout: 8000, icon: false, closeButton: false, toastClassName: 'achievement-toast' },
+        { timeout: 8000, dismissible: false, className: 'achievement-toast' },
       )
       return
     }
@@ -2497,6 +2581,7 @@ provide('chooseOrdered', chooseOrdered)
 provide('storyAnswerPending', storyAnswerPending)
 provide('uiLock', uiLock)
 provide(CARD_FLIGHT_STATE, { previewed: previewedCardIds, flying: flyingCardIds })
+provide(PENDING_DRAWS, heldPendingDraws)
 provide('skipAllTriggers', skipAllTriggers)
 provide('skipAllAvailable', skipAllAvailable)
 provide('skipAllInProgress', skipAllInProgress)
@@ -2677,6 +2762,13 @@ onUnmounted(() => {
     </div>
   </div>
   <div id="game" v-else-if="ready && game && playerId" :class="{ 'game--inline-modals': inlineModals }" :style="{ '--epic-bar-height': epicBarHeight + 'px' }">
+    <dialog v-if="roomAbandoned" class="error-dialog">
+      <h2>{{ $t('gameAbandonedTitle') }}</h2>
+      <p>{{ $t('gameAbandoned') }}</p>
+      <div class="buttons">
+        <button @click="leaveAbandonedRoom">{{ $t('close') }}</button>
+      </div>
+    </dialog>
     <dialog v-if="error" class="error-dialog">
       <h2>{{ $t('error') }}</h2>
       <p class="error-message">{{ error }}</p>
@@ -3015,6 +3107,19 @@ onUnmounted(() => {
         </div>
       </template>
       <div v-if="isActualScenarioView" class="right">
+        <!-- Not a button: there is nothing behind the number to open, and the
+             count is read, not used. Hidden at zero so a table nobody is
+             watching carries no extra furniture. -->
+        <div
+          v-if="watcherCount > 0"
+          class="watchers"
+          role="status"
+          v-tooltip="$t('gameBar.spectators')"
+          :aria-label="$t('gameBar.watching', { count: watcherCount }, { plural: watcherCount })"
+        >
+          <EyeIcon aria-hidden="true" />
+          <span class="watcher-count">{{ watcherCount }}</span>
+        </div>
         <!-- The log's own controls, with the log: exporting is only on offer
              while the panel it would export is open. A seat, like the scrollback
              endpoint it reads beside. -->
@@ -3271,7 +3376,12 @@ onUnmounted(() => {
           />
         </div>
         <div class="game-over" v-if="gameOver">
-          <p>{{ $t('gameOver') }}</p>
+          <p
+            :class="outcome ? (outcome.result === 'Won' ? 'won' : 'lost') : null"
+          >
+            {{ outcomeLabel }}
+          </p>
+          <p v-if="outcomeNote" class="outcome-note">{{ outcomeNote }}</p>
           <button
             class="replay-button"
             @click="router.push({ name: 'ReplayGame', params: { gameId } })"
@@ -3485,6 +3595,32 @@ onUnmounted(() => {
    menus by a rule rather than by a chevron it would be wrong to draw. */
 .game-bar .screen-switch {
   border-right: 1px solid rgba(0, 0, 0, 0.35);
+}
+
+/* Reads on the bar the way the badge on the home page's Watch button reads: the
+   same pill, so the number means the same thing in both places. */
+.game-bar .watchers {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  color: rgba(255, 255, 255, 0.75);
+
+  svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.watcher-count {
+  background: var(--background-dark);
+  border-radius: 999px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  min-width: 1.6em;
+  padding: 3px 6px;
+  text-align: center;
 }
 
 .undo-jump-header {
@@ -3875,6 +4011,21 @@ header {
     padding: 10px 20px;
     color: white;
     text-align: center;
+
+    &.won {
+      background: color-mix(in srgb, var(--outcome-won-dark) 75%, transparent);
+    }
+
+    &.lost {
+      background: color-mix(in srgb, var(--outcome-lost-dark) 75%, transparent);
+    }
+
+    &.outcome-note {
+      text-transform: none;
+      font-style: italic;
+      background: rgba(0, 0, 0, 0.35);
+      padding: 6px 20px;
+    }
   }
 }
 
