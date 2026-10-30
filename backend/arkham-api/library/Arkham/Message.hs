@@ -579,6 +579,8 @@ data Message
     window triggers. Set from the hidden-cards stack.
     -}
     SetCardSilenced InvestigatorId CardCode Bool
+  | SetCustomRandomWeaknessPool Bool [Text]
+  | SetPlayerCustomRandomWeaknessPool PlayerId Bool [Text]
   | SetAsIfRuling AsIfRuling
   | SetUltimatumsAndBoonsEnabled Bool
   | -- | Ultimatum of The Scream: ban this ally for the rest of the campaign
@@ -818,6 +820,18 @@ data Message
   | PreScenarioSetup
   | StandaloneSetup
   | ChoosePlayer InvestigatorId ChoosePlayerChoice
+  | {- | Offer the next investigator's turn in the investigation phase. The one
+    place that decision is made: the phase pushes it for the first turn and the
+    queue-drain fallback in "Arkham.Game" pushes it for every turn after, so a
+    modifier that reorders turns ('Arkham.Modifier.ResumesSuspendedTurn') has a
+    single place to be honored.
+
+    Deferred rather than a pre-built @ChooseOne@ because the phase builds its
+    steps before the "when the investigation phase begins" window runs, and a
+    card in that window (/Ritual Circle: A Harnessed Future/) is what decides
+    who may take the first turn.
+    -}
+    ChooseTurnPlayer
   | SetPlayerOrder
   | ChoosePlayerOrder InvestigatorId [InvestigatorId] [InvestigatorId]
   | ChooseRandomLocation Target [LocationId]
@@ -1025,11 +1039,20 @@ data Message
   | LookAtTopOfDeck InvestigatorId Target Int
   | LoseActions InvestigatorId Source Int
   | LoseResources InvestigatorId Source Int
-  | {- | Like 'LoseActions', but only standard actions can be taken away: the
-    investigator's remaining actions and any additional action without a
-    limitation on its use (see 'isStandardAdditionalAction').
+  | {- | Like 'LoseActions', but only unrestricted actions can be taken away:
+    the investigator's remaining actions and any additional action without a
+    limitation on its use (see 'isUnrestrictedAdditionalAction') -- what Ages
+    Unwound calls a "standard action", which is not the core rules' sense of
+    the word.
+
+    This is NOT what "lose N actions" means. Losing follows the core rule --
+    remaining actions go first, and an investigator left with only additional
+    actions loses those, whatever their limitation (FAQ 1.10) -- which is plain
+    'LoseActions'. Use this only for /spending/ actions on an ability a
+    restricted additional action could not be used on, where Ages Unwound's
+    "spend X actions" wording lands.
     -}
-    LoseStandardActions InvestigatorId Source Int
+    LoseUnrestrictedActions InvestigatorId Source Int
   | LoseTokens InvestigatorId Source Token TokenLoss
   | SpendActions InvestigatorId Source [Action] Int
   | -- | Handles complex movement for a target, triggers Moves windows, and uses MoveFrom, MoveTo messages
@@ -1104,6 +1127,7 @@ data Message
     No card does this yet; the game crosses entries out instead.
     -}
     ForgetRecord CampaignLogKey
+  | ForgetRecordForInvestigator InvestigatorId CampaignLogKey
   | RecordForInvestigator InvestigatorId CampaignLogKey
   | {- | Adjust a per-investigator tally in that investigator's own campaign log
     (e.g. Dark Matter "Memories"). Negative values cross off tallies; the
@@ -1418,6 +1442,8 @@ data Message
   | -- Debug: register a runtime-authored card (see "Arkham.Card.CustomCard") on
     -- the game, so its def resolves for every player and survives a reload.
     DebugRegisterCustomCard CustomCard
+  | -- Open a fixed collection pool and snapshot its custom definitions once.
+    AskCollection InvestigatorId Source [CardCode]
   | DebugRemoveCustomCard CardCode
   | -- Debug: resolve an already-created card the way drawing it would --
     -- spawn an enemy, reveal a treachery, put a location on the board, deal a
@@ -2006,6 +2032,10 @@ pattern EnemyAttackIfEngaged eid miid = EnemyAttackMessage (EnemyAttackIfEngaged
 
 pattern EnemyAttacks :: [Message] -> Message
 pattern EnemyAttacks msgs = EnemyAttackMessage (EnemyAttacks_ msgs)
+
+-- | The entire attack batch has resolved, including attacks that were skipped.
+pattern FinishedEnemyAttacks :: [EnemyId] -> Message
+pattern FinishedEnemyAttacks eids = EnemyAttackMessage (FinishedEnemyAttacks_ eids)
 
 pattern ChangeEnemyAttackTarget :: EnemyId -> Target -> Message
 pattern ChangeEnemyAttackTarget eid t = EnemyAttackMessage (ChangeEnemyAttackTarget_ eid t)
@@ -2626,6 +2656,11 @@ mconcat
               pure $ case contents of
                 Right (a, b, c, d, s) -> FindEncounterCard a b c d s
                 Left (a, b, c, d) -> FindEncounterCard a b c d LeadChooses
+            -- Renamed from LoseStandardActions: "standard action" is the base
+            -- three in the core rules, not what this message counts.
+            "LoseStandardActions" -> do
+              (iid, source, n) <- o .: "contents"
+              pure $ LoseUnrestrictedActions iid source n
             -- Legacy: saves written before the details object stored the bare face
             "AddChaosToken" -> AddChaosToken <$> o .: "contents"
             -- Legacy: pre-Message-refactor saves tagged entity-specific removals

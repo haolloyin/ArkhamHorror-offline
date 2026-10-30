@@ -1,8 +1,8 @@
 module Arkham.Homebrew.AgesUnwound.Treacheries.AerialBombardment (aerialBombardment) where
 
 import Arkham.Ability
+import Arkham.Helpers.Action (getUnrestrictedActions)
 import Arkham.Helpers.Doom (getDoomCount)
-import Arkham.Helpers.Investigator (getCanLoseActions)
 import Arkham.Helpers.Message.Discard.Lifted (randomDiscard)
 import Arkham.Homebrew.AgesUnwound.CardDefs.Treacheries qualified as Cards
 import Arkham.Homebrew.AgesUnwound.Scenarios.Unstuck.Helpers (unstuckI18n)
@@ -23,6 +23,11 @@ aerialBombardment = treachery AerialBombardment Cards.aerialBombardment
 damage." / "Forced - At the end of your turn, if you are at attached location:
 For each doom in play (min 1), take 1 damage or discard 1 card from your hand at
 random."
+
+"Spend 1 action" is a cost on an ability with no trait of its own, so only a
+/standard/ action can pay it ('loseUnrestrictedActions') and the offer is gated on
+having one -- unlike the campaign's "lose 1 action" effects, which take a
+restricted additional action when it is all that is left (FAQ 1.10).
 -}
 instance HasAbilities AerialBombardment where
   getAbilities (AerialBombardment a) =
@@ -45,9 +50,9 @@ instance RunMessage AerialBombardment where
         >>= traverse_ (attachTreachery attrs)
       pure t
     UseThisAbility iid (isSource attrs -> True) 1 -> do
-      canLose <- getCanLoseActions iid
+      canLose <- (> 0) <$> getUnrestrictedActions iid
       chooseOrRunOneM iid $ unstuckI18n $ scope "aerialBombardment" do
-        labeledValidate canLose "spendAnAction" $ loseStandardActions iid (attrs.ability 1) 1
+        labeledValidate canLose "spendAnAction" $ loseUnrestrictedActions iid (attrs.ability 1) 1
         labeled "takeOneDamage" $ assignDamage iid (attrs.ability 1) 1
       pure t
     UseThisAbility _iid (isSource attrs -> True) 2 -> do

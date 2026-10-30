@@ -150,6 +150,7 @@ filterOutEnemyMessages eid ask'@(Ask pid q) = case q of
   QuestionWithSource {} -> Just ask'
   Read {} -> Just ask'
   ChooseOneWizard {} -> Just ask'
+  ChooseFromCollection {} -> Just ask'
   DropDown {} -> Just ask'
   PickSupplies {} -> Just ask'
   PickDestiny {} -> Just ask'
@@ -252,16 +253,6 @@ getCanReady a = do
   mods <- getModifiers a
   phase <- getPhase
   pure $ CannotReady `notElem` mods && (DoesNotReadyDuringUpkeep `notElem` mods || phase /= #upkeep)
-
-{- | Whether an enemy is currently barred from attacking. 'CannotAttack' is
-unconditional; 'CannotAttackDuringEnemyPhase' only bites in the enemy phase,
-since @Do EnemiesAttack@ is also pushed by card effects outside of it.
--}
-getCannotAttackNow :: HasGame m => [ModifierType] -> m Bool
-getCannotAttackNow mods
-  | CannotAttack `elem` mods = pure True
-  | CannotAttackDuringEnemyPhase `elem` mods = (== #enemy) <$> getPhase
-  | otherwise = pure False
 
 getCanEngage :: HasGame m => EnemyAttrs -> m Bool
 getCanEngage a = do
@@ -818,7 +809,7 @@ instance RunMessage EnemyAttrs where
             lead <- getLeadPlayer
             pathIds <- getPaths a [lid]
             unless (null pathIds) do
-              pushAll [chooseOne lead [targetLabel lid' [EnemyMove enemyId lid'] | lid' <- pathIds]]
+              push $ chooseOrRunOne lead [targetLabel lid' [EnemyMove enemyId lid'] | lid' <- pathIds]
       pure a
     MoveUntil lid target | isTarget a target -> do
       case enemyPlacement of
@@ -1382,9 +1373,11 @@ instance RunMessage EnemyAttrs where
       mods <- getCombinedModifiers [toTarget iid, toTarget a]
       keywords <- getModifiedKeywords a
       canAttack <- canBeAttackedBy enemyId iid
+      cannotAttack <- enemyCannotAttackNow enemyId
 
       when
         ( canAttack
+            && not cannotAttack
             && (Keyword.Retaliate `elem` keywords)
             && (IgnoreRetaliate `notElem` mods)
             && (not enemyExhausted || CanRetaliateWhileExhausted `elem` mods)
@@ -1523,9 +1516,11 @@ instance RunMessage EnemyAttrs where
       mods <- getCombinedModifiers [toTarget iid, toTarget a]
       keywords <- getModifiedKeywords a
       canAttack <- canBeAttackedBy enemyId iid
+      cannotAttack <- enemyCannotAttackNow enemyId
       pushAll
         [ EnemyAttack $ viaAlert $ (enemyAttack enemyId a iid) {attackDamageStrategy = enemyDamageStrategy}
         | canAttack
+        , not cannotAttack
         , Keyword.Alert `elem` keywords
         , IgnoreAlert `notElem` mods
         ]
@@ -2662,9 +2657,10 @@ instance RunMessage EnemyAttrs where
     InSearch msg'@(UseAbility _ ab _) | isSource a ab.source || isProxySource a ab.source -> do
       push $ Do msg'
       pure a
-    InDiscard iid msg'@(UseAbility iid' ab _) | iid == iid' && (isSource a ab.source || isProxySource a ab.source) -> do
-      push $ Do msg'
-      pure a
+    -- NOTE: No InDiscard UseAbility handler here. In-discard entities also receive the raw
+    -- message (see RunMessage Game in Game/Runner.hs), so the bare handler above already
+    -- fires for them; a second one pushes `Do (UseAbility)` twice and resolves the ability
+    -- (and pays its cost) twice -- see #4764 and Monastic Training's doubled reaction.
     InHand iid msg'@(UseAbility iid' ab _) | iid == iid' && (isSource a ab.source || isProxySource a ab.source) -> do
       push $ Do msg'
       pure a

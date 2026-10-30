@@ -23,10 +23,10 @@ import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
 import Arkham.Modifier
-import Arkham.PlayerCard (allPlayerCards)
 import Arkham.Projection
 import Arkham.Question (Question (..))
 import Arkham.Source
+import Arkham.Target (Target (CardCodeTarget))
 import Arkham.Trait (Trait (Curse, Omen, Pact, SilverTwilight))
 
 newtype TheCircleUndone = TheCircleUndone CampaignAttrs
@@ -279,7 +279,7 @@ instance RunMessage TheCircleUndone where
               if playerCount < 2
                 then notElem MultiplayerOnly . cdDeckRestrictions . toCardDef
                 else const True
-          let collection = map (`lookupPlayerCard` nullCardId) (toList allPlayerCards)
+          collection <- map (`lookupPlayerCard` nullCardId) <$> collectionCardDefs
           for_ investigators \iid -> do
             chooseOneM iid do
               campaignI18n $ scope "returnTo" $ questionLabeled "anetteTaughtYouTheSpellsOfOld"
@@ -302,8 +302,7 @@ instance RunMessage TheCircleUndone where
                           )
                         ]
                   cards = filter cardFilter collection
-                chooseOneM iid do
-                  cardsLabeled cards $ addCampaignCardToDeck iid DoNotShuffleIn
+                chooseCollectionCards iid CampaignSource (map toCardDef cards)
 
               withI18n $ labeled "no" nothing
 
@@ -332,5 +331,8 @@ instance RunMessage TheCircleUndone where
         TakePuzzleBox -> forceAddCampaignCardToDeckChoice investigators ShuffleIn Assets.puzzleBox
         ProceedToInterlude3 -> pure ()
         _ -> error $ "Unhandled option: " <> show option
+      pure c
+    HandleTargetChoice iid CampaignSource (CardCodeTarget code) -> do
+      for_ (lookupCardDef code) $ addCampaignCardToDeck iid DoNotShuffleIn
       pure c
     _ -> lift $ defaultCampaignRunner msg c

@@ -4,11 +4,11 @@ import { onBeforeUnmount, ComputedRef, ref, computed, watch, nextTick } from 'vu
 import { useDebug } from '@/arkham/debug'
 import { CARD_FLIGHT_ATTR, useCardFlight } from '@/arkham/cardFlight'
 import { Game } from '@/arkham/types/Game'
+import { investigatorMovementName } from '@/arkham/investigatorMovement'
 import { imgsrc } from '@/arkham/helpers'
 import { cardArt, cardImage } from '@/arkham/cardImages'
 import { keyToId } from '@/arkham/types/Key'
 import { useGameChoices, useStickyChoicesSource } from '@/arkham/composables/useGameChoices'
-import { proxyOriginId } from '@/arkham/types/Source'
 import { useGameIndexes } from '@/arkham/composables/useGameIndexes'
 import { useCardFlip } from '@/arkham/composables/useCardFlip'
 import DebugLocation from '@/arkham/components/debug/Location.vue'
@@ -461,9 +461,9 @@ const breaches = computed(() => {
   return 0
 })
 const investigators = computed(() => {
-  return props.location.investigators
+  return [...new Set(props.location.investigators)]
     .map((i) => props.game.investigators[i])
-    .filter((i) => i.placement.tag === 'AtLocation')
+    .filter((i) => i && i.placement.tag === 'AtLocation')
 })
 
 
@@ -568,18 +568,15 @@ const showCardsUnderneath = () => emits('show', cardsUnderneathToShow, 'Cards Un
 const isAttackTarget = computed(() => props.game.enemyAttackTargets.some((e) => e.target.contents === props.location.id))
 const highlighted = computed(() => highlighter.highlighted.value === props.location.id || isAttackTarget.value)
 
-// Yellow marks the actor/source of what is happening. Two cases put this location there:
-// a pending question wrapped in QuestionWithSource (e.g. the location charging an
-// additional cost to leave it), and an offered proxied ability this location granted to
-// the card it now sits on.
+// Yellow marks the source of a pending question (e.g. an additional move cost).
+// Offered proxied abilities highlight their origin only through button hover.
 const choicesSource = useStickyChoicesSource(() => props.game, () => props.playerId)
 const sourceHighlighted = computed(() => {
+  if (highlighter.sourceHighlighted.value === props.location.id) return true
   const source = choicesSource.value
   if (source !== null && 'contents' in source && source.contents === props.location.id) return true
 
-  return choices.value.some(
-    (c) => c.tag === MessageType.ABILITY_LABEL && proxyOriginId(c.ability.source) === props.location.id
-  )
+  return false
 })
 
 function isVehicleAsset(assetId: string): boolean {
@@ -609,7 +606,7 @@ const hasAnyLocationVehicleAssets = computed(() =>
           v-for="investigator in investigators"
           :key="investigator.id"
           :data-investigator-mini="investigator.id"
-          :style="{ viewTransitionName: `investigator-${investigator.id}` }"
+          :style="{ viewTransitionName: investigatorMovementName(investigator, location.id) }"
           class="investigator-mini-mover"
         >
           <Investigator
@@ -956,6 +953,16 @@ img.card.source-highlight {
   padding: 5px 10px;
 }
 
+.location-column > .debug-open {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding-inline: 0;
+  text-align: center;
+}
+
 .location-column {
   display: flex;
   flex-direction: column;
@@ -1152,6 +1159,8 @@ img.card.source-highlight {
 
 .pool.location-pool {
   position: absolute;
+  /* Objective locations raise the card art to layer 1. Keep tokens above it. */
+  z-index: var(--z-index-2);
   top: 50%;
   align-items: center;
   display: flex;

@@ -11,6 +11,7 @@ import Arkham.Classes.HasGame
 import Arkham.Classes.HasQueue
 import Arkham.Classes.Query
 import Arkham.DamageEffect
+import Arkham.Game.Base (Game (gameCollectionCards, gameCustomCards), Transient (..))
 import Arkham.Helpers.FlavorText (FlavorTextBuilder, buildFlavor)
 import Arkham.Helpers.Query (getLead)
 import Arkham.Helpers.SkillTest.Lifted (beginSkillTestEdit)
@@ -26,6 +27,7 @@ import Arkham.Matcher.Patterns (pattern InvestigatorCanBeDamaged)
 import Arkham.Message (Message (Would), questionWithSource, uiToRun)
 import Arkham.Message qualified as Msg
 import Arkham.Message.Lifted
+import Arkham.PlayerCard (allPlayerCards)
 import Arkham.Prelude
 import Arkham.Query
 import Arkham.Question
@@ -40,6 +42,7 @@ import Arkham.Window (defaultWindows)
 import Control.Monad.Catch (MonadCatch, MonadMask, MonadThrow)
 import Control.Monad.State.Strict
 import Control.Monad.Writer.Strict
+import Data.Map.Strict qualified as Map
 
 data ChooseState = ChooseState
   { label :: Maybe Text
@@ -626,3 +629,29 @@ assignDamageOrHorror iid (toSource -> source) damage horror = do
     chooseOneM iid $ withI18n $ unscoped do
       countVar damage $ labeled "takeDamage" $ assignDamage iid source damage
       countVar horror $ labeled "takeHorror" $ assignHorror iid source horror
+
+{- | Collection searches see printed cards, this player's library, and custom
+cards already recorded on the game. Never enumerate the process-wide registry:
+it also contains other players' private libraries. Aliases collapse to one def.
+-}
+collectionCardDefs :: HasGame m => m [CardDef]
+collectionCardDefs = do
+  g <- getGame
+  let custom = fromMaybe mempty (getTransient $ gameCollectionCards g) <> gameCustomCards g
+  pure
+    $ toList
+    $ Map.fromList
+      [ (toCardCode def, def)
+      | def <- toList allPlayerCards <> map customCardDef (toList custom)
+      , def.kind `elem` [AssetType, EventType, SkillType, PlayerTreacheryType, PlayerEnemyType]
+      ]
+
+{- | A fixed collection pool, represented by codes rather than repeated
+continuations. Eligible custom definitions are recorded once on the game before
+asking; gameCustomCards is excluded from undo diffs and served separately to
+clients. This also makes the question self-contained after a library deletion.
+-}
+chooseCollectionCards
+  :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> [CardDef] -> m ()
+chooseCollectionCards iid (toSource -> source) defs = unless (null defs) do
+  push $ Msg.AskCollection iid source (ordNub $ map toCardCode defs)

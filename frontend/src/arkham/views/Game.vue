@@ -92,6 +92,7 @@ import { Card, asCardCode, cardDecoder, toCardContents } from '@/arkham/types/Ca
 import { isDevBuild } from '@/arkham/displayRules'
 import {
   CARD_FLIGHT_ATTR,
+  CARD_FLIGHT_PILE_ATTR,
   CARD_FLIGHT_STATE,
   CARD_FLIGHT_TRANSITION_CLASS,
   cardFlightTransitionName,
@@ -580,7 +581,7 @@ function showDrawSpotlight(entry: DrawSpotlightEntry): boolean {
 }
 
 type TransitionDocument = Document & {
-  startViewTransition?: (callback: () => Promise<void>) => { finished: Promise<void> }
+  startViewTransition?: (callback: () => Promise<void>) => { ready: Promise<void>; finished: Promise<void> }
 }
 
 /* The on-screen element a card would fly to, or null if it has none.
@@ -605,6 +606,24 @@ function laidOutDestination(id: string): Element | null {
     const r = el.getBoundingClientRect()
     if (r.width && r.height) return el
   }
+  return laidOutPile(id)
+}
+
+/* A card that went into a pile instead of onto the board.
+ *
+ * A discard renders only its top card, and by the time a reveal is dismissed
+ * that is usually no longer the card the reveal was showing -- the engine does
+ * not wait for the click, so everything that resolved behind the overlay has
+ * landed on top of it already. Matching on the pile's whole contents is what
+ * keeps the flight working in that very ordinary case; matching the rendered
+ * top card alone would almost never fire.
+ */
+function laidOutPile(id: string): Element | null {
+  for (const el of document.querySelectorAll(`[${CARD_FLIGHT_PILE_ATTR}]`)) {
+    if (!(el.getAttribute(CARD_FLIGHT_PILE_ATTR) ?? '').split(' ').includes(id)) continue
+    const r = el.getBoundingClientRect()
+    if (r.width && r.height) return el
+  }
   return null
 }
 
@@ -620,7 +639,23 @@ function cardsWithADestination(cards: Card[]): string[] {
  * card blinking out. These sit in the page (no transition name, so they are
  * part of the root snapshot) and hold the space until the card is really back.
  */
-const flightPlaceholders = ref<{ id: string; style: Record<string, string> }[]>([])
+const flightPlaceholders = ref<{ id: string; style: Record<string, string>; image?: string }[]>(
+  [],
+)
+
+/* What a promoted destination was showing, for the placeholder to keep showing.
+ *
+ * Only piles have one. A card flying back to its own slot leaves a slot that was
+ * empty anyway -- it is away being flown -- so a hole is the honest picture
+ * there. A discard is different: it is already showing a card, usually not even
+ * the one in flight, and that card has to stay put until the animation lands or
+ * the pile blinks out from under it.
+ */
+function pileImage(el: Element): string | undefined {
+  if (!el.hasAttribute(CARD_FLIGHT_PILE_ATTR)) return undefined
+  const img = el.querySelector('img')
+  return img instanceof HTMLImageElement ? img.src : undefined
+}
 
 function measureDestinations(ids: string[]) {
   return ids.flatMap((id) => {
@@ -630,6 +665,7 @@ function measureDestinations(ids: string[]) {
     return [
       {
         id,
+        image: pileImage(el),
         style: {
           top: `${r.top}px`,
           left: `${r.left}px`,
@@ -681,6 +717,7 @@ function flyThenDismiss(cards: Card[], hide: () => void) {
     })
     // `finished` rejects when the transition is skipped. Either way the overlay
     // is already gone and the lock has to come off, or the board stays frozen.
+    void transition.ready.catch(() => {})
     transition.finished.then(settle, settle)
   } catch (e) {
     console.error(e)
@@ -899,12 +936,24 @@ const outcomeNote = computed(() => {
   if (o?.certainty === 'Uncertain') return t('outcomeUncertain')
   return null
 })
+// Seats pending a question, in table order. game.question is a server-side Map
+// keyed by PlayerId, so its JSON key order is UUID order, not seat order: taking
+// its head routes deck selection to a seat further down the table and leaves the
+// rows between it and the last answered one empty (#5925). IsChooseDecks carries
+// the seat list, which is also what ChooseDeck.vue orders its rows by.
+function pendingQuestionPlayers(g: Arkham.Game): string[] {
+  const asked = Object.keys(g.question).filter((pid) => !!g.question[pid])
+  const seats = g.gameState.tag === 'IsChooseDecks' ? g.gameState.contents : []
+  const ordered = seats.filter((pid) => asked.includes(pid))
+  return [...ordered, ...asked.filter((pid) => !ordered.includes(pid))]
+}
+
 const questionPlayerId = computed(() => {
   const currentGame = game.value
   if (!currentGame) return playerId.value
   if (playerId.value && currentGame.question[playerId.value]) return playerId.value
   if (solo.value && currentGame.gameState.tag === 'IsChooseDecks') {
-    return Object.keys(currentGame.question)[0] ?? playerId.value
+    return pendingQuestionPlayers(currentGame)[0] ?? playerId.value
   }
   return playerId.value
 })
@@ -961,7 +1010,7 @@ function followPendingUpgradeQuestion(g: Arkham.Game) {
   // Replacement investigators can produce follow-up trauma and setup questions
   // after ChooseUpgradeDeck has been answered. Keep following whichever solo
   // investigator owns the continuation instead of remaining on the answered tab.
-  const pendingPlayer = Object.keys(g.question)[0]
+  const pendingPlayer = pendingQuestionPlayers(g)[0]
   if (pendingPlayer) playerId.value = pendingPlayer
 }
 
@@ -1270,11 +1319,14 @@ function applyGameUpdate(updatedGame: Arkham.Game, locked: boolean) {
     await nextTick()
   }
   const transitionDocument = document as Document & {
-    startViewTransition?: (callback: () => Promise<void>) => unknown
+    startViewTransition?: (callback: () => Promise<void>) => { ready: Promise<void>; finished: Promise<void> }
   }
 
   if (previousGame && entitiesMoved(previousGame, nextGame) && transitionDocument.startViewTransition) {
-    transitionDocument.startViewTransition(apply)
+    const transition = transitionDocument.startViewTransition(apply)
+    // A skipped animation must not reject an otherwise successful game update.
+    void transition.ready.catch(() => {})
+    void transition.finished.catch(() => {})
   } else {
     void apply()
   }
@@ -1324,8 +1376,13 @@ function scheduleApplyUpdate(payload: string, queued: boolean) {
           questionTag(currentQuestion) === 'Read' &&
           ArkhamGame.choices(updatedGame, currentPlayer).length === 0 &&
           actionableQuestionPlayers.length > 0
+        // The server names the seat it parked on; fall back to seat order rather
+        // than the question map's UUID key order (#5925).
+        const activeIsAsked = !!updatedGame.question[updatedGame.activePlayerId]
         const nextQuestionPlayer = !questionPlayers.includes(currentPlayer)
-          ? questionPlayers[0]
+          ? activeIsAsked
+            ? updatedGame.activePlayerId
+            : pendingQuestionPlayers(updatedGame)[0]
           : currentReadIsWaiting
             ? actionableQuestionPlayers[0]
             : null
@@ -1573,6 +1630,22 @@ const handleResult = (result: ServerResult) => {
       playAudioFile(result.contents)
       return
     case 'GameUI':
+      /* A bamf: see SmokePuffLayer.vue. Queued like any other blocking result
+       * when something already holds the lock, so the two halves of one
+       * vanishing play in order instead of on top of each other.
+       *
+       * The lock is NOT taken here. SmokePuffLayer takes it, because only it
+       * knows when the animation is over -- and if no layer is listening
+       * (outside a scenario, or the context failed) nothing is taken and
+       * nothing stalls, which is the right way round for a decoration. */
+      if (result.contents.startsWith('smokePuff:')) {
+        if (uiLock.value) {
+          qPush(result)
+          return
+        }
+        emitter.emit('arkham:smoke-puff', result.contents.slice('smokePuff:'.length))
+        return
+      }
       if (result.contents.startsWith('theSilence:')) {
         if (props.spectate) return
         const targetPlayer = result.contents.slice('theSilence:'.length)
@@ -3250,9 +3323,12 @@ onUnmounted(() => {
             v-for="p in flightPlaceholders"
             :key="p.id"
             class="card-flight-placeholder"
+            :class="{ 'card-flight-placeholder--pile': p.image }"
             :style="p.style"
             aria-hidden="true"
-          />
+          >
+            <img v-if="p.image" :src="p.image" />
+          </div>
         </Teleport>
         <DrawSpotlight
           v-if="drawSpotlight && game && playerId"
@@ -5125,5 +5201,23 @@ dialog {
      the dark board, quiet enough not to look like a card of its own. */
   background: rgba(255, 255, 255, 0.05);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+/* A pile stands in for itself instead: it was showing a card before the flight
+   started and has to go on showing it, so this is the pile's own top card held
+   in place while the real element is away being morphed into. Sits below the
+   flying card, which is in the view-transition layer. */
+.card-flight-placeholder--pile {
+  background: none;
+  /* `.discard-card`'s own shadow, so the stand-in is not visibly flatter than
+     the pile it is standing in for. */
+  box-shadow: 1px 1px 6px rgba(0, 0, 0, 0.45);
+}
+
+.card-flight-placeholder--pile img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
 }
 </style>

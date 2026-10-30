@@ -15,8 +15,8 @@ import Arkham.I18n (ikey)
 import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
-import Arkham.PlayerCard (allPlayerCards)
 import Arkham.Source (Source (CampaignSource))
+import Arkham.Target (Target (CardCodeTarget))
 import Arkham.Trait (Trait (Agency, Criminal, Detective, Injury))
 import Arkham.Window qualified as Window
 import Data.List.Extra (nubOrdOn)
@@ -364,6 +364,7 @@ instance RunMessage TheDrownedCity where
                   -- surviving printing the lowest card code (the original) rather
                   -- than whichever happened to come first.
                   taken <- getTakenBasicWeaknesses iid
+                  collection <- collectionCardDefs
                   let weaknesses =
                         nubOrdOn (canonicalCardCode . toCardDef)
                           $ sortOn toCardCode
@@ -371,11 +372,8 @@ instance RunMessage TheDrownedCity where
                           $ filter
                             (`cardMatch` (BasicWeaknessCard <> mapOneOf CardWithTrait [Injury, Criminal]))
                           $ map (`lookupPlayerCard` nullCardId)
-                          $ toList allPlayerCards
-                  unless (null weaknesses)
-                    $ chooseOneM iid
-                    $ cardsLabeled weaknesses
-                    $ addCampaignCardToDeck iid DoNotShuffleIn
+                          $ collection
+                  chooseCollectionCards iid CampaignSource (map toCardDef weaknesses)
                 DreamsOfDestruction -> do
                   sufferMentalTrauma iid 1
                   removeChaosToken ElderSign
@@ -442,6 +440,9 @@ instance RunMessage TheDrownedCity where
         -- window. It has to fire after the record above so the reaction's criteria
         -- see the glyph that just arrived.
         checkAfter $ Window.CampaignEvent "translateGlyph" Nothing v
+        pure c
+      HandleTargetChoice iid CampaignSource (CardCodeTarget code) -> do
+        for_ (lookupCardDef code) $ addCampaignCardToDeck iid DoNotShuffleIn
         pure c
       _ -> lift $ defaultCampaignRunner msg c
 

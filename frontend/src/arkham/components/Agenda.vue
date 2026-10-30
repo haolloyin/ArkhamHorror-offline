@@ -248,6 +248,9 @@ const attachedEnemies = computed(() => Object.values(props.game.enemies).
   filter((t) => t.placement.tag === "AttachedToAgenda" && t.placement.contents === id.value).
   map((t) => t.id))
 
+const nextToEnemies = computed(() => Object.values(props.game.enemies).
+  filter((enemy) => enemy.placement.tag === "NextToAgenda"))
+
 // Blood on the Line parks a defeated investigator's mini-card beneath the agenda
 // until the act advances.
 const investigatorsUnder = computed(() => Object.values(props.game.investigators).
@@ -265,7 +268,6 @@ const nextToAgendaOrder = computed<string[]>(() => {
 // Only the ones still in play, then anything placed since that the scenario has
 // not recorded yet, so a card never vanishes from the row waiting on meta.
 const nextToAgendaRow = computed(() => {
-  if (nextToAgendaOrder.value.length === 0) return []
   const inPlay = nextToTreacheries.value
   return [
     ...nextToAgendaOrder.value.filter((t) => inPlay.includes(t)),
@@ -273,13 +275,9 @@ const nextToAgendaRow = computed(() => {
   ]
 })
 
-const groupedTreacheries = computed(() => {
-  const row = nextToAgendaRow.value
-  const attached = [...props.agenda.treacheries, ...nextToTreacheries.value].filter(
-    (t) => !row.includes(t),
-  )
-  return Object.entries(groupBy(attached, (t) => props.game.treacheries[t].cardCode))
-})
+const groupedTreacheries = computed(() =>
+  Object.entries(groupBy(props.agenda.treacheries, (t) => props.game.treacheries[t].cardCode)),
+)
 
 // Which treachery group is slid out. We reveal only when the pointer is over the
 // card image, not over its buttons — so mousing straight onto a Forced button
@@ -313,6 +311,48 @@ const wards = computed(() => props.agenda.tokens[TokenType.Ward])
 
 <template>
   <div class="agenda-container">
+    <div
+      v-if="cardsNextTo.length || nextToEvents.length || nextToStories.length || nextToAgendaRow.length || nextToEnemies.length"
+      class="next-to-agenda"
+    >
+      <img
+        v-for="(card, idx) in cardsNextTo"
+        class="card card--next-to"
+        :key="idx"
+        :src="imgsrc(cardImage(card))"
+      />
+      <Event
+        v-for="eventId in nextToEvents"
+        :event="game.events[eventId]"
+        :game="game"
+        :playerId="playerId"
+        @choose="$emit('choose', $event)"
+      />
+      <Enemy
+        v-for="enemy in nextToEnemies"
+        :key="enemy.id"
+        :enemy="enemy"
+        :game="game"
+        :playerId="playerId"
+        @choose="$emit('choose', $event)"
+      />
+      <Story
+        v-for="storyId in nextToStories"
+        :key="storyId"
+        :story="game.stories[storyId]"
+        :game="game"
+        :playerId="playerId"
+        @choose="$emit('choose', $event)"
+      />
+      <Treachery
+        v-for="treacheryId in nextToAgendaRow"
+        :key="treacheryId"
+        :treachery="game.treacheries[treacheryId]"
+        :game="game"
+        :playerId="playerId"
+        @choose="$emit('choose', $event)"
+      />
+    </div>
     <StackIndicator
       label="Agenda"
       :current="currentAgendaPosition"
@@ -367,12 +407,6 @@ const wards = computed(() => props.agenda.tokens[TokenType.Ward])
           @choose="$emit('choose', $event)"
         />
       </div>
-      <img
-        v-for="(card, idx) in cardsNextTo"
-        class="card card--next-to"
-        :key="idx"
-        :src="imgsrc(cardImage(card))"
-      />
       <AbilityButton
         v-for="ability in abilities"
         :key="ability.index"
@@ -389,31 +423,6 @@ const wards = computed(() => props.agenda.tokens[TokenType.Ward])
         :playerId="playerId"
         @choose="$emit('choose', $event)"
       />
-      <Event
-        v-for="eventId in nextToEvents"
-        :event="game.events[eventId]"
-        :game="game"
-        :playerId="playerId"
-        @choose="$emit('choose', $event)"
-      />
-      <Story
-        v-for="storyId in nextToStories"
-        :key="storyId"
-        :story="game.stories[storyId]"
-        :game="game"
-        :playerId="playerId"
-        @choose="$emit('choose', $event)"
-      />
-      <div v-if="nextToAgendaRow.length > 0" class="next-to-agenda">
-        <Treachery
-          v-for="treacheryId in nextToAgendaRow"
-          :key="treacheryId"
-          :treachery="game.treacheries[treacheryId]"
-          :game="game"
-          :playerId="playerId"
-          @choose="$emit('choose', $event)"
-        />
-      </div>
       <div v-if="groupedTreacheries.length > 0" class="treacheries">
         <div
           v-for="([cCode, treacheries], idx) in groupedTreacheries"
@@ -446,6 +455,7 @@ const wards = computed(() => props.agenda.tokens[TokenType.Ward])
       <button v-if="cardsUnder.length > 0 && canViewUnder" class="view-cards-under-button" @click="showCardsUnderAgenda">{{viewUnderLabel}}</button>
       <button v-else-if="cardsUnder.length > 0" class="view-cards-under-button" disabled>{{viewUnderLabel}}</button>
     </div>
+
   </div>
 </template>
 
@@ -548,16 +558,14 @@ const wards = computed(() => props.agenda.tokens[TokenType.Ward])
   gap: 5px;
 }
 
-/* Cards placed beside the agenda deck, oldest first. They are their own row
-   rather than attachments, so they do not overlap the way .treachery-group
-   stacks do -- the order has to stay readable, since the oldest is the one the
-   next placement discards. */
+/* A sibling of .agenda-main, so cards placed next to the deck stay beside
+   the agenda while attached cards remain below it. Keep the scenario's order
+   readable without moving the progress indicator or the agenda's token pool. */
 .next-to-agenda {
   display: flex;
   flex-direction: row;
   align-items: flex-start;
-  gap: 5px;
-  margin-top: 5px;
+  gap: 8px;
 }
 
 /* The group is the stationary hover target: its layout box stays put while only
@@ -591,7 +599,7 @@ const wards = computed(() => props.agenda.tokens[TokenType.Ward])
   transform: translateX(calc(var(--attachment-index, 0) * 50px));
 }
 
-.treachery {
+.treachery :deep(.card) {
   box-shadow: 1px 1px 6px rgba(0, 0, 0, 0.45);
 }
 
@@ -602,6 +610,14 @@ const wards = computed(() => props.agenda.tokens[TokenType.Ward])
 
   &:first-of-type {
     margin-left: 0;
+  }
+
+  /* Only the strip below the agenda is on show while the card is tucked, so the
+     pool has to live down there -- at its usual place near the top it sits
+     behind the agenda card and the doom is invisible. */
+  :deep(.pool) {
+    top: auto;
+    bottom: 5%;
   }
 }
 

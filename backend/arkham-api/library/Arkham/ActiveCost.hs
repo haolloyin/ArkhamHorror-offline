@@ -1121,8 +1121,9 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
       withPayment $ ResourcePayment payment
     AdditionalActionsCost -> do
       actionRemainingCount <- field InvestigatorRemainingActions iid
+      blockedActions <- getUnspendableActionCount iid
       let currentlyPaid = countAdditionalActionPayments c.payments
-      pushWhen (actionRemainingCount > 0)
+      pushWhen (actionRemainingCount > blockedActions)
         $ chooseOne
           player
           [ Label
@@ -1136,6 +1137,7 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
       pure c
     AdditionalActionsCostThatReducesResourceCostBy n nested -> do
       actionRemainingCount <- field InvestigatorRemainingActions iid
+      blockedActions <- getUnspendableActionCount iid
       let currentlyPaid = countAdditionalActionPayments c.payments
       case c.target of
         ForCard _ _ -> do
@@ -1147,7 +1149,7 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
             lockedActions = totalActionCost nested
           canAffordNested <-
             withAlteredGame withoutCanModifiers $ getCanAffordCost iid c.source actions c.windows nested
-          if actionRemainingCount > lockedActions
+          if actionRemainingCount - blockedActions > lockedActions
             then
               push
                 $ chooseOrRunOne player
@@ -1940,6 +1942,8 @@ instance RunMessage ActiveCost where
     PaidCost acId _ _ payment | acId == c.id -> do
       pure $ c & costPaymentsL <>~ payment
     PayCostFinished acId | acId == c.id -> do
+      currentTick <- getWindowTick
+      let initiationTick = fromMaybe currentTick c.activeCostInitiationTick
       case c.target of
         ForAbility ability -> do
           if ability.index == NonActivateAbility
@@ -1969,7 +1973,8 @@ instance RunMessage ActiveCost where
                   if isFastAbility ability then filter (== Action.Parley) ability.actions else []
                 iid = c.investigator
               whenActivateAbilityWindow <- checkWindows [mkWhen (Window.ActivateAbility iid c.windows ability)]
-              afterActivateAbilityWindow <- checkWindows [mkAfter (Window.ActivateAbility iid c.windows ability)]
+              afterActivateAbilityWindow <-
+                checkWindowsAt initiationTick [mkAfter (Window.ActivateAbility iid c.windows ability)]
               afterMsgs <-
                 if isAction
                   then do
@@ -1995,7 +2000,8 @@ instance RunMessage ActiveCost where
           let iid = c.investigator
           let ability = restricted iid PlayAbility (Self <> Never) (ActionAbility #play Nothing $ ActionCost 1)
           whenActivateAbilityWindow <- checkWindows [mkWhen (Window.ActivateAbility iid c.windows ability)]
-          afterActivateAbilityWindow <- checkWindows [mkAfter (Window.ActivateAbility iid c.windows ability)]
+          afterActivateAbilityWindow <-
+            checkWindowsAt initiationTick [mkAfter (Window.ActivateAbility iid c.windows ability)]
           let actions = c.actions
           afterWindowMsgs <- checkWindows [mkAfter (Window.PerformAction iid action) | action <- actions]
           pushAll

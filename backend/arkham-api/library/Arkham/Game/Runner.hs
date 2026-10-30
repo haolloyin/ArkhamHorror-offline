@@ -56,6 +56,7 @@ import Arkham.Game.Outcome
 import Arkham.Game.Settings (
   activeUltimatumsAndBoons,
   settingsAsIfRuling,
+  settingsCustomRandomWeaknessPools,
   settingsRolledUltimatumOrBoon,
   settingsScreamedAllies,
   settingsUltimatumsAndBoons,
@@ -348,6 +349,29 @@ endGame mverdict g = do
   -- campaign's records, which cannot tell which scenario was last.
   withEnding o = o {outcomeEnding = ending <|> outcomeEnding o}
 
+{- | The state a turn is played out of, shared by beginning one ('BeginTurn') and
+picking a suspended one back up ('Arkham.Question.ResumeTurnPlayer'). The
+windows are the caller's business; this is only the bookkeeping, and a resumed
+turn needs all of it -- in particular the undo boundary, so an undo from inside
+the resumed turn lands at its first action and not back in the mythos phase.
+-}
+turnStartState :: InvestigatorId -> PlayerId -> Game -> Game
+turnStartState x player g =
+  g
+    & (activeInvestigatorIdL .~ x)
+    & (activePlayerIdL .~ player)
+    & (turnPlayerInvestigatorIdL ?~ x)
+    & (activeAbilitiesL .~ mempty)
+    & (logBlockStackL .~ mempty)
+    & (actionRemovedEntitiesL .~ mempty)
+    & (tombstonesL .~ mempty)
+    & (entitiesL %~ clearRemovedEntities)
+    -- +1 because the batch processing the turn's start ends at the next Ask
+    -- (the investigator's first action choice). We want undo to land there,
+    -- not at the prior batch (which would be the choose-player question or
+    -- the end of mythos).
+    & (undoTurnStepL ?~ (gameScenarioSteps g + 1))
+
 runGameMessage :: Runner Game
 runGameMessage msg g = case msg of
   -- ClearUI is pushed exactly once per accepted answer (Api Games.Shared), so
@@ -415,6 +439,21 @@ runGameMessage msg g = case msg of
   SetAsIfAtIgnored iid True -> pure $ g & asIfAtIgnoredL %~ insertSet iid
   SetAsIfAtIgnored iid False -> pure $ g & asIfAtIgnoredL %~ deleteSet iid
   SetLocationOffset lid x y -> pure $ g & locationOffsetsL %~ insertMap lid (x, y)
+  SetCustomRandomWeaknessPool enabled sets -> do
+    pid <- getActivePlayer
+    push $ SetPlayerCustomRandomWeaknessPool pid enabled sets
+    pure g
+  SetPlayerCustomRandomWeaknessPool pid enabled sets -> do
+    let updated =
+          g & settingsL %~ \settings ->
+            settings
+              { settingsCustomRandomWeaknessPools =
+                  insertMap pid (enabled, setFromList sets) settings.settingsCustomRandomWeaknessPools
+              }
+    let available = fromMaybe mempty (getTransient $ gameCollectionCards g) <> gameCustomCards g
+    defs <- runReaderT (getCustomRandomWeaknessCards pid) $ updated & customCardsL .~ available
+    let snapshots = Map.restrictKeys available (setFromList $ map toCardCode defs)
+    pure $ updated & customCardsL %~ (snapshots <>)
   SetAsIfRuling ruling -> do
     currentWindows <- concat <$> getWindowStack
     when (any (\w -> Window.windowType w == Window.FastPlayerWindow) currentWindows) do
@@ -763,6 +802,59 @@ runGameMessage msg g = case msg of
   ForTarget GameTarget (EndOfScenario _) -> do
     persistedAssets <- select $ AssetWithModifier Persist
     let
+      survivingEffects =
+        Map.keysSet
+          $ filterMap (or . sequence [effectIsForResolution, effectIsForNextGame])
+          $ g
+          ^. entitiesL
+          . effectsL
+      sourceGone = \case
+        ActSource _ -> True
+        AgendaSource _ -> True
+        EnemyAttackSource _ -> True
+        EnemyDefeatSource _ -> True
+        EnemySource _ -> True
+        EventSource _ -> True
+        LocationSource _ -> True
+        ScenarioSource -> True
+        SkillSource _ -> True
+        SkillTestSource _ -> True
+        StorySource _ -> True
+        TreacherySource _ -> True
+        AssetSource aid -> aid `notElem` persistedAssets
+        EffectSource eid -> eid `Set.notMember` survivingEffects
+        AbilitySource s _ -> sourceGone s
+        IndexedSource _ s -> sourceGone s
+        PaymentSource s -> sourceGone s
+        UseAbilitySource _ s _ -> sourceGone s
+        BothSource x y -> sourceGone x || sourceGone y
+        ProxySource x y -> sourceGone x || sourceGone y
+        _ -> False
+      targetGone = \case
+        ActTarget _ -> True
+        AgendaTarget _ -> True
+        EnemyTarget _ -> True
+        EventTarget _ -> True
+        LocationTarget _ -> True
+        ScenarioTarget -> True
+        SkillTarget _ -> True
+        SkillTestTarget _ -> True
+        StoryTarget _ -> True
+        TreacheryTarget _ -> True
+        AssetTarget aid -> aid `notElem` persistedAssets
+        EffectTarget eid -> eid `Set.notMember` survivingEffects
+        BothTarget x y -> targetGone x || targetGone y
+        ProxyTarget x y -> targetGone x || targetGone y
+        LabeledTarget _ t -> targetGone t
+        SkillTestInitiatorTarget t -> targetGone t
+        _ -> False
+      keeps m = maybe (not $ sourceGone m.source) (`Set.member` survivingEffects) m.effect
+      -- 'preloadModifiers' will not rebuild this in campaign mode, so a row left
+      -- here outlives the entity that published it for the whole interlude.
+      pruneModifiers =
+        Map.filter notNull
+          . Map.map (filter keeps)
+          . Map.filterWithKey (\target _ -> not (targetGone target))
       update g' =
         g'
           & (entitiesL . assetsL %~ Map.filterWithKey (\k _ -> k `elem` persistedAssets))
@@ -791,6 +883,7 @@ runGameMessage msg g = case msg of
           & (actionRemovedEntitiesL .~ mempty)
           & (tombstonesL .~ mempty)
           & (activeAbilitiesL .~ mempty)
+          & (modifiersL %~ pruneModifiers)
           -- A scenario-ending action (e.g. Resign) leaves the game "in action"
           -- with a revert diff/snapshot pointing at the entities we just tore
           -- down. Clear the action bookkeeping so we don't persist a stale diff
@@ -1031,6 +1124,7 @@ runGameMessage msg g = case msg of
           , activeCostPayments = Cost.NoPayment
           , activeCostTarget = ForAdditionalCost batchId
           , activeCostWindows = []
+          , activeCostInitiationTick = Just (gameWindowTick g)
           , activeCostInvestigator = iid
           , activeCostSealedChaosTokens = []
           , activeCostCancelled = False
@@ -1140,6 +1234,7 @@ runGameMessage msg g = case msg of
           , activeCostPayments = Cost.NoPayment
           , activeCostTarget = ForAbility ability
           , activeCostWindows = windows'
+          , activeCostInitiationTick = Just (gameWindowTick g)
           , activeCostInvestigator = iid
           , activeCostSealedChaosTokens = []
           , activeCostCancelled = False
@@ -1252,6 +1347,13 @@ runGameMessage msg g = case msg of
   ChoosePlayer iid SetTurnPlayer -> do
     pushAll [BeginTurn iid, After (BeginTurn iid)]
     pure $ g & activeInvestigatorIdL .~ iid & turnPlayerInvestigatorIdL ?~ iid
+  {- A turn suspended mid-turn is picked back up: the bookkeeping 'BeginTurn'
+  does, with none of its windows, because the turn is not beginning. The queue
+  drain then opens this investigator's action window, so the phase resumes at
+  2.2.1 rather than 2.2. See 'Arkham.Modifier.ResumesSuspendedTurn'. -}
+  ChoosePlayer iid ResumeTurnPlayer -> do
+    player <- getPlayer iid
+    pure $ turnStartState iid player g
   After (MoveTo (moveTarget -> InvestigatorTarget iid)) -> do
     -- Where it ended up, as well as that it happened: "moved to a location with
     -- an enemy" is a question about the destination, and read afterwards, which
@@ -2649,7 +2751,15 @@ runGameMessage msg g = case msg of
         player <- case allAttacked of
           [iid] -> getPlayer iid
           _ -> getPlayer (gameLeadInvestigatorId g)
-        push $ chooseOneAtATime player $ map toUI as
+        -- Capture hosts before resolving the attacks: a swarm card may leave
+        -- play before the completion message reaches its host.
+        hosts <-
+          catMaybes <$> for attackingEnemies \eid -> do
+            fieldMay EnemyPlacement eid <&> \case
+              Just (AsSwarm host _) -> Just host
+              _ -> Nothing
+        pushAll
+          [chooseOneAtATime player $ map toUI as, FinishedEnemyAttacks $ nub (attackingEnemies <> hosts)]
         pure
           $ g
           & entitiesL
@@ -2913,9 +3023,12 @@ runGameMessage msg g = case msg of
   PlayerWindow iid _ _ _ -> do
     player <- getPlayer iid
     pure $ g & activeInvestigatorIdL .~ iid & activePlayerIdL .~ player
+  {- The first turn's player is chosen by 'ChooseTurnPlayer' rather than a
+  question built here, because the steps below are all queued before the "when
+  the investigation phase begins" window has run -- and a card in that window
+  can decide who takes the first turn. See 'ChooseTurnPlayer'. -}
   Begin InvestigationPhase -> do
     let phaseStep step msgs = Msg.PhaseStep (InvestigationPhaseStep step) msgs
-    investigatorIds <- getInvestigators
     phaseBeginsWindow <-
       checkWindows
         [ mkWhen Window.AnyPhaseBegins
@@ -2929,28 +3042,35 @@ runGameMessage msg g = case msg of
         ]
 
     fastWindow <- checkWindows [mkWhen Window.FastPlayerWindow]
-    case investigatorIds of
-      [] -> error "no investigators"
-      [iid] ->
-        pushAll
-          [ phaseStep InvestigationPhaseBeginsStep [phaseBeginsWindow, afterPhaseBeginsWindow]
-          , phaseStep InvestigationPhaseBeginsWindow [fastWindow]
-          , phaseStep NextInvestigatorsTurnBeginsStep [ChoosePlayer iid SetTurnPlayer]
-          ]
-      xs@(x : _) -> do
-        let fixId z = if z == "00000" then x else z
-        player <- getPlayer (fixId (g ^. leadInvestigatorIdL))
-        pushAll
-          [ phaseStep InvestigationPhaseBeginsStep [phaseBeginsWindow, afterPhaseBeginsWindow]
-          , phaseStep InvestigationPhaseBeginsWindow [fastWindow]
-          , phaseStep
-              NextInvestigatorsTurnBeginsStep
-              [ questionLabel "$label.choosePlayerToTakeTurn" player
-                  $ ChooseOne
-                    [PortraitLabel iid [ChoosePlayer iid SetTurnPlayer] | iid <- xs]
-              ]
-          ]
+    {- The window between 2.1 and 2.2 is left out when a turn is resuming: that
+    turn is already in progress when the phase begins, so the phase never
+    reaches a point between turns for a player window to sit in. Read here, not
+    in the window itself, because the step is queued either way. -}
+    resuming <- anyM (`hasModifier` ResumesSuspendedTurn) (g ^. playerOrderL)
+    pushAll
+      $ [phaseStep InvestigationPhaseBeginsStep [phaseBeginsWindow, afterPhaseBeginsWindow]]
+      <> [phaseStep InvestigationPhaseBeginsWindow [fastWindow] | not resuming]
+      <> [phaseStep NextInvestigatorsTurnBeginsStep [ChooseTurnPlayer]]
     pure $ g & phaseL .~ InvestigationPhase & undoPhaseStepL ?~ (gameScenarioSteps g + 1)
+  ChooseTurnPlayer -> do
+    playing <- filterM (fmap (not . doneWithTurn) . getInvestigator) (g ^. playerOrderL)
+    -- A seat owed the rest of a suspended turn narrows the offer and is resumed
+    -- rather than begun; several of them are still chosen between, which is
+    -- what the players expect to be asked.
+    resuming <- filterM (`hasModifier` ResumesSuspendedTurn) playing
+    let choice = if null resuming then SetTurnPlayer else ResumeTurnPlayer
+    case if null resuming then playing else resuming of
+      [] -> pushEnd EndInvestigation
+      [x] -> push $ ChoosePlayer x choice
+      xs
+        -- No lead yet: settle that first, then come back and ask them.
+        | g ^. leadInvestigatorIdL == "00000" -> pushAll [ChooseLeadInvestigator, ChooseTurnPlayer]
+        | otherwise -> do
+            player <- getPlayer (g ^. leadInvestigatorIdL)
+            push
+              $ questionLabel "$label.choosePlayerToTakeTurn" player
+              $ ChooseOne [PortraitLabel iid [ChoosePlayer iid choice] | iid <- xs]
+    pure g
   BeginTurn x -> do
     player <- getPlayer x
     -- Two checks, not one batch: a `When your turn begins` reaction is a different timing
@@ -2969,21 +3089,7 @@ runGameMessage msg g = case msg of
         $ map (uncurry $ AbilityPrevented x)
         <$> getPreventedPlayerAbilities x
     pushAll $ prevented <> [whenWindow, afterWindow]
-    pure
-      $ g
-      & (activeInvestigatorIdL .~ x)
-      & (activePlayerIdL .~ player)
-      & (turnPlayerInvestigatorIdL ?~ x)
-      & (activeAbilitiesL .~ mempty)
-      & (logBlockStackL .~ mempty)
-      & (actionRemovedEntitiesL .~ mempty)
-      & (tombstonesL .~ mempty)
-      & (entitiesL %~ clearRemovedEntities)
-      -- +1 because the batch processing this BeginTurn ends at the next Ask
-      -- (the investigator's first action choice). We want undo to land there,
-      -- not at the prior batch (which would be the choose-player question or
-      -- the end of mythos).
-      & (undoTurnStepL ?~ (gameScenarioSteps g + 1))
+    pure $ turnStartState x player g
   SetPlayerOrder -> do
     lead <- getLead
     players <- getInvestigators
@@ -3025,6 +3131,19 @@ runGameMessage msg g = case msg of
     let card = lookupCard cardCode cardId
     replaceCard cardId card
     pure g
+  AskCollection iid source codes -> do
+    let
+      available = fromMaybe mempty (getTransient $ gameCollectionCards g) <> gameCustomCards g
+      custom =
+        Map.restrictKeys
+          (Map.fromList [(toCardCode card.customCardDef, card) | card <- toList available])
+          (setFromList codes)
+      offered = filter (\code -> not (isCustomCardCode code) || Map.member code custom) codes
+    registerCustomCards custom
+    unless (null offered) do
+      player <- getPlayer iid
+      push $ Ask player $ ChooseFromCollection iid source offered
+    pure $ g & customCardsL %~ (custom <>)
   DebugRegisterCustomCard customCard -> do
     let def = (customCardDef customCard) {cdCardCode = cardCode, cdArt = unCardCode cardCode}
         cardCode = sanitizeCustomCardCode (toCardCode $ customCardDef customCard)
@@ -3137,6 +3256,10 @@ runGameMessage msg g = case msg of
       -- their first step, so they already pull it out of every other zone.
       DebugCardRemovedFromGame -> push $ RemoveCard cardId
       DebugCardSetAside -> push $ SetAsideCards [card]
+      DebugCardLocation ->
+        when (cdCardType (toCardDef card) `elem` [LocationType, EnemyLocationCardType]) do
+          placement <- placeLocation_ card
+          pushAll [ObtainCard cardId, placement]
       DebugCardHand iid -> push $ DebugAddToHand iid cardId
       DebugCardDiscard -> case card of
         EncounterCard ec -> push $ AddToEncounterDiscard ec
@@ -3314,15 +3437,23 @@ runGameMessage msg g = case msg of
   AllDrawEncounterCard -> do
     push $ SetActiveInvestigator $ g ^. activeInvestigatorIdL
     mGloria <- selectOne $ investigatorIs Investigators.gloriaGoldberg
-    investigators <- filterM (fmap not . isEliminated) =<< getInvestigatorsInOrder
+    -- A seat that cannot draw one is dropped from the draw rather than handed one
+    -- that does nothing, so it is also absent from Gloria Goldberg's draw order.
+    investigators <-
+      filterM
+        (\iid -> andM [not <$> isEliminated iid, not <$> hasModifier iid CannotDrawEncounterCards])
+        =<< getInvestigatorsInOrder
     case mGloria of
-      Just gloria -> push $ SendMessage (toTarget gloria) (ForInvestigators investigators AllDrawEncounterCard)
-      Nothing -> do
-        for_ (reverse investigators) \iid -> push $ ForInvestigator iid AllDrawEncounterCard
+      Just gloria | gloria `elem` investigators -> do
+        push $ SendMessage (toTarget gloria) (ForInvestigators investigators AllDrawEncounterCard)
+      _ -> for_ (reverse investigators) \iid -> push $ ForInvestigator iid AllDrawEncounterCard
     pure g
   ForInvestigator iid AllDrawEncounterCard -> do
     iid' <- fromMaybe iid <$> selectOne (InvestigatorWithModifier DrawsEachEncounterCard)
-    whenM (not <$> isEliminated iid) do
+    -- Also guarded here, not only in the fan-out above: a scenario that rebuilds
+    -- the draw pushes these directly (Ages Unwound VI).
+    cannotDraw <- hasModifier iid CannotDrawEncounterCards
+    unless cannotDraw $ whenM (not <$> isEliminated iid) do
       player <- getPlayer iid'
       mods <- getModifiers iid'
       viaTargets <- nub . concat <$> traverse select [tm | DrawEncounterCardsVia tm <- mods]
@@ -3757,9 +3888,15 @@ runGameMessage msg g = case msg of
         <*> field Investigator.InvestigatorTaboo iid
         <*> field Investigator.InvestigatorCardPool iid
         <*> getIsStandalone
+        <*> pure []
+    pid <- getPlayer iid
+    ctxWithCustom <- withCustomRandomWeaknessPool pid ctx
     mcard <-
       traverse genPlayerCard
-        =<< sampleRandomBasicWeaknessMatching ((`cardMatch` matcher) . (`lookupPlayerCard` nullCardId)) [] ctx
+        =<< sampleRandomBasicWeaknessMatching
+          ((`cardMatch` matcher) . (`lookupPlayerCard` nullCardId))
+          []
+          ctxWithCustom
     g <$ push (RequestedPlayerCard iid source mcard [])
   CancelSurge _ -> do
     ems <- effectModifiers GameSource [NoSurge]

@@ -1,7 +1,10 @@
 module Arkham.Helpers.Scenario where
 
 import Arkham.Calculation
-import Arkham.Campaign.Types
+import Arkham.Campaign.Types hiding (
+  addRandomBasicWeaknessIfNeeded,
+  addRandomBasicWeaknessIfNeededWithCustom,
+ )
 import Arkham.Card
 import Arkham.ChaosToken.Types
 import Arkham.ClassSymbol
@@ -71,13 +74,25 @@ getCardCodeAliases =
     Just subs -> mapFromList [(new, old) | (old, new) <- mapToList subs]
 
 getInResolution :: HasGame m => m Bool
-getInResolution = fromMaybe False <$> scenarioFieldMaybe ScenarioInResolution
+getInResolution = fromMaybe False <$> getInResolutionMaybe
+
+{- | 'Nothing' when there is no scenario at all: a campaign step, interlude or
+prelude. Callers that only want to know whether a resolution is running can read
+'getInResolution', but anything reading per-scenario state -- the elimination
+flags above all -- needs to tell "mid-scenario" from "no scenario", because that
+state is a leftover of the scenario that just ended rather than a fact about now.
+-}
+getInResolutionMaybe :: HasGame m => m (Maybe Bool)
+getInResolutionMaybe = scenarioFieldMaybe ScenarioInResolution
 
 getIsStandalone :: HasGame m => m Bool
 getIsStandalone = isNothing <$> selectOne TheCampaign
 
 getEncounterDeck :: HasGame m => m (Deck EncounterCard)
 getEncounterDeck = scenarioField ScenarioEncounterDeck
+
+peekEncounterDeck :: HasGame m => Int -> m [EncounterCard]
+peekEncounterDeck n = take n . unDeck <$> scenarioField ScenarioEncounterDeck
 
 getVictoryDisplay :: HasGame m => m [Card]
 getVictoryDisplay = scenarioField ScenarioVictoryDisplay
@@ -94,7 +109,17 @@ since only one physical copy of each exists (#5424).
 addRandomBasicWeaknessIfNeeded
   :: MonadRandom m
   => ClassSymbol -> Int -> Maybe ArkhamDBDecklist -> Deck PlayerCard -> m (Deck PlayerCard, [CardDef])
-addRandomBasicWeaknessIfNeeded investigatorClass playerCount mDecklist deck = do
+addRandomBasicWeaknessIfNeeded = addRandomBasicWeaknessIfNeededWithCustom []
+
+addRandomBasicWeaknessIfNeededWithCustom
+  :: MonadRandom m
+  => [CardDef]
+  -> ClassSymbol
+  -> Int
+  -> Maybe ArkhamDBDecklist
+  -> Deck PlayerCard
+  -> m (Deck PlayerCard, [CardDef])
+addRandomBasicWeaknessIfNeededWithCustom custom investigatorClass playerCount mDecklist deck = do
   let (placeholders, rest) = partition ((== randomWeakness) . toCardDef) (unDeck deck)
   weaknesses <- foldM drawWeakness [] placeholders
   pure (Deck rest, weaknesses)
@@ -103,7 +128,7 @@ addRandomBasicWeaknessIfNeeded investigatorClass playerCount mDecklist deck = do
   drawWeakness acc _ = do
     cardDef <- sampleRandomBasicWeaknessExcluding (inDeck <> basicWeaknessCodes acc) context
     pure $ acc <> [cardDef]
-  context = decklistWeaknessContext investigatorClass playerCount True mDecklist
+  context = (decklistWeaknessContext investigatorClass playerCount True mDecklist) {rbwCustomCards = custom}
 
 toChaosTokenValue :: ScenarioAttrs -> ChaosTokenFace -> Int -> Int -> ChaosTokenValue
 toChaosTokenValue attrs t esVal heVal =

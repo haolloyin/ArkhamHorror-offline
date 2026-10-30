@@ -289,6 +289,7 @@ newGame scenarioOrCampaignId seed playerCount difficulty includeTarotReadings =
   let state = IsPending []
    in Game
         { gameCards = mempty
+        , gameCollectionCards = Transient Nothing
         , gameCustomCards = mempty
         , gameWindowDepth = 0
         , gameWindowStack = Nothing
@@ -432,6 +433,7 @@ withTreacheryMetadata a = do
     tmPeril = case card of
       EncounterCard ec -> Keyword.Peril `member` card.keywords || ecAddedPeril ec
       _ -> Keyword.Peril `member` card.keywords
+  tmTreacheries <- select $ TreacheryIsAttachedTo (TreacheryTarget $ toId a)
   tmModifiers <- getModifiers' (toTarget a)
   pure $ a `with` TreacheryMetadata {..}
 
@@ -1337,9 +1339,8 @@ getInvestigatorsMatching MatcherFunc {..} matcher = do
       activeId <- view activeInvestigatorIdL <$> getGame
       pure $ runMatches ((== activeId) . toId) as
     YetToTakeTurn -> do
-      getTurnInvestigator <&> \case
-        Nothing -> asMatch as
-        Just (toId -> turnId) -> runMatches (\i -> toId i /= turnId && not (investigatorEndedTurn $ toAttrs i)) as
+      turnId <- fmap toId <$> getTurnInvestigator
+      pure $ runMatches (\i -> Just (toId i) /= turnId && not (investigatorEndedTurn $ toAttrs i)) as
     LeadInvestigator -> do
       leadId <- gameLeadInvestigatorId <$> getGame
       pure $ runMatches ((== leadId) . toId) as
@@ -1406,12 +1407,9 @@ getInvestigatorsMatching MatcherFunc {..} matcher = do
     InvestigatorWithSpendableResources gameValueMatcher ->
       flip runMatchesM as $ (`gameValueMatches` gameValueMatcher) <=< getSpendableResources . toId
     InvestigatorWithActionsRemaining gameValueMatcher ->
-      flip runMatchesM as
-        $ field InvestigatorRemainingActions
-        . toId
-        >=> (`gameValueMatches` gameValueMatcher)
-    InvestigatorWithStandardActionsRemaining gameValueMatcher ->
-      flip runMatchesM as $ getStandardActions . toId >=> (`gameValueMatches` gameValueMatcher)
+      flip runMatchesM as $ getAllRemainingActions . toId >=> (`gameValueMatches` gameValueMatcher)
+    InvestigatorWithUnrestrictedActionsRemaining gameValueMatcher ->
+      flip runMatchesM as $ getUnrestrictedActions . toId >=> (`gameValueMatches` gameValueMatcher)
     InvestigatorWithActionsPerformed gameValueMatcher ->
       flip runMatchesM as
         $ fieldMap InvestigatorActionsPerformed length
@@ -2061,7 +2059,7 @@ abilityMatches a@Ability {..} = \case
     _ -> pure False
   AbilityIsAction Action.Activate -> pure $ abilityIsActivate a
   AbilityIsAction action -> pure $ action `elem` abilityActions a
-  AbilityIsActionAbility -> pure $ abilityIsActionAbility a && not (abilityIndex >= 100 && abilityIndex <= 105)
+  AbilityIsActionAbility -> pure $ abilityIsActionAbility a && not (basicActionIndex abilityIndex)
   AbilityWithoutActionDesignator ->
     pure $ abilityIsActionAbility a && null (abilityActions a)
   AbilityIsFastAbility -> pure $ abilityIsFastAbility a
@@ -2171,7 +2169,7 @@ getAbilitiesMatching matcher = guardYourLocation $ \_ -> do
     AbilityIsAction Action.Activate -> pure $ filter abilityIsActivate as
     AbilityIsAction action -> pure $ filter (elem action . abilityActions) as
     AbilityIsActionAbility ->
-      pure $ filter (\a -> abilityIsActionAbility a && not (a.index >= 100 && a.index <= 105)) as
+      pure $ filter (\a -> abilityIsActionAbility a && not (basicActionIndex a.index)) as
     AbilityWithoutActionDesignator ->
       pure $ filter (\a -> abilityIsActionAbility a && null (abilityActions a)) as
     AbilityIsFastAbility -> pure $ filter abilityIsFastAbility as
@@ -2364,8 +2362,13 @@ getLocationsMatching lmatcher = do
     else runCacheReaderT (g {gameAllowEmptySpaces = doAllowEmpty}) (go ls lmatcher')
  where
   go :: forall n. HasGame n => [Location] -> LocationMatcher -> n [Location]
-  go [] = const (pure [])
-  go ls = \case
+  go [] _ = pure []
+  go ls matcher
+    | isEncounterDistanceMatcher matcher = withEncounterDistanceConnections $ goUnscoped ls matcher
+    | otherwise = goUnscoped ls matcher
+
+  goUnscoped :: forall n. HasGame n => [Location] -> LocationMatcher -> n [Location]
+  goUnscoped ls = \case
     OutOfGameLocation -> pure [] -- Handled above
     ThatLocation -> error "ThatLocation must be resolved in criteria"
     IncludeEmptySpace inner -> go ls inner
@@ -4961,6 +4964,7 @@ instance Projection Location where
       LocationSealedChaosTokens -> pure locationSealedChaosTokens
       LocationPlacedChaosTokens -> pure locationPlacedChaosTokens
       LocationJustShroud -> getModifiedShroudValueFor attrs
+      LocationBaseShroud -> getPrintedShroudValueFor attrs
       LocationInvestigateDifficulty -> pure $ LocationMaybeFieldCalculation l.id LocationShroud
       LocationBrazier -> pure locationBrazier
       LocationFloodLevel -> pure locationFloodLevel
@@ -6266,6 +6270,62 @@ instance HasModifiersFor Entities where
     traverse_ getModifiersFor (e ^. investigatorsL)
     traverse_ getModifiersFor (e ^. storiesL)
 
+-- Scope Open Season's connection change to distance queries, rather than the
+-- entire revelation/ability: an encounter effect may also move an investigator
+-- or resolve hunter, both of which must keep the ordinary directed connections.
+isEncounterDistanceMatcher :: LocationMatcher -> Bool
+isEncounterDistanceMatcher = \case
+  NearestLocationToYou _ -> True
+  NearestLocationTo _ _ -> True
+  NearestLocationToLocation _ _ -> True
+  NearestLocationToAny _ -> True
+  NearestLocationToMost _ -> True
+  FarthestLocationFromInvestigator _ _ -> True
+  FarthestLocationFromLocation _ _ -> True
+  FarthestLocationFromLocationMatching _ _ -> True
+  FarthestLocationFromAll _ -> True
+  _ -> False
+
+withEncounterDistanceConnections :: HasGame m => (forall n. HasGame n => n a) -> m a
+withEncounterDistanceConnections body = do
+  enabled <- hasModifier GameTarget EncounterCardDistancesAreBidirectional
+  if not enabled
+    then body
+    else do
+      g <- getGame
+      mcard <- case gameActiveAbilities g of
+        ability : _ -> sourceToMaybeCard (abilitySource ability)
+        [] -> pure $ gameResolvingCard g <|> gameActiveCard g
+      let encounter = case mcard of
+            Just (EncounterCard _) -> True
+            -- A weakness treachery/enemy remains an encounter card even though its
+            -- backing representation may be PlayerCard and isEncounterCard excludes
+            -- weaknesses for encounter-deck filtering.
+            Just card ->
+              toCardType card
+                `elem` [ TreacheryType
+                       , PlayerTreacheryType
+                       , EnemyType
+                       , PlayerEnemyType
+                       , LocationType
+                       , EnemyLocationCardType
+                       ]
+            Nothing -> False
+      if not encounter
+        then body
+        else do
+          locations <- select Anywhere
+          reverseEdges <-
+            concat <$> for locations \lid -> do
+              outgoing <- select $ connectedFrom (LocationWithId lid)
+              for outgoing \destination -> do
+                mods <- toModifiers GameSource [ConnectedToWhen Anywhere (LocationWithId lid)]
+                pure (LocationTarget destination, mods)
+          let extra = Map.fromListWith (<>) reverseEdges
+          -- ReaderT deliberately has an uncached query environment: reverse edges
+          -- must never reuse or populate the ordinary directed connection cache.
+          runReaderT body g {gameModifiers = Map.unionWith (<>) extra (gameModifiers g)}
+
 -- FAQ: an eligible location with no valid path counts as "nearest" only when no
 -- eligible location has one.
 getNearestLocations :: HasGame m => LocationId -> [LocationId] -> m [LocationId]
@@ -6973,33 +7033,11 @@ runMessages gameId observers = do
         InvestigationPhase {} | not (gameRunWindows g) -> pure ()
         InvestigationPhase {} -> do
           mTurnInvestigator <- runWithEnv $ traverse getInvestigator =<< selectOne TurnInvestigator
-          let
-            doneWithRound =
-              or
-                . sequence
-                  [ attr investigatorEndedTurn
-                  , attr investigatorResigned
-                  , attr investigatorDefeated
-                  ]
-          if all doneWithRound mTurnInvestigator
+          if all doneWithTurn mTurnInvestigator
             then do
-              playingInvestigators <-
-                runWithEnv $ filterM (fmap (not . doneWithRound) . getInvestigator) (gamePlayerOrder g)
-              case playingInvestigators of
-                [] -> pushEnd EndInvestigation
-                [x] -> push $ ChoosePlayer x SetTurnPlayer
-                xs -> do
-                  if view leadInvestigatorIdL g == "00000"
-                    then push ChooseLeadInvestigator
-                    else do
-                      player <- runWithEnv $ getPlayer (g ^. leadInvestigatorIdL)
-                      push
-                        $ questionLabel "$label.choosePlayerToTakeTurn" player
-                        $ ChooseOne
-                          [ PortraitLabel iid [ChoosePlayer iid SetTurnPlayer]
-                          | iid <- xs
-                          ]
-
+              -- Who takes the next turn is 'ChooseTurnPlayer''s decision alone, so
+              -- that a turn-order modifier has one place to be honored.
+              push ChooseTurnPlayer
               runMessages gameId observers
             else do
               let turnPlayer = fromJustNote "verified above" mTurnInvestigator
@@ -7038,6 +7076,9 @@ runMessages gameId observers = do
             ClearUI {} -> False
             ExhaustMessage m | isSwarmExhaust g m -> False
             After {} -> False
+            -- Ready applies its state change inside the cancellable batch,
+            -- after the outer Ready message's modifier refresh has run.
+            DoBatch _ (ExhaustMessage m) -> not (isSwarmExhaust g m)
             DoBatch {} -> False
             CreatedCost {} -> False
             EndCheckWindow {} -> False
@@ -7081,6 +7122,9 @@ runMessages gameId observers = do
             Ask _ (ChooseOneAtATime []) -> runMessages gameId observers
             Ask _ (ChooseOneAtATimeWithAuto _ []) -> runMessages gameId observers
             Ask _ (ChooseN _ []) -> runMessages gameId observers
+            -- "Choose 0 of these" is nothing to choose. Asking anyway strands the player in a
+            -- question that never counts down (see @ChooseN@ in @Entity.Answer@).
+            Ask _ (ChooseN n _) | n <= 0 -> runMessages gameId observers
             Ask pid q -> do
               -- if we are choosing decks, we do not want to clobber other ChooseDeck
               moreChooseDecks <-
@@ -7141,7 +7185,11 @@ runMessages gameId observers = do
                 -- unanswerable question.
                 [] -> runMessages gameId observers
                 _ -> do
-                  let activePid = fromMaybe current $ find (`elem` activePids) (current : keys askMap)
+                  -- `keys askMap` is UUID order, not seat order, so its head sends the
+                  -- client to whichever pending seat happens to sort first (#5925).
+                  -- Walk the table's seats instead.
+                  let seatOrder = filter (`Map.member` askMap) (g ^. playersL) <> keys askMap
+                  let activePid = fromMaybe current $ find (`elem` activePids) (current : seatOrder)
                   runWithEnv
                     ( toExternalGame
                         (g & activePlayerIdL .~ activePid & scenarioStepsL +~ 1 & retainedQuestionL .~ retained)
@@ -7486,7 +7534,12 @@ handleDefeatedByModifiers beforeMap g = flip runReaderT g $ do
   -- removing a story asset that granted health. Neither may defeat anyone -- with
   -- Charon's Obol in play it killed the investigator outright (#5829). A
   -- resolution that means to defeat someone pushes InvestigatorDefeated itself.
-  inResolution <- getInResolution
+  -- A MISSING scenario counts as past the resolution too: in campaign mode
+  -- 'ForTarget GameTarget (EndOfScenario _)' drops the scenario out of the mode in
+  -- the same message that wipes every non-Persist asset, so the guard above read
+  -- False at the single biggest maximum drop in the game and a permanent Directive's
+  -- +3 sanity leaving play defeated whoever it was holding up (#5918).
+  inResolution <- fromMaybe True <$> scenarioFieldMaybe ScenarioInResolution
   unless inResolution do
     for_ (mapToList beforeMap) \(iid, (beforeHealth, beforeSanity)) -> do
       whenJustM (getInvestigatorMaybe iid) \_ -> do

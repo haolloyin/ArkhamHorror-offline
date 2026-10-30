@@ -90,6 +90,7 @@ type GameSettings = {
   settingsRolledUltimatumOrBoon: string | null
   // Card codes banned by Ultimatum of The Scream.
   settingsScreamedAllies: string[]
+  settingsCustomRandomWeaknessPools: Record<string, [boolean, string[]]>
   // Whether official campaign achievements are tracked for this game.
   settingsAchievementsEnabled: boolean
 }
@@ -105,6 +106,7 @@ const gameSettingsDecoder = JsonDecoder.object<GameSettings>({
   settingsUltimatumsAndBoonsEnabled: withDefault(true, JsonDecoder.boolean()),
   settingsRolledUltimatumOrBoon: withDefault<string | null>(null, JsonDecoder.string()),
   settingsScreamedAllies: withDefault<string[]>([], JsonDecoder.array(JsonDecoder.string(), 'string[]')),
+  settingsCustomRandomWeaknessPools: withDefault<Record<string, [boolean, string[]]>>({}, JsonDecoder.record(JsonDecoder.tuple([JsonDecoder.boolean(), JsonDecoder.array(JsonDecoder.string(), 'string[]')], 'CustomWeaknessPool'), 'CustomWeaknessPools')),
   settingsAchievementsEnabled: withDefault(true, JsonDecoder.boolean()),
 }, 'GameSettings')
 
@@ -235,6 +237,8 @@ function questionChoices(question: Question): Message[] {
   switch (question.tag) {
     case 'ChooseOne':
       return question.choices;
+    case 'ChooseFromCollection':
+      return question.cardCodes.map(cardCode => ({ tag: MessageType.CARD_LABEL, cardCode, flippable: false }));
     case 'ChooseN':
       return question.choices;
     case 'ChooseUpToN':
@@ -308,7 +312,7 @@ export function choicesSource(game: Game, playerId: string): Source | null {
     let question: Question | undefined = game.question[playerId];
 
     while (question) {
-      if (question.tag === 'QuestionWithSource') return question.source;
+      if (question.tag === 'QuestionWithSource' || question.tag === 'ChooseFromCollection') return question.source;
       question = 'question' in question ? question.question : undefined;
     }
 
@@ -478,6 +482,7 @@ export const gameDecoder: JsonDecoder.Decoder<Game> = JsonDecoder.object(
     settingsUltimatumsAndBoonsEnabled: true,
     settingsRolledUltimatumOrBoon: null,
     settingsScreamedAllies: [],
+    settingsCustomRandomWeaknessPools: {},
     settingsAchievementsEnabled: true,
   },
   undoActionStep: undoActionStep ?? null,

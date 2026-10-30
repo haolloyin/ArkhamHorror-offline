@@ -80,10 +80,12 @@ import Arkham.Classes.HasGame
 import Arkham.Classes.Query (select, selectOne)
 import Arkham.Constants (notPlayerAbilityIndex)
 import Arkham.Cost (Cost (ActionCost, ResourceCost))
+import Arkham.Deck qualified as Deck
 import Arkham.Enemy.Types (Field (..))
 import Arkham.Game.Base (Game (..))
 import Arkham.Game.Utils (modeScenario)
 import Arkham.GameEnv (getCardMaybe, getLogBlockStack, getSkillTest)
+import Arkham.Helpers.Modifiers (ModifierType (EntersLocationNarratedAs), getModifiers)
 import Arkham.Helpers.Scenario (getInResolution)
 import Arkham.Helpers.SkillTest (
   calculateSkillTestResultsData,
@@ -433,11 +435,19 @@ oneShot = \case
   EnterLocation iid lid mMovement -> Just do
     who <- investigatorRefFor iid
     loc <- locationRefFor lid
-    {- Forced moves read differently. "Daisy Walker moves to Attic" is something
-    she decided; a card dragging her there is not, and the log saying she did it
-    invites the reader to look for the action she spent. -}
-    let key = if maybe False moveForced mMovement then "log.isMovedTo" else "log.movesTo"
-    pure $ Just $ action [ikeyPart key ["investigator" ~> who, "location" ~> loc]]
+    mods <- getModifiers iid
+    let vars = ["investigator" ~> who, "location" ~> loc]
+    pure $ Just case [k | EntersLocationNarratedAs k <- mods] of
+      {- A card that has said what this arrival actually is, because the default
+      wording would be a lie -- see 'EntersLocationNarratedAs'. Flavour, so it
+      reads as 'narrative' rather than as something the player did. -}
+      (key : _) -> narrative [ikeyPart key vars]
+      {- Forced moves read differently. "Daisy Walker moves to Attic" is something
+      she decided; a card dragging her there is not, and the log saying she did it
+      invites the reader to look for the action she spent. -}
+      [] ->
+        let key = if maybe False moveForced mMovement then "log.isMovedTo" else "log.movesTo"
+         in action [ikeyPart key vars]
   {- An extra cost a card imposed.
 
   Held by 'placeNarration' rather than sent, so it lands under the action it paid for
@@ -611,6 +621,35 @@ oneShot = \case
         Nothing -> ("log.drawsCard", [])
       entry = mechanic [ikeyPart key (("investigator" ~> who) : ("card" ~> toCard card) : extra)]
     pure $ Just $ maybe entry (`forPlayer` entry) mPlayer
+  -- AddToHand deliberately does not count as a draw. At this point the card
+  -- is still in discard; ObtainCard clears that zone before Do AddToHand.
+  AddToHand iid cards | notNull cards -> Just do
+    discarded <- fromMaybe [] <$> fieldMay InvestigatorDiscard iid
+    let returned = filter (\card -> toCardId card `elem` map toCardId discarded) cards
+    if null returned
+      then pure Nothing
+      else do
+        who <- investigatorRefFor iid
+        mPlayer <- fieldMay InvestigatorPlayerId iid
+        let entry =
+              mechanic
+                [ ikeyPart
+                    "log.returnsCardsFromDiscardToHand"
+                    ["investigator" ~> who, "cards" ~> LogList (map toLogPart returned)]
+                ]
+        pure $ (`forPlayer` entry) <$> mPlayer
+  ShuffleCardsIntoDeck (Deck.InvestigatorDeck iid) cards | notNull cards -> Just do
+    who <- investigatorRefFor iid
+    mPlayer <- fieldMay InvestigatorPlayerId iid
+    -- Essence of the Dream returns to bonded instead of entering the deck.
+    let shuffled = filter ((/= "06113") . toCardCode) $ mapMaybe (preview _PlayerCard) cards
+        entry =
+          mechanic
+            [ ikeyPart
+                "log.shufflesCardsIntoDeck"
+                ["investigator" ~> who, "cards" ~> LogList (map (toLogPart . PlayerCard) shuffled)]
+            ]
+    pure $ if null shuffled then Nothing else (`forPlayer` entry) <$> mPlayer
   {- Something discarded.
 
   @Discarded@, not @DiscardCard@: the latter is the request, and this is what
@@ -769,6 +808,8 @@ oneShot = \case
     pure
       $ Just
       $ mechanic [ikeyPart "log.takesControlOf" ["investigator" ~> who, "asset" ~> asset]]
+  Exiled _ card -> Just do
+    pure $ Just $ notice [ikeyPart "log.exiled" ["card" ~> toLogPart card]]
   RemoveFromGame target -> Just do
     mTarget <- targetRefFor target
     pure $ flip fmap mTarget \t -> notice [ikeyPart "log.removedFromGame" ["target" ~> t]]

@@ -378,6 +378,12 @@ const nextToScarletKeys = computed(() =>
     .map((s) => s.id),
 )
 
+const nextToTreacheries = computed(() =>
+  Object.values(props.game.treacheries)
+    .filter((t) => t.placement.tag === 'NextToAct')
+    .map((t) => t.id),
+)
+
 // Enemies that spawn "next to the act deck, at no specific location" (Hound of
 // Tindalos). They belong to no location and no threat area, so this is the only
 // place they are drawn.
@@ -472,47 +478,78 @@ const chooseFromStoryCollection = (choice: number) => {
 
 <template>
   <div class="act-container">
-    <div class="act-row">
-      <div
-        class="card-container"
-        :class="{
-          'act--objective': hasObjective,
-          'objective-ring': hasObjective,
-          'act--objective-blocked': blockedObjective,
-        }"
-      >
-        <span
-          v-if="blockedObjective"
-          class="objective-blocked-badge"
-          :data-image-id="blockedObjectiveCardCode"
-          v-tooltip="$t('objectiveBlockedByFast')"
-        >
-          <LockClosedIcon />
-        </span>
-        <img
-          :class="{
-            'act--can-progress': interactAction !== -1,
-            'act--can-interact': canInteract,
-            'card--sideways': !isVertical,
-            'card--flipping': flipping,
-            'card--flipping-diagonal': flippingDiagonally,
-          }"
-          class="card"
-          @click="clicked"
-          @load="updateOrientation"
-          :src="displayedImage"
-          ref="frame"
+    <div class="act-with-next-to">
+      <div class="act-row">
+        <div class="act-main">
+          <div
+            class="card-container"
+            :class="{
+              'act--objective': hasObjective,
+              'objective-ring': hasObjective,
+              'act--objective-blocked': blockedObjective,
+            }"
+          >
+            <span
+              v-if="blockedObjective"
+              class="objective-blocked-badge"
+              :data-image-id="blockedObjectiveCardCode"
+              v-tooltip="$t('objectiveBlockedByFast')"
+            >
+              <LockClosedIcon />
+            </span>
+            <img
+              :class="{
+                'act--can-progress': interactAction !== -1,
+                'act--can-interact': canInteract,
+                'card--sideways': !isVertical,
+                'card--flipping': flipping,
+                'card--flipping-diagonal': flippingDiagonally,
+              }"
+              class="card"
+              @click="clicked"
+              @load="updateOrientation"
+              :src="displayedImage"
+              ref="frame"
+            />
+          </div>
+
+          <div class="pool">
+            <PoolItem v-if="clues > 0" type="clue" :amount="clues" />
+            <span v-if="sharedContribution > 0" class="shared-clue-pool" :title="$t('event.sharedClues')">
+              <PoolItem type="clue" :amount="sharedContribution" />
+            </span>
+            <PoolItem v-if="resources > 0" type="resource" :amount="resources" />
+            <PoolItem v-if="breaches > 0" type="resource" :amount="breaches" />
+            <KeyToken
+              v-for="k in keys"
+              :key="keyToId(k)"
+              :keyToken="k"
+              :game="game"
+              :playerId="playerId"
+              @choose="$emit('choose', $event)"
+            />
+          </div>
+        </div>
+        <StackIndicator
+          label="Act"
+          :current="currentActPosition"
+          :total="totalActs"
+          :completedCards="completedStack"
+          :currentImage="displayedImage"
+          :remainingCards="futureStack"
+          :groups="groupedActStack"
         />
       </div>
-      <StackIndicator
-        label="Act"
-        :current="currentActPosition"
-        :total="totalActs"
-        :completedCards="completedStack"
-        :currentImage="displayedImage"
-        :remainingCards="futureStack"
-        :groups="groupedActStack"
-      />
+      <div v-if="nextToTreacheries.length > 0" class="next-to-act">
+        <Treachery
+          v-for="treacheryId in nextToTreacheries"
+          :key="treacheryId"
+          :treachery="game.treacheries[treacheryId]"
+          :game="game"
+          :playerId="playerId"
+          @choose="$emit('choose', $event)"
+        />
+      </div>
     </div>
     <AbilitiesMenu
       :frame="frame"
@@ -624,23 +661,6 @@ const chooseFromStoryCollection = (choice: number) => {
       :playerId="playerId"
       @choose="$emit('choose', $event)"
     />
-
-    <div class="pool">
-      <PoolItem v-if="clues > 0" type="clue" :amount="clues" />
-      <span v-if="sharedContribution > 0" class="shared-clue-pool" :title="$t('event.sharedClues')">
-        <PoolItem type="clue" :amount="sharedContribution" />
-      </span>
-      <PoolItem v-if="resources > 0" type="resource" :amount="resources" />
-      <PoolItem v-if="breaches > 0" type="resource" :amount="breaches" />
-      <KeyToken
-        v-for="k in keys"
-        :key="keyToId(k)"
-        :keyToken="k"
-        :game="game"
-        :playerId="playerId"
-        @choose="$emit('choose', $event)"
-      />
-    </div>
   </div>
 </template>
 
@@ -725,6 +745,12 @@ const chooseFromStoryCollection = (choice: number) => {
   gap: 5px;
 }
 
+.act-main {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
 .act-row {
   display: flex;
   flex-direction: row;
@@ -732,8 +758,23 @@ const chooseFromStoryCollection = (choice: number) => {
   gap: 6px;
 }
 
-.act-row :deep(.v-popper) {
-  align-self: center;
+.act-with-next-to {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.act-row > :deep(.v-popper) {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  height: var(--card-width);
+}
+
+.next-to-act {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
 }
 
 .act-container :deep(.card--sideways) {

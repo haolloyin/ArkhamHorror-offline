@@ -796,13 +796,17 @@ instance RunMessage AssetAttrs where
       pure $ a & controllerL .~ Nothing
     ReplacedInvestigatorAsset iid aid | aid == assetId -> do
       pure $ a & placementL .~ InPlayArea iid & controllerL ?~ iid
+    -- An asset reaching the victory display leaves play, so it exits through
+    -- `RemoveFromPlay` like a discard or an exile does. That is what opens the
+    -- leave-play windows and parks the tombstone those reactions match against;
+    -- writing `VictoryDisplayZone` straight into the attrs skipped both, so
+    -- nothing could react to the asset going (#5901). The card itself is
+    -- already in the scenario's victory display by this point, which is what
+    -- the display and the xp count read, so the entity goes with every token it
+    -- held, doom included (#5680).
     AddToVictory _ (AssetTarget aid) | aid == assetId -> do
-      -- leaving play removes every token, doom included (#5680)
-      pure
-        $ a
-        & (placementL .~ OutOfPlay Zone.VictoryDisplayZone)
-        & (controllerL .~ Nothing)
-        & (tokensL .~ mempty)
+      push $ RemoveFromPlay (toSource a)
+      pure a
     AddToScenarioDeck key target | isTarget a target -> do
       pushAll
         [RemoveFromGame (toTarget a), AddCardToScenarioDeck key (toCard a)]
@@ -934,9 +938,10 @@ instance RunMessage AssetAttrs where
     InSearch msg'@(UseAbility _ ab _) | isSource a ab.source || isProxySource a ab.source -> do
       push $ Do msg'
       pure a
-    InDiscard iid msg'@(UseAbility iid' ab _) | iid == iid' && (isSource a ab.source || isProxySource a ab.source) -> do
-      push $ Do msg'
-      pure a
+    -- NOTE: No InDiscard UseAbility handler here. In-discard entities also receive the raw
+    -- message (see RunMessage Game in Game/Runner.hs), so the bare handler above already
+    -- fires for them; a second one pushes `Do (UseAbility)` twice and resolves the ability
+    -- (and pays its cost) twice -- see #4764 and Monastic Training's doubled reaction.
     InHand iid msg'@(UseAbility iid' ab _) | iid == iid' && (isSource a ab.source || isProxySource a ab.source) -> do
       push $ Do msg'
       pure a

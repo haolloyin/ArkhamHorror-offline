@@ -367,6 +367,20 @@ setAsideEvery matcher = do
   cards <- fromGathered matcher
   attrsL . setAsideCardsL %= (<> cards)
 
+{- | Set aside every printed copy of a card the gather cannot supply, minting
+them instead of taking them from the gathered pile.
+
+'gatherEncounterSet' drops anything with a 'cdCardSubType', because a weakness
+is never shuffled into the encounter deck. So a guide line that says to set the
+copies of a weakness aside has nothing for 'setAsideEvery' to take, and that
+silently sets *nothing* aside -- use this instead.
+-}
+setAsideEveryCopyOf :: ReverseQueue m => CardDef -> ScenarioBuilderT m ()
+setAsideEveryCopyOf def0 = do
+  def <- resolveDef def0
+  cards <- genCards $ replicate (fromMaybe 1 $ cdEncounterSetQuantity def) def
+  attrsL . setAsideCardsL %= (<> cards)
+
 placeStory :: ReverseQueue m => CardDef -> ScenarioBuilderT m ()
 placeStory def = do
   card <- genCard def
@@ -423,7 +437,10 @@ setAsideWith f as0 = do
 
 -- does not handle other encounter decks
 removeEvery :: ReverseQueue m => [CardDef] -> ScenarioBuilderT m ()
-removeEvery defs = attrsL . encounterDeckL %= flip removeEveryFromDeck defs
+removeEvery defs = do
+  let codes = map toCardCode defs
+  attrsL . encounterDeckL %= flip removeEveryFromDeck defs
+  otherCardsL %= filter ((`notElem` codes) . toCardCode)
 
 -- does not handle other encounter decks
 removeOneOf :: ReverseQueue m => CardDef -> ScenarioBuilderT m ()

@@ -291,7 +291,11 @@
     "notConnected": "Connect your arkham.build account to pick from the decks you keep there.",
     "openSettings": "Open settings",
     "arkhamdbUnavailable": "ArkhamDB is unavailable right now, so only your account decks are listed.",
-    "retry": "Try again"
+    "retry": "Try again",
+    "investigatorNotImplemented": "{investigator} is not yet implemented, please use a different deck",
+    "placeholderInvestigator": "This deck is built on an arkham.build placeholder investigator, which stands in for one rather than being one. Choose an investigator overlay.",
+    "chooseYourInvestigator": "Choose an investigator\u2026",
+    "noCustomInvestigators": "You have no investigators of your own to lay over this deck. Build one in the card builder first."
   },
   "deckSyncedSuccessfully": "Deck synced successfully",
   "areYouSureDeleteDeck": "Are you sure you want to delete this deck?",
@@ -459,7 +463,8 @@
     "collapse": "Collapse"
   },
   "treachery": {
-    "discard": "Discard"
+    "discard": "Discard",
+    "copyOf": "This card is a copy"
   },
   "modifier": {
     "cannotCommitCards": "Cannot Commit Cards",
@@ -472,6 +477,7 @@
     "doubleDifficulty": "Double Difficulty",
     "automaticallyFailIfSucceedByAtLeast": "Automatically fail if you succeed by {amount} or more",
     "mayIgnoreLocationEffects": "May Ignore Location Effects",
+    "returnBlessedToChaosBag": "Return {bless} to the chaos bag",
     "skillIconsSubtract": "Skill Icons Subtract",
     "skillTestAutomaticallySucceeds": "Skill test automatically succeeds",
     "revealAnotherChaosToken": "Reveal another chaos token",
@@ -549,7 +555,36 @@
     }
   },
   "questionFilter": {
-    "filter": "Filter"
+    "filter": "Filter",
+    "title": "Choose a card",
+    "view": "Card view",
+    "gridView": "Grid view",
+    "listView": "List view",
+    "collectionTitle": "Search your collection",
+    "results": "{count} / {total} cards",
+    "clear": "Reset filters",
+    "search": "Search",
+    "searchPlaceholder": "Search cards…",
+    "sort": "Sort by",
+    "name": "Name",
+    "level": "Level",
+    "original": "Original order",
+    "class": "Class",
+    "type": "Type",
+    "trait": "Trait",
+    "pack": "Expansion",
+    "allClasses": "All classes",
+    "allTypes": "All types",
+    "allLevels": "All levels",
+    "allTraits": "All traits",
+    "allPacks": "All expansions",
+    "includeCustom": "Include custom cards",
+    "customCards": "Custom cards",
+    "custom": "Custom",
+    "eligibleOnly": "Only eligible cards are shown",
+    "choose": "Choose {name}",
+    "noResults": "No matching cards",
+    "tryFilters": "Try another search or adjust your filters."
   },
   "resourcesAria": {
     "assignAllHorror": "Assign all horror"
@@ -563,6 +598,7 @@
     "alreadyPlayedThisCampaign": "This investigator has already played in this campaign",
     "investigatorAlreadyChosen": "This investigator has already been chosen",
     "investigatorInAnotherScenario": "This investigator is already playing another scenario in this campaign",
+    "placeholderInvestigator": "This deck is built on an arkham.build placeholder investigator. Lay one of your own investigators over it to say whose deck it is.",
     "randomBasicWeaknessPoolTooltip": "Adjust which products are used when randomly assigning this deck's basic weakness."
   },
   "campaign": {
@@ -813,6 +849,7 @@
       "debugToggle": "Debug",
       "xpHint": "Debug: adds experience (reported in the XP breakdown) or spends it",
       "traumaHint": "Debug: + suffers trauma by the rules (reaching the limit kills or drives the investigator insane); − heals it",
+      "editCampaignEntries": "Debug campaign entries",
       "customEntries": "Custom entries (debug)",
       "customEntriesHint": "Notes and counts written by players or custom cards. They are part of the real campaign log and carry into later scenarios.",
       "edit": "Edit",

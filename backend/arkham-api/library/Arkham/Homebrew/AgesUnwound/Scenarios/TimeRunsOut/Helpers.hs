@@ -74,7 +74,6 @@ import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Move (moveTo)
 import Arkham.Message.Lifted.Story (resolveStory)
 import Arkham.Placement (Placement (InThreatArea))
-import Arkham.PlayerCard (allPlayerCards)
 import Arkham.Prelude
 import Arkham.Projection
 import Arkham.Scenario.Types (Field (ScenarioCardsUnderAgendaDeck, ScenarioMeta))
@@ -213,6 +212,7 @@ resolveFlippedLocation :: ReverseQueue m => Card -> m ()
 resolveFlippedLocation card = do
   obtainCard card
   let flipped = forceFlipCard card
+  replaceCard (toCardId card) flipped
   lead <- getLead
   case toCardType flipped of
     StoryType -> resolveStory lead flipped
@@ -269,26 +269,17 @@ levelOneOrHigher = mapOneOf CardWithLevel [1 .. 5]
 
 {- | "Search your collection for ... Add that card to your hand."
 
-The engine has no collection search with a /choice/: 'SearchCollectionForRandom'
-is built on the deck-building weakness sampler and can only ever return a basic
-weakness. The one official precedent for reaching into the collection at all is
-/Memories of Another Life (5)/, which offers every matching 'CardDef' in
-@allPlayerCards@ as a card choice, and this is that shape. Each candidate is
-generated only to carry an image into the prompt and is deregistered again
-straight away; the choice travels as a 'CardCodeTarget', and the caller's
-@HandleTargetChoice@ generates the real copy.
-
-TODO(ages-unwound): a shared @searchCollection@ seam with a chooser would be the
-right home for this; it is deliberately not invented here.
+The shared collection pool includes printed cards, the answering player's custom
+library, and custom cards recorded on the game. Each candidate only needs its
+card code for display. The choice travels as a 'CardCodeTarget', and the caller's
+@HandleTargetChoice@ generates the real copy. 'chooseCollectionCards' records eligible
+custom definitions separately so the question stays small and survives a reload.
 -}
 chooseCollectionCard
   :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> (CardDef -> Bool) -> m ()
 chooseCollectionCard iid source p = do
-  let defs = filter p (toList allPlayerCards)
-  unless (null defs) $ chooseOneM iid $ for_ defs \def -> do
-    card <- genCard def
-    removeCard card.id
-    cardLabeled card $ handleTarget iid source (CardCodeTarget card.cardCode)
+  defs <- filter p <$> collectionCardDefs
+  chooseCollectionCards iid source defs
 
 {- | "a non-exceptional player card of level at most X" -- /Days That Never Were/.
 

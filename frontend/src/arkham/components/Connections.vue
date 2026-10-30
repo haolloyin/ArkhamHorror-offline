@@ -347,6 +347,9 @@ function segmentsConflict(a: ConnectionCandidate, b: ConnectionCandidate): boole
   return false
 }
 
+// Store offsets in unscaled board pixels so zooming preserves the chosen lane.
+const previousCurveOffsets = new Map<string, number>()
+
 function curveOffsets(candidates: ConnectionCandidate[]): Map<string, number> {
   const conflictCounts = new Map<string, number>()
   const lengthSquared = (candidate: ConnectionCandidate) =>
@@ -356,7 +359,7 @@ function curveOffsets(candidates: ConnectionCandidate[]): Map<string, number> {
     for (let j = i + 1; j < candidates.length; j++) {
       const a = candidates[i]
       const b = candidates[j]
-      if (!segmentsConflict(a, b)) continue
+      if (!routesNeedSeparation(a, b)) continue
       // Keep the shorter/local connection straight and bend the connection
       // spanning more of the board. Ties are resolved by the stable id.
       const curved = lengthSquared(a) === lengthSquared(b)
@@ -437,7 +440,62 @@ function curveOffsets(candidates: ConnectionCandidate[]): Map<string, number> {
     const outwardDot = (midpointX - boardCenter.x) * normalX + (midpointY - boardCenter.y) * normalY
     result.set(candidate.connection, (outwardDot >= 0 ? 1 : -1) * magnitude)
   }
+  for (const candidate of candidates) {
+    const previous = previousCurveOffsets.get(candidate.connection)
+    const proposed = result.get(candidate.connection) ?? 0
+    // A new layout may suggest an equally good lane on the opposite side.
+    // Keep the existing curve unless switching clears more cards, or the
+    // layout no longer needs a curve at all (for example after a swap).
+    if (proposed !== 0 && previous !== undefined && previous !== 0) {
+      const offset = scaled(previous)
+      if (intersectionsForOffset(candidate, offset) <= intersectionsForOffset(candidate, proposed)) {
+        result.set(candidate.connection, offset)
+      }
+    }
+    previousCurveOffsets.set(candidate.connection, (result.get(candidate.connection) ?? 0) / mapZoom.value)
+  }
+  const live = new Set(candidates.map(candidate => candidate.connection))
+  for (const connection of previousCurveOffsets.keys()) {
+    if (!live.has(connection)) previousCurveOffsets.delete(connection)
+  }
   return result
+}
+
+const previousChevronOffsets = new Map<string, number>()
+
+function stableChevronCurve(candidate: ConnectionCandidate, proposed: number): number {
+  if (!svgEl) return proposed
+  const previous = previousChevronOffsets.get(candidate.connection)
+  const svgRect = svgEl.getBoundingClientRect()
+  const endpointIds = new Set([candidate.start.dataset.id, candidate.end.dataset.id])
+  const rects = locations.value.flatMap(location => {
+    if (endpointIds.has(location.id)) return []
+    const element = elementFor(location.id)
+    return element ? [element.getBoundingClientRect()] : []
+  })
+  const intersections = (offset: number) => {
+    const dx = candidate.x2 - candidate.x1
+    const dy = candidate.y2 - candidate.y1
+    const distance = Math.hypot(dx, dy) || 1
+    const cx = (candidate.x1 + candidate.x2) / 2 - dy / distance * offset
+    const cy = (candidate.y1 + candidate.y2) / 2 + dx / distance * offset
+    return rects.filter(rect => {
+      for (let step = 1; step < 50; step++) {
+        const t = step / 50
+        const x = (1 - t) ** 2 * candidate.x1 + 2 * (1 - t) * t * cx + t ** 2 * candidate.x2
+        const y = (1 - t) ** 2 * candidate.y1 + 2 * (1 - t) * t * cy + t ** 2 * candidate.y2
+        if (x >= rect.left - svgRect.left - scaled(6) && x <= rect.right - svgRect.left + scaled(6) &&
+            y >= rect.top - svgRect.top - scaled(6) && y <= rect.bottom - svgRect.top + scaled(6)) return true
+      }
+      return false
+    }).length
+  }
+  // Equal-quality curves must not flip on every layout pass. A route that
+  // no longer needs a curve should return to straight after a layout change.
+  const offset = proposed !== 0 && previous !== undefined && previous !== 0 &&
+    intersections(scaled(previous)) <= intersections(proposed) ? scaled(previous) : proposed
+  previousChevronOffsets.set(candidate.connection, offset / mapZoom.value)
+  return offset
 }
 
 function obstructedChevronCurve(candidate: ConnectionCandidate): number | null {
@@ -523,6 +581,20 @@ function routesShareALane(a: ConnectionCandidate, b: ConnectionCandidate): boole
   return alongside / (samples + 1) >= 0.5
 }
 
+/** A clear crossing is readable; only shallow crossings or shared lanes need a bend. */
+function routesNeedSeparation(a: ConnectionCandidate, b: ConnectionCandidate): boolean {
+  const ax = a.x2 - a.x1
+  const ay = a.y2 - a.y1
+  const bx = b.x2 - b.x1
+  const by = b.y2 - b.y1
+  const lengths = Math.hypot(ax, ay) * Math.hypot(bx, by)
+  if (lengths === 0) return false
+  // Treat the lines as undirected: 170 degrees is the same shallow crossing as 10.
+  const cosine = Math.abs(ax * bx + ay * by) / lengths
+  if (cosine <= Math.cos(20 * Math.PI / 180)) return false
+  return routesShareALane(a, b) || segmentsConflict(a, b)
+}
+
 /* Two arrows can share a lane without either crossing a card, which 'obstructedChevronCurve'
  * is the only other reason to bend one: a row's printed connection down to the row below and
  * the single location a Path Forward connects back up both run between the same two boxes.
@@ -533,7 +605,7 @@ function overlappingRouteCurve(candidate: ConnectionCandidate, others: Connectio
   let conflicts = 0
   for (const other of others) {
     if (other.connection === candidate.connection) continue
-    if (!segmentsConflict(candidate, other) && !routesShareALane(candidate, other)) continue
+    if (!routesNeedSeparation(candidate, other)) continue
     const bend = lengthSquared(candidate) === lengthSquared(other)
       ? candidate.connection > other.connection
       : lengthSquared(candidate) > lengthSquared(other)
@@ -1103,6 +1175,14 @@ function handleConnections(includeFateOfTheVale = true) {
   }
 
   const candidates = Array.from(normalConnections.values())
+  if (!props.allowCurvedPaths) {
+    previousCurveOffsets.clear()
+    previousChevronOffsets.clear()
+  }
+  const liveChevrons = new Set(chevronCandidates.map(candidate => candidate.connection))
+  for (const connection of previousChevronOffsets.keys()) {
+    if (!liveChevrons.has(connection)) previousChevronOffsets.delete(connection)
+  }
   const offsets = props.allowCurvedPaths ? curveOffsets(candidates) : new Map<string, number>()
   for (const candidate of candidates) {
     makeOrUpdateConnectionPath(candidate, offsets.get(candidate.connection) ?? 0)
@@ -1111,7 +1191,7 @@ function handleConnections(includeFateOfTheVale = true) {
   const everyRoute = [...candidates, ...chevronCandidates]
   for (const candidate of chevronCandidates) {
     const curveOffset = props.allowCurvedPaths
-      ? (obstructedChevronCurve(candidate) ?? overlappingRouteCurve(candidate, everyRoute))
+      ? stableChevronCurve(candidate, obstructedChevronCurve(candidate) ?? overlappingRouteCurve(candidate, everyRoute))
       : 0
     makeOrUpdateChevrons(candidate.start, candidate.end, candidate.connection, curveOffset)
   }
@@ -1288,6 +1368,7 @@ watch(mineCart, ()=> { requestConnectionUpdate() }, { flush: 'post' })
 watch(isWrittenInRockAct2, ()=> { requestConnectionUpdate() }, { flush: 'post' })
 watch(enemies, ()=> { requestConnectionUpdate() }, { flush: 'post' })
 watch(() => props.enableCosmicEmissaryAnimation, () => { requestConnectionUpdate() }, { flush: 'post' })
+watch(() => props.allowCurvedPaths, () => { requestConnectionUpdate() }, { flush: 'post' })
 watch(mapZoom, () => { requestConnectionUpdate() }, { flush: 'post' })
 watch(trackedConnections, () => { requestConnectionUpdate() }, { flush: 'post' })
 // Turning the beams off has to tear the canvases down, not just stop drawing

@@ -1,7 +1,7 @@
 import api from '@/api';
 import { logRowDecoder, type LogRow } from '@/arkham/types/GameLog';
 import { Game, GameDetails, GameDetailsEntry, gameDecoder, gameDetailsEntryDecoder } from '@/arkham/types/Game';
-import { ArkhamDbDecklist, Deck, deckDecoder } from '@/arkham/types/Deck';
+import { ArkhamDbDecklist, Deck, DeckOverlay, deckDecoder } from '@/arkham/types/Deck';
 import { CardDef, cardDefDecoder } from '@/arkham/types/CardDef';
 import { CardPortrait, CustomCard, customCardDecoder } from '@/arkham/customCards';
 import { Difficulty } from '@/arkham/types/Difficulty';
@@ -1247,8 +1247,12 @@ export const newDeck = async (
   deckName: string,
   deckUrl: string | null,
   deckList: ArkhamDbDecklist | null,
+  /* Saved with the deck rather than applied to it: a deck built on an
+   * arkham.build placeholder investigator has none of its own, and the overlay
+   * is what says whose deck it is, while the list stays as it arrived. */
+  deckOverlay: DeckOverlay | null = null,
 ): Promise<Deck> => {
-  const { data } = await api .post('arkham/decks', { deckId, deckName, deckUrl, deckList })
+  const { data } = await api .post('arkham/decks', { deckId, deckName, deckUrl, deckList, deckOverlay })
   return deckDecoder.decodePromise(data)
 }
 
@@ -1333,9 +1337,6 @@ export const deckErrorMessage = (e: unknown): string | null => {
 
 export const fileBug = (gameId: string): Promise<{ data: string }> =>
   api.post(`arkham/games/${gameId}/file-bug`)
-
-export const updateGame = (gameId: string, choice: number, investigatorId: string | null): Promise<void> =>
-  api.put(`arkham/games/${gameId}`,  {tag: 'Answer', contents: { choice, investigatorId }})
 
 export const upgradeDeck = (gameId: string, investigatorId: string, deckUrl?: string, deckList?: ArkhamDbDecklist | null): Promise<void> =>
   api.put(`arkham/games/${gameId}/decks`, { deckUrl, investigatorId, deckList });

@@ -76,7 +76,7 @@ import Arkham.Helpers.Message.Discard qualified as HandDiscard
 import Arkham.Helpers.Modifiers qualified as Msg
 import Arkham.Helpers.Query
 import Arkham.Helpers.Ref (sourceToTarget)
-import Arkham.Helpers.Scenario (getEncounterDeckKey, getInResolution)
+import Arkham.Helpers.Scenario (getEncounterDeckKey, getInResolutionMaybe)
 import Arkham.Helpers.Shuffle qualified as Shuffle
 import Arkham.Helpers.SkillTest qualified as Msg
 import Arkham.Helpers.UI qualified as Msg
@@ -864,8 +864,15 @@ drawAnotherChaosToken iid = do
 
 eachInvestigator :: HasGame m => (InvestigatorId -> m ()) -> m ()
 eachInvestigator f = do
-  inResolution <- getInResolution
-  investigators <- if inResolution then allInvestigators else getInvestigators
+  investigators <-
+    getInResolutionMaybe >>= \case
+      -- Outside a scenario -- campaign steps, interludes, preludes -- the
+      -- elimination flags belong to the scenario that just ended, so reading them
+      -- here skips whoever was defeated or resigned when it did. That cost an
+      -- investigator all four XP from Innsmouth's Interlude I (#5917).
+      Nothing -> campaignInvestigators
+      Just True -> allInvestigators
+      Just False -> getInvestigators
   for_ investigators f
 
 forInvestigator :: ReverseQueue m => InvestigatorId -> Message -> m ()
@@ -2637,8 +2644,14 @@ gainActions
 gainActions (asId -> iid) (toSource -> source) n = push $ Msg.GainActions iid source n
 
 takeActionAsIfTurn :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> m ()
-takeActionAsIfTurn iid (toSource -> source) = do
+takeActionAsIfTurn iid source = do
   gainActions iid source 1
+  takeActionAsIfTurnFromCurrentPool iid source
+
+-- Use an action already in the investigator's pool instead of granting an extra one.
+takeActionAsIfTurnFromCurrentPool
+  :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> m ()
+takeActionAsIfTurnFromCurrentPool iid (toSource -> source) = do
   mactive <- selectOne ActiveInvestigator
   temporaryModifier iid source (AsIfTurn iid) do
     push $ SetActiveInvestigator iid
@@ -3494,9 +3507,9 @@ loseActions iid source n = push $ LoseActions iid (toSource source) n
 spendActions :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> Int -> m ()
 spendActions = loseActions
 
-loseStandardActions
+loseUnrestrictedActions
   :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> Int -> m ()
-loseStandardActions iid source n = push $ LoseStandardActions iid (toSource source) n
+loseUnrestrictedActions iid source n = push $ LoseUnrestrictedActions iid (toSource source) n
 
 requestChaosTokens :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> Int -> m ()
 requestChaosTokens iid source n = do

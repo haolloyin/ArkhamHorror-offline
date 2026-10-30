@@ -677,6 +677,9 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
           TransfiguredForm _ -> RegularForm
           form -> form
     pure $ a & placementL .~ Unplaced & formL %~ resetForm
+  ForgetRecordForInvestigator iid key
+    | iid == toId a ->
+        pure $ a & logL %~ forgetCampaignLogKey key
   RecordForInvestigator iid key | iid == toId a -> do
     send $ "Record \"" <> format investigatorName <> " " <> format key <> "\""
     pure $ a & (logL . recordedL %~ insertSet key) . (logL . orderedKeysL %~ (<> [key]))
@@ -1560,10 +1563,11 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
   FlipDoom target n | isTarget a target -> do
     pure $ a & tokensL %~ flipDoom n
   DiscoverClues iid d | iid == investigatorId && d.location == DiscoverYourLocation -> do
-    lid <- fromJustNote "missing location" <$> getDiscoverLocation iid d
-    push $ DiscoverClues iid (d {discoverLocation = DiscoverAtLocation lid})
+    -- the queued discover can outlive the investigator being at a location (#5926)
+    whenJustM (getDiscoverLocation iid d) \lid ->
+      push $ DiscoverClues iid (d {discoverLocation = DiscoverAtLocation lid})
     pure a
-  DoStep 1 (DiscoverClues iid d) | iid == investigatorId -> do
+  DoStep 1 (DiscoverClues iid d) | iid == investigatorId && not investigatorEliminated -> do
     mods <- getModifiers iid
     dmods <- getModifiers $ DiscoverTarget d.id
     let additionalDiscoveredAt = Map.fromListWith (<>) [(olid, Sum x) | DiscoveredCluesAt olid x <- mods]
@@ -2670,8 +2674,8 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
   UseEffectAction iid eid _ | iid == investigatorId -> handleUseEffectAction a iid eid
   LoseActions iid source n | iid == investigatorId -> handleLoseActions a iid source n msg
   Do (LoseActions iid _source n) | iid == investigatorId -> handleDoLoseActions a iid n
-  LoseStandardActions iid source n | iid == investigatorId -> handleLoseActions a iid source n msg
-  Do (LoseStandardActions iid _source n) | iid == investigatorId -> handleDoLoseStandardActions a iid n
+  LoseUnrestrictedActions iid source n | iid == investigatorId -> handleLoseActions a iid source n msg
+  Do (LoseUnrestrictedActions iid _source n) | iid == investigatorId -> handleDoLoseUnrestrictedActions a iid n
   SetActions iid _ 0 | iid == investigatorId -> handleSetActions a iid
   SetActions iid _ n | iid == investigatorId -> handleSetActionsV2 a iid n
   SetAsideCards cards -> do

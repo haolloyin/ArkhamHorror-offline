@@ -5383,6 +5383,80 @@ library
       Arkham.Homebrew.DefsEntries
       Arkham.Homebrew.Generate
       Arkham.Homebrew.Import
+      Arkham.Homebrew.NightOfVespers.Acts.AFamilyAffair
+      Arkham.Homebrew.NightOfVespers.Acts.IntoTheFire
+      Arkham.Homebrew.NightOfVespers.Acts.ThusWithAKiss
+      Arkham.Homebrew.NightOfVespers.Agendas.CallingItANight
+      Arkham.Homebrew.NightOfVespers.Agendas.OpenSeason
+      Arkham.Homebrew.NightOfVespers.Agendas.TooSwiftArrives
+      Arkham.Homebrew.NightOfVespers.Assets.FinlayODoyle
+      Arkham.Homebrew.NightOfVespers.Assets.GigiGiuliano
+      Arkham.Homebrew.NightOfVespers.Assets.LachrymarumsFavor
+      Arkham.Homebrew.NightOfVespers.Assets.SuspiriorumsFavor
+      Arkham.Homebrew.NightOfVespers.Assets.TenebrarumsFavor
+      Arkham.Homebrew.NightOfVespers.Campaign
+      Arkham.Homebrew.NightOfVespers.CampaignSteps
+      Arkham.Homebrew.NightOfVespers.CardDefEntries
+      Arkham.Homebrew.NightOfVespers.CardDefs.Acts
+      Arkham.Homebrew.NightOfVespers.CardDefs.Agendas
+      Arkham.Homebrew.NightOfVespers.CardDefs.Assets
+      Arkham.Homebrew.NightOfVespers.CardDefs.Enemies
+      Arkham.Homebrew.NightOfVespers.CardDefs.Locations
+      Arkham.Homebrew.NightOfVespers.CardDefs.Treacheries
+      Arkham.Homebrew.NightOfVespers.CardEntries
+      Arkham.Homebrew.NightOfVespers.ChaosBag
+      Arkham.Homebrew.NightOfVespers.Content
+      Arkham.Homebrew.NightOfVespers.Defs
+      Arkham.Homebrew.NightOfVespers.Enemies.DeclanODoyle
+      Arkham.Homebrew.NightOfVespers.Enemies.HiredTriggermen
+      Arkham.Homebrew.NightOfVespers.Enemies.SkulkingHooligan
+      Arkham.Homebrew.NightOfVespers.Enemies.SyndicateFiringSquad
+      Arkham.Homebrew.NightOfVespers.Helpers
+      Arkham.Homebrew.NightOfVespers.Intros
+      Arkham.Homebrew.NightOfVespers.Jinx
+      Arkham.Homebrew.NightOfVespers.Key
+      Arkham.Homebrew.NightOfVespers.Locations.BarLAmmaliatrice_013
+      Arkham.Homebrew.NightOfVespers.Locations.BarLAmmaliatrice_014
+      Arkham.Homebrew.NightOfVespers.Locations.Conservatory
+      Arkham.Homebrew.NightOfVespers.Locations.GalerieLavandiere_015
+      Arkham.Homebrew.NightOfVespers.Locations.GalerieLavandiere_016
+      Arkham.Homebrew.NightOfVespers.Locations.GrandBallroom
+      Arkham.Homebrew.NightOfVespers.Locations.HedgeMaze
+      Arkham.Homebrew.NightOfVespers.Locations.HotelLobby_019
+      Arkham.Homebrew.NightOfVespers.Locations.HotelLobby_020
+      Arkham.Homebrew.NightOfVespers.Locations.HotelRooftop
+      Arkham.Homebrew.NightOfVespers.Locations.HotelWineCellar_029
+      Arkham.Homebrew.NightOfVespers.Locations.HotelWineCellar_030
+      Arkham.Homebrew.NightOfVespers.Locations.LuxurySuites_021
+      Arkham.Homebrew.NightOfVespers.Locations.LuxurySuites_022
+      Arkham.Homebrew.NightOfVespers.Locations.MezzanineElevators_023
+      Arkham.Homebrew.NightOfVespers.Locations.MezzanineElevators_024
+      Arkham.Homebrew.NightOfVespers.Locations.PleasureGardens_025
+      Arkham.Homebrew.NightOfVespers.Locations.PleasureGardens_026
+      Arkham.Homebrew.NightOfVespers.Locations.PresidentialSuite_027
+      Arkham.Homebrew.NightOfVespers.Locations.PresidentialSuite_028
+      Arkham.Homebrew.NightOfVespers.Locations.TrattoriaDelParcheLaBruttaVita
+      Arkham.Homebrew.NightOfVespers.Locations.TrattoriaDelParcheLaDolceVita
+      Arkham.Homebrew.NightOfVespers.Locations.TrattoriaKitchens_017
+      Arkham.Homebrew.NightOfVespers.Locations.TrattoriaKitchens_018
+      Arkham.Homebrew.NightOfVespers.Scenarios.AChorusOfSuffering
+      Arkham.Homebrew.NightOfVespers.Scenarios.BehindClosedDoors
+      Arkham.Homebrew.NightOfVespers.Scenarios.DancingWithDeath
+      Arkham.Homebrew.NightOfVespers.Scenarios.MothersMercy
+      Arkham.Homebrew.NightOfVespers.Scenarios.TheCityOfFog
+      Arkham.Homebrew.NightOfVespers.Scenarios.TheEndOfSeasons
+      Arkham.Homebrew.NightOfVespers.Scenarios.TheGardenOfBones
+      Arkham.Homebrew.NightOfVespers.Scenarios.TheTeachingsOfAradia
+      Arkham.Homebrew.NightOfVespers.Sets
+      Arkham.Homebrew.NightOfVespers.Treacheries.Backdraft
+      Arkham.Homebrew.NightOfVespers.Treacheries.CatastrophicDrop
+      Arkham.Homebrew.NightOfVespers.Treacheries.Conflagration
+      Arkham.Homebrew.NightOfVespers.Treacheries.CrumblingFoundations
+      Arkham.Homebrew.NightOfVespers.Treacheries.InHotPursuit
+      Arkham.Homebrew.NightOfVespers.Treacheries.Kenophobia
+      Arkham.Homebrew.NightOfVespers.Treacheries.LiminalDread
+      Arkham.Homebrew.NightOfVespers.Treacheries.RainOfBullets
+      Arkham.Homebrew.NightOfVespers.Treacheries.SecondThoughts
       Arkham.Homebrew.Registry
       Arkham.Homebrew.ReturnToTheInnsmouthConspiracy.AchievementDefs
       Arkham.Homebrew.ReturnToTheInnsmouthConspiracy.Achievements
@@ -9763,6 +9837,7 @@ test-suite spec
       Arkham.Asset.Assets.LeatherCoatSpec
       Arkham.Asset.Assets.LeoDeLuca1Spec
       Arkham.Asset.Assets.LeoDeLucaSpec
+      Arkham.Asset.Assets.LolaSantiago3Spec
       Arkham.Asset.Assets.MacheteSpec
       Arkham.Asset.Assets.MagnifyingGlass1Spec
       Arkham.Asset.Assets.MagnifyingGlassSpec
@@ -9839,10 +9914,12 @@ test-suite spec
       Arkham.CampaignLogKeySpec
       Arkham.Card.CardCodeSpec
       Arkham.ChaosTokenFaceSpec
+      Arkham.Custom.OverlaySpec
       Arkham.Debug.ActionsSpec
       Arkham.Debug.CampaignLogSpec
       Arkham.Debug.SandboxSpec
       Arkham.Debug.SealSpec
+      Arkham.Decklist.ArkhamBuildCodesSpec
       Arkham.DecklistSpec
       Arkham.EncounterSetSpec
       Arkham.Enemy.Cards.BrethrenOfAsh.FlyingTerrors.BatHorrorSpec
@@ -9938,11 +10015,13 @@ test-suite spec
       Arkham.Event.Events.WorkingAHunch2Spec
       Arkham.Event.Events.WorkingAHunchSpec
       Arkham.Game.ChooseDecksSpec
+      Arkham.Game.CollectionSpec
       Arkham.Game.DiffSpec
       Arkham.Game.LeadInvestigatorSpec
       Arkham.Game.PendingGameOptionsSpec
       Arkham.Game.ResetGameSpec
       Arkham.GameSpec
+      Arkham.Helpers.CostSpec
       Arkham.Helpers.EnemySpec
       Arkham.Helpers.InvestigatorSpec
       Arkham.Helpers.QuerySpec
@@ -9953,6 +10032,9 @@ test-suite spec
       Arkham.Homebrew.DarkMatter.Treacheries.ReminiscenceCovenantSpec
       Arkham.Homebrew.DarkMatter.Treacheries.ReminiscencePledgeSpec
       Arkham.Homebrew.DarkMatter.Treacheries.ReminiscenceSecretsSpec
+      Arkham.Homebrew.NightOfVespers.Agendas.OpenSeasonSpec
+      Arkham.Homebrew.NightOfVespers.CampaignSpec
+      Arkham.Homebrew.NightOfVespers.JinxSpec
       Arkham.HomebrewRegistrySpec
       Arkham.Investigator.Cards.AgnesBakerSpec
       Arkham.Investigator.Cards.AshcanPeteSpec
@@ -9978,16 +10060,21 @@ test-suite spec
       Arkham.Investigator.Cards.WendyAdamsSpec
       Arkham.Investigator.Cards.ZoeySamarasSpec
       Arkham.Investigator.RunnerSpec
+      Arkham.Location.Cards.AgesUnwound.ThePresentSpec
+      Arkham.Location.Cards.AgesUnwound.WhatCouldBeSpec
       Arkham.Location.Cards.DreamGatePointlessRealitySpec
       Arkham.Location.Cards.DreamGateWondrousJourneySpec
       Arkham.Location.Cards.TheDreamEaters.BeyondTheGatesOfSleep.EnchantedWoodsVillageOfZoogsSpec
       Arkham.Location.Cards.TheInnsmouthConspiracy.FloodedCaverns.UndergroundRiverSpec
+      Arkham.Location.Cards.TheScarletKeys.CongressOfTheKeys.CongressChamberLairSpec
       Arkham.Location.TypesSpec
+      Arkham.Log.NarratorSpec
       Arkham.Matcher.AlternatePrintingSpec
       Arkham.Matcher.CoveredByAnyInPlayEnemySpec
       Arkham.Matcher.LegacyJSONSpec
       Arkham.Matcher.NearestLocationToMostSpec
       Arkham.Matcher.OutOfPlayEnemySpec
+      Arkham.Matcher.YetToTakeTurnSpec
       Arkham.MissingCustomCardSpec
       Arkham.Modifier.CannotAttackDuringEnemyPhaseSpec
       Arkham.Modifier.SearchAllInvestigatorsSpec
@@ -9998,12 +10085,14 @@ test-suite spec
       Arkham.Scenario.Scenarios.HemlockValeStandaloneSpec
       Arkham.Scenario.Scenarios.TheThingInTheDepthsSpec
       Arkham.Scenario.Scenarios.TheUnspeakableOathSpec
+      Arkham.Scenario.ShadesOfSufferingSpec
       Arkham.Scenario.SpecHelpers
       Arkham.Scenario.TheMidwinterGalaSpec
       Arkham.ScenarioDeckKeySpec
       Arkham.ScenarioRegistrySpec
       Arkham.Skill.Cards.ArmedToTheTeethSpec
       Arkham.Skill.Cards.ArroganceSpec
+      Arkham.Skill.Cards.DaringSpec
       Arkham.Skill.Cards.DeductionSpec
       Arkham.Skill.Cards.DoubleOrNothingSpec
       Arkham.Skill.Cards.FearlessSpec
@@ -10035,6 +10124,7 @@ test-suite spec
       Arkham.Treachery.Cards.HypochondriaSpec
       Arkham.Treachery.Cards.LegInjurySpec
       Arkham.Treachery.Cards.NightOfTheZealot.DarkCult.MysteriousChantingSpec
+      Arkham.Treachery.Cards.PanicSpec
       Arkham.Treachery.Cards.ParanoiaSpec
       Arkham.Treachery.Cards.PsychosisSpec
       Arkham.Treachery.Cards.PursuedSpec

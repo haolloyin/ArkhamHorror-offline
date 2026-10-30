@@ -59,6 +59,7 @@ import Arkham.Window qualified as Window
 import Control.Lens (non)
 import Control.Monad.State.Strict (evalStateT, get, put)
 import Data.List.Extra (nubOrd)
+import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 
 getAdditionalActionCosts :: HasGame m => InvestigatorId -> Target -> Action -> m [Cost]
@@ -416,8 +417,9 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
       AdditionalActionsCost {} -> pure True
       AdditionalActionsCostThatReducesResourceCostBy n cost -> do
         spendableActions <- field InvestigatorRemainingActions iid
+        blockedActions <- getUnspendableActionCount iid
         let totalActions = totalActionCost cost
-        let reduction = max 0 ((spendableActions - totalActions) * n)
+        let reduction = max 0 ((spendableActions - blockedActions - totalActions) * n)
         withModifiers iid (toModifiers source [ExtraResources reduction]) do
           getCanAffordCost_ iid source actions windows' canModify cost
       RevealCost {} -> pure True
@@ -425,9 +427,11 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
         -- We need to check and make sure the costs don't try to exhaust the same thing twice
         let targets = mapMaybe (preview _ExhaustCost) xs
         let ok = length targets == length (Set.fromList targets)
-        if ok
-          then and <$> traverse (getCanAffordCost_ iid source actions windows' canModify) xs
-          else pure False
+        andM
+          [ pure ok
+          , and <$> traverse (getCanAffordCost_ iid source actions windows' canModify) xs
+          , canAffordCombinedClueCosts iid source xs
+          ]
       OrCost xs ->
         or <$> traverse (getCanAffordCost_ iid source actions windows' canModify) xs
       ExhaustCost target -> case target of
@@ -503,7 +507,8 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
             additionalActions <- field InvestigatorAdditionalActions iid
             additionalActionCount <- countM (additionalActionCovers source actions) additionalActions
             actionCount <- field InvestigatorRemainingActions iid
-            pure $ actionCount + additionalActionCount >= modifiedActionCost
+            blockedActions <- getUnspendableActionCount iid
+            pure $ max 0 (actionCount + additionalActionCount - blockedActions) >= modifiedActionCost
       AdditionalActionCost -> getCanAffordCost_ iid source actions windows' canModify (ActionCost 1)
       AssetClueCost _ aMatcher gv -> do
         totalClueCost <- getPlayerCountValue gv
@@ -786,6 +791,51 @@ getSpendableResources iid = do
   let extraResources = sum [x | ExtraResources x <- mods]
   pooledResources <- sum <$> traverse (field AssetResources) [aid | AsIfResourcePool aid <- mods]
   fieldMap InvestigatorResources (+ (pooledResources + extraResources)) iid
+
+-- Separate clue costs must not count the same clues twice. Payer pools may
+-- overlap without being identical (Rear Corridors restricts its printed cost
+-- to Side Building, while The Boundary's surcharge can be paid anywhere).
+-- Each subset of demands must fit within the union of its eligible payers;
+-- checking only the grand total would miss a shortage in a restricted pool.
+canAffordCombinedClueCosts :: HasGame m => InvestigatorId -> Source -> [Cost] -> m Bool
+canAffordCombinedClueCosts iid source costs
+  | sum (map clueCostCount costs) < 2 = pure True
+  | otherwise = do
+      demands <- concat <$> traverse (clueDemands source) costs
+      let pools = Map.toList $ Map.fromListWith (+) demands
+      allM canPay $ filter (not . null) $ subsequences pools
+ where
+  clueCostCount :: Cost -> Int
+  clueCostCount = \case
+    Costs xs -> sum $ map clueCostCount xs
+    CostToEnterUnrevealed c -> clueCostCount c
+    NonBlankedCost c -> clueCostCount c
+    LabeledCost _ c -> clueCostCount c
+    SourcedCost _ c -> clueCostCount c
+    ClueCost {} -> 1
+    GroupClueCost {} -> 1
+    _ -> 0
+
+  canPay demands = do
+    available <- getSpendableClueCount $ Set.toList $ foldMap fst demands
+    pure $ available >= sum (map snd demands)
+
+  clueDemands s = \case
+    Costs xs -> concat <$> traverse (clueDemands s) xs
+    CostToEnterUnrevealed c -> clueDemands s c
+    NonBlankedCost c -> do
+      blank <- hasModifier (sourceToTarget s) Blank
+      if blank then pure [] else clueDemands s c
+    LabeledCost _ c -> clueDemands s c
+    SourcedCost s' c -> clueDemands s' c
+    ClueCost value -> do
+      n <- getPlayerCountValue value
+      pure [(Set.singleton iid, n)]
+    GroupClueCost value matcher -> do
+      n <- getPlayerCountValue value
+      payers <- select $ Matcher.InvestigatorAt $ Matcher.replaceYouMatcher iid matcher
+      pure [(Set.fromList payers, n)]
+    _ -> pure []
 
 getSpendableClueCount :: HasGame m => [InvestigatorId] -> m Int
 getSpendableClueCount investigatorIds =

@@ -189,10 +189,19 @@ export function cardImgPath(art: string): string {
   // Custom card art is resolved by `imgsrc`, not by path.
   if (isCustomCardCode(art)) return art
 
-  const homebrewMatch = art.match(/^:(.+):(\d+[a-z]*)$/)
+  // The local part is usually the printed number, but a card with no number in
+  // the pack is named instead -- `:ages-unwound:xsoldier`, after the core
+  // engine's `xpolyp`/`xreanimated`.
+  const homebrewMatch = art.match(/^:(.+):([^:]+)$/)
 
   if (homebrewMatch) {
     const [, campaign, cardCode] = homebrewMatch
+    // The past-selves act deck uses C/D in game, but its art files use
+    // the usual front / b naming convention.
+    if (campaign === 'ages-unwound' && /^16[4-7][cd]$/.test(cardCode)) {
+      const artCode = cardCode.replace(/c$/, '').replace(/d$/, 'b')
+      return `homebrew/${campaign}/cards/${artCode}.avif`
+    }
     return `homebrew/${campaign}/cards/${cardCode}.avif`
   }
 

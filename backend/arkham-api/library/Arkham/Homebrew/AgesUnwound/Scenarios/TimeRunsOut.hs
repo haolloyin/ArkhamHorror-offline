@@ -98,7 +98,7 @@ instance HasChaosTokenValue TimeRunsOut where
 instance RunMessage TimeRunsOut where
   runMessage msg s@(TimeRunsOut attrs) = runQueueT $ timeRunsOutI18n $ case msg of
     PreScenarioSetup -> scope "intro" do
-      flavor $ setTitle "title" >> p "body"
+      flavor $ h "title" >> p "body"
       pure s
     Setup -> runScenarioSetup TimeRunsOut attrs do
       setup $ ul do
@@ -110,6 +110,8 @@ instance RunMessage TimeRunsOut where
         li "setAside"
         unscoped $ li "shuffleRemainder"
         unscoped $ li "readyToBegin"
+
+      additionalRules "locationsOutsideOfTime"
 
       {- "Gather all cards from the following encounter sets: Time Runs Out,
       Agents of Aforgomon, Paradox, Unravelling Years." -}
@@ -179,7 +181,7 @@ instance RunMessage TimeRunsOut where
     Msg.FailedSkillTest iid _ _ (ChaosTokenTarget token) _ _
       | token.face == Tablet
       , isEasyStandard attrs -> do
-          whenM (iid <=~> TurnInvestigator) $ loseStandardActions iid Tablet 1
+          whenM (iid <=~> TurnInvestigator) $ loseActions iid Tablet 1
           pure s
     {- [tablet], hard/expert: "It is your turn and you did not succeed by at least
     2, lose 1 action." Failing is one way not to succeed by 2, so the rider has
@@ -187,13 +189,13 @@ instance RunMessage TimeRunsOut where
     Msg.FailedSkillTest iid _ _ (ChaosTokenTarget token) _ _
       | token.face == Tablet
       , isHardExpert attrs -> do
-          whenM (iid <=~> TurnInvestigator) $ loseStandardActions iid Tablet 1
+          whenM (iid <=~> TurnInvestigator) $ loseActions iid Tablet 1
           pure s
     Msg.PassedSkillTest iid _ _ (ChaosTokenTarget token) _ n
       | token.face == Tablet
       , isHardExpert attrs
       , n < 2 -> do
-          whenM (iid <=~> TurnInvestigator) $ loseStandardActions iid Tablet 1
+          whenM (iid <=~> TurnInvestigator) $ loseActions iid Tablet 1
           pure s
     -- [elder thing]: "If you fail, either exile a card from your hand or place 1
     -- doom on your location."

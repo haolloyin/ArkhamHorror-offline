@@ -234,6 +234,20 @@ data ModifierType
   | CannotDisengageEnemies
   | CannotDrawCards
   | CannotDrawCardsFromPlayerCardEffects
+  | {- | This investigator is left out of the game's own "each investigator draws
+    an encounter card" entirely -- out of the draw and out of Gloria Goldberg's
+    draw-order choice, rather than handed a draw that then does nothing. Honored
+    by 'Arkham.Message.AllDrawEncounterCard' and its per-investigator
+    @ForInvestigator@, which is the mythos draw and the handful of cards that
+    re-run it.
+
+    It does NOT cover an effect that names this investigator and tells them to
+    draw an encounter card; 'CannotDrawCards' does not either (it gates what may
+    be offered and the opening hand, not a draw the game pushes). An out-of-play
+    seat that must be unreachable by everything needs its own enumerated list of
+    bans -- see /Ritual Circle: A Harnessed Future/.
+    -}
+    CannotDrawEncounterCards
   | {- | "Cannot willingly end their turn". Drops the end-turn button from the
     player window, and nothing else: an effect that ends the turn for you is
     not the investigator choosing to, so it still resolves.
@@ -293,6 +307,7 @@ data ModifierType
   | CannotLeavePlay
   | CannotLeaveYourHand
   | CannotTakeAction ActionTarget
+  | CannotSpendLastActions Int
   | CannotPerformAction ActionTarget
   | CannotTakeControlOfClues
   | CannotTriggerAbilityMatching AbilityMatcher
@@ -389,6 +404,22 @@ data ModifierType
   | EnemyFight Int
   | EnemyFightActionCriteria CriteriaOverride
   | EnemyFightWithMin Int (Min Int)
+  | {- | Say this investigator's arrival at a location with this i18n key
+    instead of "moves to" / "is moved to", and as flavour rather than as an
+    action -- see 'Arkham.Log.Narrator'. The key is handed the same
+    @investigator@ and @location@ variables the default line uses.
+
+    For an arrival that is not a move at all. /Ritual Circle: A Harnessed
+    Future/ hands back a seat it had taken out of the game, and "Daisy Walker
+    moves to Ritual Circle" sends the reader looking for an action nobody
+    spent.
+
+    It replaces the line for __every__ arrival while it holds, so it belongs
+    only on a seat that can arrive the one way: the Ritual Circle carries it on
+    a suspended investigator, who is under 'CannotMove' until the card itself
+    puts them back.
+    -}
+    EntersLocationNarratedAs Text
   | EntersPlayWithDoom Int
   | CanEvadeOverride CriteriaOverride
   | ExhaustIfDefeated
@@ -529,6 +560,27 @@ data ModifierType
   | MustFight EnemyId
   | MustTakeAction ActionTarget
   | MustPerformAbilityIfCan AbilityRef
+  | {- | This investigator has a turn that was suspended mid-turn and is owed the
+    rest of it. Carried from the moment of suspension until the resumed turn
+    ends, and honored in three places, all in the investigation phase:
+
+    * 'Arkham.Message.ChooseTurnPlayer' narrows the offer to the investigators
+      carrying this while any of them still has a turn coming, so a resumed turn
+      comes before anyone else's. Several of them are still /chosen between/
+      rather than ordered for the players.
+    * that same choice resolves as 'Arkham.Question.ResumeTurnPlayer' rather
+      than @SetTurnPlayer@, so the turn is picked back up instead of begun: no
+      @TurnBegins@ windows, and the investigator lands in 2.2.1.
+    * @Begin InvestigationPhase@ leaves out its own player window between 2.1
+      and 2.2, because a turn that resumes as the phase begins is already in
+      progress -- the phase never reaches a point between turns.
+
+    /Ritual Circle: A Harnessed Future/ is what wants it. What it still cannot
+    carry across the phase boundary is per-turn bookkeeping: @actionsTaken@,
+    @actionsPerformed@ and per-turn ability limits are reset by @Do BeginRound@
+    before the phase is reached.
+    -}
+    ResumesSuspendedTurn
   | NegativeToPositive
   | NoDamageDealt
   | NoInitialSwarm
@@ -579,6 +631,10 @@ data ModifierType
   | SanityModifier Int
   | CampaignModifier Text
   | InvestigatorModifier Text
+  | {- | Only while an encounter card (including a player-deck treachery) asks
+    for a nearest/furthest location. Does not change movement connections.
+    -}
+    EncounterCardDistancesAreBidirectional
   | ScenarioModifier Text
   | ScenarioModifierValue Text Value
   | SearchDepth Int
