@@ -1276,9 +1276,23 @@ runGameMessage msg g = case msg of
     push $ CreatedEffect effectId Nothing source (toTarget iid)
     pure $ g & entitiesL . effectsL %~ insertMap effectId effect
   CreateEndOfTurnEffect source iid message -> do
-    (effectId, effect) <- createEndOfTurnEffect source iid message
-    push $ CreatedEffect effectId Nothing source (toTarget iid)
-    pure $ g & entitiesL . effectsL %~ insertMap effectId effect
+    -- "At the end of your turn" with the turn already over has to resolve now, not
+    -- never: a reaction deferred past a nested skill test (Spiritual Echo (2)'s echoed
+    -- Fight or Investigate) runs after EndTurn, so the effect was created behind its own
+    -- trigger and sat inert until some later turn's EndTurn fired every orphan at once
+    -- (#5945). The phase guard matters: investigatorEndedTurn is only cleared by
+    -- BeginRound/Begin InvestigationPhase, so it stays set through the later phases.
+    turnOver <- case gamePhase g of
+      InvestigationPhase {} -> maybe False (attr investigatorEndedTurn) <$> getInvestigatorMaybe iid
+      _ -> pure False
+    if turnOver
+      then do
+        pushAll message
+        pure g
+      else do
+        (effectId, effect) <- createEndOfTurnEffect source iid message
+        push $ CreatedEffect effectId Nothing source (toTarget iid)
+        pure $ g & entitiesL . effectsL %~ insertMap effectId effect
   CreateEndOfRoundEffect source message -> do
     (effectId, effect) <- createEndOfRoundEffect source message
     push $ CreatedEffect effectId Nothing source GameTarget
@@ -2107,18 +2121,23 @@ runGameMessage msg g = case msg of
   RemovedFromPlay (TreacherySource treacheryId) -> do
     runMessage (RemoveTreachery treacheryId) g
   ReturnToHand iid (EventTarget eventId) -> do
-    event' <- getEvent eventId
-    card <- field EventCard eventId
-    push $ addToHand iid card
-    removedEntitiesF <-
-      if gameInAction g || attr eventWaiting event'
-        then do
-          pure
-            $ actionRemovedEntitiesL
-            . eventsL
-            %~ insertEntity (overAttrs (\e -> e {eventPlacement = Unplaced}) event')
-        else pure id
-    pure $ g & entitiesL . eventsL %~ deleteMap eventId & removedEntitiesF
+    -- More than one return can be queued for the same event -- orphaned end-of-turn
+    -- effects (Spiritual Echo (2) under TabooList25) pile up and all fire at the same
+    -- EndTurn -- and the first one wins, so a later one finds nothing (#5945).
+    getEventMaybe eventId >>= \case
+      Nothing -> pure g
+      Just event' -> do
+        card <- field EventCard eventId
+        push $ addToHand iid card
+        removedEntitiesF <-
+          if gameInAction g || attr eventWaiting event'
+            then do
+              pure
+                $ actionRemovedEntitiesL
+                . eventsL
+                %~ insertEntity (overAttrs (\e -> e {eventPlacement = Unplaced}) event')
+            else pure id
+        pure $ g & entitiesL . eventsL %~ deleteMap eventId & removedEntitiesF
   -- fight/evade events pick their enemy during resolution, so record it as the
   -- event's target for "targets an enemy" matchers
   ChoseEnemy _ _ ((.event) -> Just eid) enemyId -> setEventEnemyTarget eid enemyId g
@@ -3649,6 +3668,23 @@ runGameMessage msg g = case msg of
       Just cost -> do
         pushAll [PutCardIntoPlay iid card mTarget payment ws, CreatedCost (activeCostId cost)]
         pure $ g & (activeCostL %~ insertMap (activeCostId cost) cost)
+  RescuedCard iid card -> do
+    afterRescue <- checkAfter $ Window.CardRescued iid card
+    if cardMatch card CardIsStoryAsset
+      then do
+        -- Create only the temporary entity: CreateAssetAt also removes its card
+        -- from the victory display, where a rescued story asset must remain.
+        aid <- getRandom
+        let asset =
+              overAttrs (\attrs -> attrs {assetPlacement = OutOfPlay VictoryDisplayZone}) $ createAsset card aid
+        pushAll [afterRescue, Do (RescuedCard iid card)]
+        pure $ g & entitiesL . assetsL . at aid ?~ asset
+      else g <$ push afterRescue
+  Do (RescuedCard _ card) -> do
+    for_ (toList $ g ^. entitiesL . assetsL) \asset -> do
+      when (toCardId asset == card.id && asset.placement == OutOfPlay VictoryDisplayZone) do
+        push $ RemoveAsset (toId asset)
+    pure g
   CreateAssetAt assetId card placement -> do
     let asset = createAsset card assetId
     iid <- getActiveInvestigatorId

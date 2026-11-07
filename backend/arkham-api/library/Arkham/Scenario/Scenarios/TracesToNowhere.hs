@@ -1,9 +1,7 @@
 module Arkham.Scenario.Scenarios.TracesToNowhere (tracesToNowhere) where
 
 import Arkham.Act.CardDefs.TracesToNowhere qualified as Acts
-import Arkham.Act.Sequence qualified as Act
 import Arkham.Agenda.CardDefs.TracesToNowhere qualified as Agendas
-import Arkham.Agenda.Sequence qualified as Agenda
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Campaign.Types (Field (..))
 import Arkham.CampaignLogKey
@@ -125,7 +123,7 @@ instance RunMessage TracesToNowhere where
       createEnemyAt_ Enemies.hiredEnforcer merchantDistrict
 
       -- "Aziza Steer has been abducted!"
-      abduct . only =<< fetchCard Assets.azizaSteerHasABoneToPick
+      abduct . only =<< genCard Assets.azizaSteerHasABoneToPick
 
       setAside
         [ Assets.albrechtHusserlRecklessGambler
@@ -200,11 +198,14 @@ instance RunMessage TracesToNowhere where
     ScenarioSpecific "theCulprit" _ -> scope "interlude" do
       flavor $ h "theCulprit1.title" >> p "theCulprit1.body"
 
-      -- "Put each set-aside Otherworld location into play."
-      traverse_ placeLocation_
-        =<< getSetAsideCardsMatching (#location <> CardWithTrait Otherworld)
-
-      bonePit <- selectJust $ locationIs Locations.bonePit
+      {- "Put each set-aside Otherworld location into play." The id comes back from
+      the placement, since the PlaceLocation is still queued here and Bone Pit
+      cannot be selected by name yet. -}
+      otherworld <- getSetAsideCardsMatching (#location <> CardWithTrait Otherworld)
+      placed <- for otherworld \card -> (toCardCode card,) <$> placeLocation card
+      bonePit <-
+        maybe (selectJust $ locationIs Locations.bonePit) pure
+          $ lookup (toCardCode Locations.bonePit) placed
       eachInvestigator \iid -> moveTo attrs iid bonePit
 
       {- "Flip Abductor to its Dimensional Shambler side and move it to Bone Pit
@@ -220,9 +221,11 @@ instance RunMessage TracesToNowhere where
           createEnemyAt_ card bonePit
 
       {- "Add the set-aside agenda 4a to the agenda deck. Advance directly to
-      agenda 4a (do not resolve any other agendas)." -}
-      push . AddAgenda 4 =<< genCard Agendas.intoThePit
-      push $ AdvanceToAgenda 4 Agendas.intoThePit Agenda.A (toSource attrs)
+      agenda 4a (do not resolve any other agendas)." The 1 is the agenda DECK
+      id, not the stage; the card def carries the stage. 'AdvanceToAgenda'
+      replaces the current agenda with the set-aside one, so there is no
+      'AddAgenda' to do first. -}
+      advanceToAgendaA attrs Agendas.intoThePit
 
       doStep 1 msg
       pure s
@@ -231,25 +234,41 @@ instance RunMessage TracesToNowhere where
       where none was remembered runs nothing instead of the wrong culprit. -}
       whenM (remembered AlbrechtIsTheCulprit)
         $ culpritBranch
-          attrs
           "theCulprit2"
           Assets.albrechtHusserlRecklessGambler
           Enemies.albrechtHusserlDesperateGambler
-          Acts.albrechtsGamble
       whenM (remembered LinaOpenedTheDoor)
         $ culpritBranch
-          attrs
           "theCulprit3"
           Assets.linaHusserlTheNextBigThing
           Enemies.linaHusserlVisionsOfHerOwnDemise
-          Acts.linasNightmare
       whenM (remembered EugeneIsNotWhatHeSeems)
         $ culpritBranch
-          attrs
           "theCulprit4"
           Assets.eugenePeelHidingSomething
           Enemies.eugenePeelDoubleCrossingCultist
-          Acts.mrPeelsScheme
+      pure s
+    DoStep 2 msg'@(ScenarioSpecific "theCulprit" _) -> do
+      -- The culprit has left play before selecting the remaining Suspects.
+      selectEach (AssetWithTrait Suspect <> AssetAt (LocationWithTrait Arkham)) abductAsset
+      leads <- getLeadsDeck
+      for_ leads $ push . RemoveCardFromScenarioDeck LeadsDeck
+      abduct leads
+      doStep 3 msg'
+      pure s
+    DoStep 3 (ScenarioSpecific "theCulprit" _) -> do
+      -- Read the pile only after every queued abduction has resolved.
+      gathered <- shuffle =<< getAbductedCards
+      n <- perPlayer 1
+      let (attached, beneath) = splitAt n gathered
+      shambler <- selectJust $ enemyIs Enemies.dimensionalShamblerDraggingThemBelow
+      bonePit <- selectJust $ locationIs Locations.bonePit
+      push $ RemoveFromUnderneath ScenarioTarget gathered
+      placeUnderneath shambler attached
+      placeUnderneath bonePit beneath
+      whenM (remembered AlbrechtIsTheCulprit) $ advanceToActA attrs Acts.albrechtsGamble
+      whenM (remembered LinaOpenedTheDoor) $ advanceToActA attrs Acts.linasNightmare
+      whenM (remembered EugeneIsNotWhatHeSeems) $ advanceToActA attrs Acts.mrPeelsScheme
       pure s
     ScenarioResolution r -> scope "resolutions" do
       case r of
@@ -273,32 +292,31 @@ instance RunMessage TracesToNowhere where
           resolution "resolution4"
           record TheCulpritIsStillAtLarge
           push R5
+        {- Resolution 5 is the one closing step that every other resolution feeds
+        into, so its text, the experience and the campaign bookkeeping all resolve
+        on a single screen rather than handing off to a second one. -}
         Resolution 5 -> do
-          resolution "resolution5"
-          do_ msg
+          {- "Each investigator earns experience equal to the victory X value of each
+          card in the victory display. For each story asset in the victory display
+          when the scenario ended, choose an investigator to earn 1 bonus experience." -}
+          stories <-
+            selectCount $ VictoryDisplayCardMatch $ basic (#asset <> mapOneOf CardWithTrait [Suspect, Witness])
+          resolutionWithXp "resolution5" $ allGainXpWithBonus' attrs (toBonus "bonus.storyAssets" stories)
+
+          {- "If the Aziza Steer story asset was under an investigator's control when
+          the scenario ended, the investigators have earned the Aziza Steer
+          (Hardboiled) campaign reward card." -}
+          rescued <- selectAny $ AssetControlledBy Anyone <> assetIs Assets.azizaSteerHasABoneToPick
+          when rescued do
+            investigators <- allInvestigators
+            addCampaignCardToDeckChoice investigators DoNotShuffleIn Assets.azizaSteerHardboiled
+
+          unlessStandalone do
+            stored @[ChaosTokenFace] "tracesToNowhereSavedChaosBag"
+              >>= traverse_ (push . SetCampaignChaosBag)
+
+          endOfScenario
         _ -> throw $ UnknownResolution r
-      pure s
-    Do (ScenarioResolution _) -> scope "resolutions" do
-      {- "If the Aziza Steer story asset was under an investigator's control when
-      the scenario ended, the investigators have earned the Aziza Steer
-      (Hardboiled) campaign reward card." -}
-      rescued <- selectAny $ AssetControlledBy Anyone <> assetIs Assets.azizaSteerHasABoneToPick
-      when rescued do
-        investigators <- allInvestigators
-        addCampaignCardToDeckChoice investigators DoNotShuffleIn Assets.azizaSteerHardboiled
-
-      {- "Each investigator earns experience equal to the victory X value of each
-      card in the victory display. For each story asset in the victory display
-      when the scenario ended, choose an investigator to earn 1 bonus experience." -}
-      stories <-
-        selectCount $ VictoryDisplayCardMatch $ basic (#asset <> mapOneOf CardWithTrait [Suspect, Witness])
-      resolutionWithXp "fin" $ allGainXpWithBonus' attrs (toBonus "bonus.storyAssets" stories)
-
-      unlessStandalone do
-        stored @[ChaosTokenFace] "tracesToNowhereSavedChaosBag"
-          >>= traverse_ (push . SetCampaignChaosBag)
-
-      endOfScenario
       pure s
     _ -> TracesToNowhere <$> liftRunMessage msg attrs
 
@@ -316,8 +334,8 @@ is advanced to.
 -}
 culpritBranch
   :: (HasI18n, ReverseQueue m)
-  => ScenarioAttrs -> Scope -> CardDef -> CardDef -> CardDef -> m ()
-culpritBranch attrs sect storyAsset culpritEnemy act = scope sect do
+  => Scope -> CardDef -> CardDef -> m ()
+culpritBranch sect storyAsset culpritEnemy = scope sect do
   flavor $ h "title" >> p "body"
 
   bonePit <- selectJust $ locationIs Locations.bonePit
@@ -325,24 +343,5 @@ culpritBranch attrs sect storyAsset culpritEnemy act = scope sect do
   culpritCard <- fetchCard culpritEnemy
   createEnemyAt_ culpritCard bonePit
 
-  {- "Something abducts each Suspect story asset in play at an Arkham location,
-  and each card in the Leads deck." -}
-  selectEach (AssetWithTrait Suspect <> AssetAt (LocationWithTrait Arkham)) abductAsset
-  leads <- getLeadsDeck
-  for_ leads $ push . RemoveCardFromScenarioDeck LeadsDeck
-  abduct leads
-
-  {- "Gather all abducted cards and shuffle them together. Attach 1 [per player]
-  of these cards, at random, to Dimensional Shambler. Place the remaining cards
-  facedown beneath Bone Pit." -}
-  gathered <- shuffle =<< getAbductedCards
-  n <- perPlayer 1
-  let (attached, beneath) = splitAt n gathered
-  shambler <- selectJust $ enemyIs Enemies.dimensionalShamblerDraggingThemBelow
-  push $ RemoveFromUnderneath ScenarioTarget gathered
-  placeUnderneath shambler attached
-  placeUnderneath bonePit beneath
-
-  -- "Advance directly to act 4a (do not resolve act 3b)."
-  push . AddAct 4 =<< genCard act
-  push $ AdvanceToAct 4 act Act.A (toSource attrs)
+  -- Defer selection until the culprit's queued removal has completed.
+  doStep 2 $ ScenarioSpecific "theCulprit" Null
