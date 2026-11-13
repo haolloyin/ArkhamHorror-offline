@@ -1,17 +1,19 @@
 <script lang="ts" setup>
 import * as Arkham from '@/arkham/types/Game'
-import { ref, computed } from 'vue';
+import { ref, computed, inject, type Ref } from 'vue';
 import { Investigator } from '@/arkham/types/Investigator';
 import Card from '@/arkham/components/Card.vue'
 import DeckList from '@/arkham/components/DeckList.vue'
 import { investigatorPortrait } from '@/arkham/cardImages'
 import { useDbCardStore } from '@/stores/dbCards'
-import { asCardCode } from '@/arkham/types/Card';
-import type { CardContents } from '@/arkham/types/Card';
-import DebugToggle from '@/arkham/components/debug/DebugToggle.vue'
+import { asCardCode, cardId } from '@/arkham/types/Card';
+import type { Card as CardT, CardContents } from '@/arkham/types/Card';
+import EarnableCardPicker from '@/arkham/components/debug/EarnableCardPicker.vue'
+import { XMarkIcon } from '@heroicons/vue/20/solid'
 import { useDebug } from '@/arkham/debug'
+import { allTabooLists, displayTabooList } from '@/arkham/taboo'
+import { setInvestigatorTaboo } from '@/arkham/api'
 import { gainXpMessage, healTraumaMessage, spendXpMessage, sufferTraumaMessage, type TraumaKind } from '@/arkham/debugPlayer'
-import { useShiftHoverDebug } from '@/composable/shiftHoverDebug'
 
 export interface Props {
   investigator: Investigator
@@ -20,8 +22,15 @@ export interface Props {
   showExpand?: boolean;
   /** Fade the portrait and stats: an investigator who is not in the campaign right now. */
   dimmed?: boolean;
-  /** Hold Shift over the row for a Debug button that puts −/+ around its XP and trauma. */
+  /** Whether debug mode may act on this row. False where the row describes a
+   * game the server does not have yet (the import preview). */
   debuggable?: boolean;
+  /** The seat looking at this row, needed to decide whose investigator it is. */
+  playerId?: string;
+  /** Whether this screen is one where the taboo list may be changed -- the
+   * campaign roster between scenarios, which is the only place the server
+   * accepts it. */
+  canSetTaboo?: boolean;
 }
 
 const store = useDbCardStore()
@@ -29,22 +38,33 @@ const props = withDefaults(defineProps<Props>(), {
   bonusXp: null,
   showExpand: true,
   dimmed: false,
-  debuggable: false,
+  debuggable: true,
+  canSetTaboo: false,
 })
 
 const expanded = ref(false)
 
-// Trauma follows the rules: it can kill or drive the investigator insane.
-const { active: debugActive, showToggle, onEnter, onLeave, toggle: toggleDebug } = useShiftHoverDebug()
-const showDebugToggle = computed(() => props.debuggable && showToggle.value)
-const debugging = computed(() => props.debuggable && debugActive.value)
-
 const debug = useDebug()
+// Trauma follows the rules: it can kill or drive the investigator insane.
+const debugging = computed(() => props.debuggable && debug.active)
+
 const sendDebug = (message: unknown) => debug.send(props.game.id, message)
 const stepXp = (by: 1 | -1) =>
   sendDebug(by > 0 ? gainXpMessage(props.investigator.id) : spendXpMessage(props.investigator.id))
 const stepTrauma = (kind: TraumaKind, by: 1 | -1) =>
   sendDebug(by > 0 ? sufferTraumaMessage(props.investigator.id, kind) : healTraumaMessage(props.investigator.id, kind))
+
+const showEarnablePicker = ref(false)
+
+/* Taking an earned card back off an investigator. RemoveCardFromDeckForCampaign
+ * strips it from the deck *and* from the campaign's story cards; removing it
+ * from the game instead would leave the story card behind, and deck loading
+ * between scenarios would hand it back. */
+const unearn = (card: CardT | CardContents) =>
+  sendDebug({
+    tag: 'RemoveCardFromDeckForCampaign',
+    contents: [props.investigator.id, cardId(card)],
+  })
 
 // An investigator you built carries its own portrait; there is nothing for it
 // under the portrait directory.
@@ -62,6 +82,46 @@ const storyCards = computed(() => {
 function getInvestigatorName(cardTitle: string): string {
   const language = localStorage.getItem('language') || 'en'
   return language === 'en'? cardTitle : store.getCardName(cardTitle, "investigator")
+}
+
+/* The taboo list a deck was built under changes how its cards behave (a
+ * mutated card reads differently), so the roster says which one is in
+ * force rather than leaving it to be inferred from play. */
+const tabooList = computed(() =>
+  props.investigator.taboo ? displayTabooList(props.investigator.taboo) : null
+)
+
+/* Your own seat only. Multihanded solo is one user holding every seat, so
+ * there it is all of them -- the same rule the server applies, by user. */
+const solo = inject<Ref<boolean>>('solo', ref(false))
+const canEditTaboo = computed(() =>
+  props.canSetTaboo
+    && !!props.playerId
+    && (solo.value || props.investigator.playerId === props.playerId)
+)
+
+const editingTaboo = ref(false)
+const tabooBusy = ref(false)
+const tabooError = ref<string | null>(null)
+
+async function changeTaboo(event: Event) {
+  const chosen = (event.target as HTMLSelectElement).value
+  tabooBusy.value = true
+  tabooError.value = null
+  try {
+    await setInvestigatorTaboo(
+      props.game.id,
+      props.investigator.id,
+      chosen === '' ? null : chosen,
+      props.playerId as string,
+    )
+    editingTaboo.value = false
+  } catch (e) {
+    console.error(e)
+    tabooError.value = 'tabooError'
+  } finally {
+    tabooBusy.value = false
+  }
 }
 
 const deck = computed(() => {
@@ -117,7 +177,7 @@ const deck = computed(() => {
 </script>
 
 <template>
-  <div class="investigator" :class="[investigator.class.toLowerCase(), { dimmed }]" @mouseenter="onEnter" @mouseleave="onLeave">
+  <div class="investigator" :class="[investigator.class.toLowerCase(), { dimmed }]">
     <div class="basic">
       <div class="basic-top">
         <div class="portrait-wrap" :class="investigator.class.toLowerCase()">
@@ -152,16 +212,74 @@ const deck = computed(() => {
           <span class="stat-value">{{ investigator.mentalTrauma }}</span>
           <button v-if="debugging" type="button" class="stat-step" v-tooltip="$t('debug.campaign.traumaHint')" @click="stepTrauma('mental', 1)">+</button>
         </div>
-        <DebugToggle v-if="showDebugToggle" :active="debugging" class="row-debug-toggle" @click="toggleDebug" />
+        <!-- Yours to change: the dropdown is the control. With no taboo list
+             there is nothing to show, so a button opens it instead of leaving
+             an empty select sitting in the row. -->
+        <!-- The chip IS the control: the native select is laid over the whole
+             thing, invisible, so the row keeps its own type and colour and
+             still gets the platform's dropdown. -->
+        <div
+          v-if="canEditTaboo && (investigator.taboo || editingTaboo)"
+          class="stat-chip stat-taboo taboo-control"
+          :class="{ 'is-busy': tabooBusy }"
+        >
+          <font-awesome-icon icon="book" />
+          <span class="stat-value">
+            {{ tabooList ? $t('create.tabooList', { tabooList }) : $t('investigatorRow.noTaboo') }}
+          </span>
+          <span class="taboo-caret" aria-hidden="true">
+            <font-awesome-icon icon="angle-down" />
+          </span>
+          <select
+            class="taboo-native"
+            :disabled="tabooBusy"
+            :value="investigator.taboo ?? ''"
+            :aria-label="$t('investigatorRow.setTaboo')"
+            @change="changeTaboo"
+          >
+            <option value="">{{ $t('investigatorRow.noTaboo') }}</option>
+            <option v-for="list in allTabooLists" :key="list" :value="list">
+              {{ displayTabooList(list) }}
+            </option>
+          </select>
+        </div>
+        <button
+          v-else-if="canEditTaboo"
+          type="button"
+          class="stat-chip stat-taboo taboo-set"
+          @click="editingTaboo = true"
+        >
+          <font-awesome-icon icon="book" />
+          <span class="stat-value">{{ $t('investigatorRow.setTaboo') }}</span>
+        </button>
+        <div v-else-if="tabooList" class="stat-chip stat-taboo">
+          <font-awesome-icon icon="book" />
+          <span class="stat-value">{{ $t('create.tabooList', { tabooList }) }}</span>
+        </div>
+        <span v-if="tabooError" class="taboo-error">{{ $t('investigatorRow.tabooError') }}</span>
       </div>
     </div>
 
     <div v-if="expanded" class="expanded-details">
-      <section v-if="storyCards.length > 0" class="inner-section">
-        <h2>{{ $t('investigatorRow.earnedCards') }}</h2>
+      <section v-if="storyCards.length > 0 || debugging" class="inner-section">
+        <h2>
+          {{ $t('investigatorRow.earnedCards') }}
+          <button v-if="debugging" type="button" class="earned-add" @click="showEarnablePicker = true">
+            {{ $t('debug.earnedCards.add') }}
+          </button>
+        </h2>
         <div class="earned-cards">
-          <div v-for="card in storyCards">
+          <div v-for="card in storyCards" :key="cardId(card)" class="earned-card">
             <Card :game="game" :card="card" :playerId="investigator.id" />
+            <button
+              v-if="debugging"
+              type="button"
+              class="earned-remove"
+              :title="$t('debug.earnedCards.remove')"
+              @click="unearn(card)"
+            >
+              <XMarkIcon aria-hidden="true" />
+            </button>
           </div>
         </div>
       </section>
@@ -170,6 +288,13 @@ const deck = computed(() => {
         <DeckList :deck="deck" embedded />
       </div>
     </div>
+
+    <EarnableCardPicker
+      v-if="showEarnablePicker"
+      :game="game"
+      :investigatorId="investigator.id"
+      @close="showEarnablePicker = false"
+    />
   </div>
 </template>
 
@@ -353,6 +478,74 @@ const deck = computed(() => {
 .stat-health .icon   { color: #f88; }
 .stat-sanity .icon   { color: #8af; }
 
+/* Gold, as taboo reads everywhere else it is shown (deck rows, deck picker). */
+.stat-taboo {
+  background: rgba(200, 169, 110, 0.12);
+  border-color: rgba(200, 169, 110, 0.25);
+  color: #c8a96e;
+}
+
+.stat-taboo .stat-value {
+  color: #c8a96e;
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* The "set one" affordance is the chip itself, so it has to carry the chip's
+   own layout rather than sit inside one. */
+button.stat-taboo {
+  cursor: pointer;
+  font: inherit;
+
+  &:hover { background: rgba(200, 169, 110, 0.22); }
+}
+
+/* The caret is a segment of the chip, divided off at its right edge, so the
+   chip reads as one control rather than a label with a widget stuck beside it.
+   Hence padding-right: 0 -- the segment supplies its own. */
+.taboo-control {
+  cursor: pointer;
+  padding-right: 0;
+  position: relative;
+
+  &:hover { background: rgba(200, 169, 110, 0.22); }
+  &.is-busy { opacity: 0.6; }
+}
+
+.taboo-caret {
+  align-items: center;
+  align-self: stretch;
+  border-left: 1px solid rgba(200, 169, 110, 0.3);
+  display: flex;
+  font-size: 0.8em;
+  margin-left: 4px;
+  padding: 0 8px;
+}
+
+/* Invisible, but still the real control: it keeps keyboard focus, the native
+   popup and the platform's option rendering. */
+.taboo-native {
+  cursor: pointer;
+  height: 100%;
+  inset: 0;
+  opacity: 0;
+  position: absolute;
+  width: 100%;
+
+  &:disabled { cursor: default; }
+}
+
+.taboo-control:focus-within {
+  border-color: rgba(200, 169, 110, 0.65);
+  box-shadow: 0 0 0 1px rgba(200, 169, 110, 0.35);
+}
+
+.taboo-error {
+  color: #e08f8f;
+  font-size: 0.72em;
+}
+
 .bonus-xp {
   font-size: 0.8em;
   color: rgba(168, 208, 128, 0.6);
@@ -374,10 +567,6 @@ const deck = computed(() => {
 
   &:hover:not(:disabled) { background: #6d1f1f; border-color: #9d3030; }
   &:disabled { opacity: 0.35; cursor: not-allowed; }
-}
-
-.row-debug-toggle {
-  margin-left: auto;
 }
 
 /* ── Earned cards ────────────────────────────────────────── */
@@ -406,6 +595,54 @@ const deck = computed(() => {
   flex-direction: row;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.earned-card {
+  position: relative;
+}
+
+.earned-remove {
+  align-items: center;
+  background: rgba(0, 0, 0, 0.75);
+  border: 1px solid var(--button-highlight);
+  border-radius: 50%;
+  box-sizing: border-box;
+  color: #fff;
+  cursor: pointer;
+  /* An SVG, not a "×" character: U+00D7 is a math operator whose ink sits
+     below the line-box centre and right of its advance centre, so centring the
+     text still leaves it visibly off in a circle this small. */
+  display: flex;
+  height: 22px;
+  justify-content: center;
+  padding: 0;
+  position: absolute;
+  right: -6px;
+  top: -6px;
+  width: 22px;
+
+  svg {
+    display: block;
+    height: 14px;
+    width: 14px;
+  }
+
+  &:hover {
+    background: #a33;
+  }
+}
+
+.earned-add {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--button-highlight);
+  border-radius: 4px;
+  color: #eee;
+  cursor: pointer;
+  font-size: 0.7rem;
+  margin-left: 0.6rem;
+  padding: 0.15rem 0.45rem;
+  text-transform: none;
+  vertical-align: middle;
 }
 
 /* ── Deck section ────────────────────────────────────────── */

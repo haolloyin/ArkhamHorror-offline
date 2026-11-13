@@ -5,6 +5,7 @@ import { toCapitalizedWords, formatContent } from '@/arkham/helpers'
 import { cardArt } from '@/arkham/cardImages'
 import { hasEngineCardDef } from '@/arkham/customCards'
 import { computed, ref, onMounted, onUnmounted, watch, type Component } from 'vue'
+import { useDebug } from '@/arkham/debug'
 import { fetchAchievements, fetchCard, fetchGameAchievements } from '@/arkham/api'
 import type { Achievement } from '@/arkham/types/Achievement'
 import type { CardDef } from '@/arkham/types/CardDef'
@@ -26,7 +27,6 @@ import { campaignLogEditor } from '@/arkham/campaignLogEditors'
 import CampaignLogDebug from '@/arkham/components/debug/CampaignLogDebug.vue'
 import DebugToggle from '@/arkham/components/debug/DebugToggle.vue'
 import { customLogText } from '@/arkham/debugPlayer'
-import { useShiftHoverDebug } from '@/composable/shiftHoverDebug'
 import CampaignLogSpecialRules from '@/arkham/components/CampaignLogSpecialRules.vue'
 import CampaignLogRecordedSets from '@/arkham/components/CampaignLogRecordedSets.vue'
 import CampaignLogInvestigatorSection from '@/arkham/components/CampaignLogInvestigatorSection.vue'
@@ -59,7 +59,7 @@ export interface Props {
 const props = defineProps<Props>()
 const emit = defineEmits<{ refresh: [] }>()
 const store = useDbCardStore()
-const { t, tm } = useI18n()
+const { t, te, tm } = useI18n()
 
 type LogTab = 'log' | 'investigators' | 'rules' | 'achievements' | 'about' | `additional:${number}`
 const activeTab = ref<LogTab>('log')
@@ -123,14 +123,9 @@ const campaignDefinition = computed<CampaignDefinition | null>(() => {
 // Scope for homebrew keys recorded before their campaign added a scope prefix.
 const homebrewScope = computed(() => homebrewScopeFromCampaignId(props.game.campaign?.id))
 
-// Shift over the log for a Debug button that opens the custom entries editor.
-const {
-  active: logDebugging,
-  showToggle: showLogDebugToggle,
-  onEnter: onLogEnter,
-  onLeave: onLogLeave,
-  toggle: toggleLogDebug,
-} = useShiftHoverDebug()
+// Debug mode reveals the log's debug controls and the custom-entries editor.
+const debug = useDebug()
+const logDebugging = computed(() => debug.active)
 
 const customLogEditor = computed(() => campaignLogEditor(homebrewScope.value))
 const campaignEditorOpen = ref(false)
@@ -300,6 +295,11 @@ const remembered = computed(() => {
 // duplicating it. The section is shown only while that scenario is in play.
 type SpecialRule = { title?: string; bodyKey: string }
 
+/* A partial translation carries the whole array -- its length is read from the active
+locale -- but not necessarily every title, so ask English before dropping a heading.
+`t` on the key already falls back there; only this presence check needed telling. */
+const hasRuleTitle = (rule: any, key: string) => !!rule?.title || te(`${key}.title`, 'en')
+
 /* Without that array, the rules are read off the blocks the backend already
 reads out during setup -- `<scenario>.rules.<name>` behind the `additionalRules`
 helper, and a campaign's own `additionalRulesAndClarifications` -- so a rule the
@@ -326,7 +326,7 @@ const rulesAtScope = (scope: string | null): SpecialRule[] => {
   const raw = tm(key) as unknown
   if (Array.isArray(raw)) {
     return raw.map((rule: any, i: number) => ({
-      title: rule.title ? formatContent(t(`${key}[${i}].title`)) : undefined,
+      title: hasRuleTitle(rule, `${key}[${i}]`) ? formatContent(t(`${key}[${i}].title`)) : undefined,
       bodyKey: `${key}[${i}].body`,
     }))
   }
@@ -372,7 +372,7 @@ const keywordsAtScope = (scope: string | null): KeywordsSection | null => {
   return {
     title: t(`${key}.title`),
     rules: entries.map((rule: any, i: number) => ({
-      title: rule.title ? formatContent(t(`${key}.entries[${i}].title`)) : undefined,
+      title: hasRuleTitle(rule, `${key}.entries[${i}]`) ? formatContent(t(`${key}.entries[${i}].title`)) : undefined,
       bodyKey: `${key}.entries[${i}].body`,
     })),
   }
@@ -1108,7 +1108,6 @@ onUnmounted(() => {
             :investigator="investigator"
             :game="game"
             :bonus-xp="bonusXp && bonusXp[investigator.id]"
-            :debuggable="showingMain"
           />
         </div>
 
@@ -1178,7 +1177,7 @@ onUnmounted(() => {
           :items="remembered"
         />
 
-        <div class="log-categories" @mouseenter="onLogEnter" @mouseleave="onLogLeave">
+        <div class="log-categories">
           <div v-if="hasSupplies" class="supplies-container">
             <h2>{{ t('theForgottenAge.supplies.title') }}</h2>
             <div class="supplies-content">
@@ -1234,12 +1233,7 @@ onUnmounted(() => {
             :homebrewScope="homebrewScope"
           />
 
-          <div v-if="showingMain && (showLogDebugToggle || campaignEditorOpen)" class="log-debug-actions">
-            <DebugToggle
-              v-if="showLogDebugToggle"
-              :active="logDebugging"
-              @click="toggleLogDebug"
-            />
+          <div v-if="showingMain && logDebugging && customLogEditor" class="log-debug-actions">
             <DebugToggle
               v-if="customLogEditor"
               :active="campaignEditorOpen"

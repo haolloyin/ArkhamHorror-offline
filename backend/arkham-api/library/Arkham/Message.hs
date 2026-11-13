@@ -28,6 +28,7 @@ import Arkham.Question as X
 import Arkham.SimultaneousAsk as X
 import Arkham.SkillTest.Option as X
 import Arkham.Strategy as X
+import Arkham.Taboo.Types (TabooList)
 import Arkham.Text as X
 
 import Arkham.Ability.Types
@@ -1006,6 +1007,13 @@ data Message
     is initialised for what it adds.
     -}
     ApplyDeckOverlay InvestigatorId DeckOverlay
+  | {- | Change which List of Taboos an investigator's deck is played under,
+    from the campaign roster between scenarios. Re-stamps the saved deck, so
+    a mutated card reads the way the chosen list says it does. The next deck
+    upgrade reads @taboo_id@ off the submitted decklist again and overwrites
+    this, which is why nothing here touches the stored deck.
+    -}
+    SetTaboo InvestigatorId (Maybe TabooList)
   | FinishedUpgradingDecks
   | Flip InvestigatorId Source Target
   | Flipped Source Card
@@ -1086,7 +1094,7 @@ data Message
   | PayCardCost InvestigatorId Card [Window]
   | PaidForCardCost InvestigatorId Card Payment
   | PayForCardAbility InvestigatorId Source [Window] Int Payment
-  | PlaceDoomOnAgenda Int CanAdvance
+  | PlaceDoomOnAgenda Source Int CanAdvance
   | PlaceEnemyOutOfPlay OutOfPlayZone EnemyId
   | PlaceEnemy EnemyId Placement
   | PlaceLocation LocationId Card
@@ -2157,6 +2165,9 @@ pattern PatrolMove eid m = HuntMessage (PatrolMove_ eid m)
 pattern MoveToward :: Target -> LocationMatcher -> Message
 pattern MoveToward t m = HuntMessage (MoveToward_ t m)
 
+pattern ForcedMoveToward :: Target -> LocationMatcher -> Message
+pattern ForcedMoveToward t m = HuntMessage (ForcedMoveToward_ t m)
+
 pattern MoveUntil :: LocationId -> Target -> Message
 pattern MoveUntil lid t = HuntMessage (MoveUntil_ lid t)
 
@@ -2266,6 +2277,19 @@ mconcat
           t :: Text <- o .: "tag"
           case t of
             "KonamiCode" -> KonamiCode <$> (o .:? "contents" .!= PlayerId UUID.nil)
+            "PlaceDoomOnAgenda" -> do
+              -- Two shapes: the current one, and the one from before the placing
+              -- source was threaded through. A save that predates the source gets
+              -- GameSource, which reproduces the old sourceless placement -- not a
+              -- card effect, so a queue already in flight is not suddenly
+              -- redirected by The Onslaught.
+              econtents <-
+                (Right <$> o .: "contents")
+                  <|> (Left <$> o .: "contents")
+                  <|> fail ("Invalid PlaceDoomOnAgenda: " <> show o)
+              pure $ case econtents of
+                Right (src, n, canAdvance) -> PlaceDoomOnAgenda src n canAdvance
+                Left (n, canAdvance) -> PlaceDoomOnAgenda GameSource n canAdvance
             "SkillTestResultOption" -> do
               econtents <- (Right <$> o .: "contents") <|> (Left <$> o .: "contents")
               pure $ case econtents of

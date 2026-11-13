@@ -1,0 +1,49 @@
+{
+  "heading": "Màn III",
+  "remembered": {
+    "ichtacaLeftWithoutYou": "Ichtaca đã rời đi mà không có bạn."
+  },
+  "intro": {
+    "title": "Màn III: Sợi chỉ số phận",
+    "beWary": "\"Chúng ta nên cảnh giác với chúng.\"",
+    "listed": "“Có lẽ sau cùng thì tôi nên lắng nghe chúng…”",
+    "label": {
+      "beWary": "\"Chúng ta nên cảnh giác với chúng.\"",
+      "listen": "“Có lẽ sau cùng thì tôi nên lắng nghe chúng…”"
+    }
+  },
+  "standalone": {
+    "label": {
+      "gaveCustodyToAlejandro": "Các điều tra viên giao việc canh giữ cổ vật cho Alejandro.",
+      "gaveCustodyToHarlan": "Các điều tra viên giao việc canh giữ cổ vật cho Harlan Earnstone."
+    }
+  },
+  "setup": {
+    "beforeDrawingOpeningHands": "Trước khi rút bài trên tay đầu game, hãy tìm kiếm Alejandro Vela và Relic of Ages trong bộ sưu tập và bộ bài của mỗi người chơi, rồi đặt chúng sang một bên, ngoài khu vực chơi.",
+    "placeLocations": "Đặt vị trí Northside, Downtown, Easttown, Miskatonic University, Rivertown, Velma’s Diner, và Curiositie Shoppe vào chơi. Mỗi điều tra viên bắt đầu chơi tại Rivertown.",
+    "setAside": "Đặt vị trí Town Hall, tài sản Ichtaca *(The Forgotten Guardian)* và tài sản Expedition Journal sang một bên, ngoài khu vực chơi.",
+    "actDecks": "Điều chỉnh nội dung của mỗi chồng bài act, như được ghi chú dưới phần _Three Acts, Three Threads_ ."
+  },
+  "threeActsThreeThreads": {
+    "title": "Ba Act, Ba Tuyến.",
+    "adjustAB": {
+      "body": "Điều chỉnh nội dung của chồng bài “a/b” như sau:"
+    },
+    "adjustCD": {
+      "body": "Các điều tra viên phải chọn một trong các phương án sau và điều chỉnh nội dung của chồng bài “c/d” tương ứng theo đó:"
+    },
+    "adjustEF": {
+      "body": "Điều chỉnh nội dung của chồng bài “e/f” như sau:"
+    },
+    "body": "<p class='basic'>Màn chơi này có ba chồng bài act khác nhau — chồng bài “a/b”, “c/d” và “e/f”. Mỗi chồng bài act này được xây dựng riêng biệt, theo thứ tự số như bình thường. Trong quá trình diễn ra màn chơinày, cả ba chồng bài act này sẽ được chơi và người chơi có thể chọn xem act nào muốn theo đuổi và act nào sẽ bỏ qua. Chữ ở trên ba chồng bài act đều được xem là luôn được kích hoạt tại mọi thời điểm. Bạn có thể không có thời gian để hoàn thành cả ba nhiệm vụ, vì vậy, hãy chọn cái nào tiềm năng mà bạn muốn theo đuổi một cách khôn ngoan! Nội dung của mỗi chồng bài act này được thay đổi tùy thuộc vào các trường hợp bên dưới.</p>"
+  },
+  "resolutions": {
+    "xp": {
+      "forgingYourOwnPath": "Bạn đang tạo ra con đường của riêng mình."
+    },
+    "resolution1": {
+      "title": "Kết thúc thứ nhất",
+      "expeditionJournal": "Trưởng nhóm nhận lá bài Expedition Journal và có thể thêm nó vào chồng bài của mình. Lá bài này không tính vào giới hạn bộ bài của điều tra viên đó."
+    }
+  }
+}

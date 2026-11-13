@@ -2,7 +2,9 @@
 // and the card details modal so both describe a card the same way.
 import type { CardDef } from '@/arkham/types/CardDef'
 import { isCustomCardCode } from '@/arkham/customCards'
+import { homebrewBoxName } from '@/arkham/homebrewData'
 import sets from '@/arkham/data/sets.json'
+import { useDbCardStore, type ArkhamDBCard } from '@/stores/dbCards'
 
 // Two defs with the same art are one physical card and render as a single
 // tile/row; these three share art but are genuinely distinct cards.
@@ -24,9 +26,46 @@ export const groupCards = (cards: CardDef[]) => {
   return Array.from(grouped.values())
 }
 
+/* The viewer's card-data record for a card, or null in English and for custom
+ * cards. Homebrew cards have records too where arkham-cards-data translates them
+ * (see loadHomebrewCards in scripts/import-card-translations.cjs). The CardDef itself stays
+ * English -- filters, CSS classes and icons key off its values -- so only what
+ * is shown goes through here. Reading the store makes callers reactive: a list
+ * drawn before cards_<lang>.json arrives redraws translated once it does. */
+const localizedDbCard = (card: CardDef): ArkhamDBCard | null => {
+  const language = (typeof localStorage === 'undefined' ? null : localStorage.getItem('language')) || 'en'
+  if (language === 'en' || isCustomCardCode(card.art)) return null
+  const revisedFrom = card.meta?.revisedFrom
+  return useDbCardStore().getDbCard(typeof revisedFrom === 'string' ? revisedFrom : card.art)
+}
+
+// A `b` art borrows its front's record (see buildCardIndex); that record keeps
+// the back's text under back_*.
+const isBorrowedBack = (card: CardDef, match: ArkhamDBCard) =>
+  match.code !== card.art && card.art.endsWith('b')
+
+export const cardTitleParts = (card: CardDef): { title: string; subtitle: string | null } => {
+  const match = localizedDbCard(card)
+  if (!match) return card.name
+  const back = isBorrowedBack(card, match)
+  return {
+    title: (back && match.back_name) || match.name,
+    subtitle: !back && match.subname ? match.subname : card.name.subtitle,
+  }
+}
+
 export const cardName = (card: CardDef) => {
-  const subtitle = card.name.subtitle === null ? '' : `: ${card.name.subtitle}`
-  return `${card.name.title}${subtitle}`
+  const { title, subtitle } = cardTitleParts(card)
+  return subtitle === null ? title : `${title}: ${subtitle}`
+}
+
+/* Class names as printed in the viewer's language, in the card's own order.
+ * ArkhamDB names a card's classes faction, faction2, faction3. */
+export const cardClassNames = (card: CardDef): string[] => {
+  const match = localizedDbCard(card)
+  if (!match) return card.classSymbols
+  const names = [match.faction_name, match.faction2_name, match.faction3_name]
+  return card.classSymbols.map((sym, i) => names[i] || sym)
 }
 
 export const levelText = (card: CardDef) => {
@@ -43,6 +82,8 @@ export const cardCost = (card: CardDef) => {
 }
 
 export const cardType = (card: CardDef) => {
+  const match = localizedDbCard(card)
+  if (match?.type_name) return match.type_name
   switch (card.cardType) {
     case 'PlayerTreacheryType': return 'Treachery'
     case 'PlayerEnemyType': return 'Enemy'
@@ -51,6 +92,11 @@ export const cardType = (card: CardDef) => {
 }
 
 export const cardTraits = (card: CardDef) => {
+  const match = localizedDbCard(card)
+  if (match) {
+    const traits = isBorrowedBack(card, match) ? match.back_traits : match.traits
+    if (traits) return traits.trim()
+  }
   if (card.cardTraits.length === 0) return ''
   return `${card.cardTraits.join('. ')}.`
 }
@@ -83,6 +129,15 @@ export const cardSet = (card: CardDef) => {
   return set
 }
 
+/* ":dark-matter:021" -> { box: 'dark-matter', number: 21 }. A homebrew box
+ * namespaces its cards rather than taking a range of printed numbers, so its
+ * collection number is what follows the box name. */
+const homebrewArt = (art: string) => {
+  const match = art.match(/^:([^:]+):0*(\d+)/)
+  if (!match) return null
+  return { box: match[1], number: parseInt(match[2]) }
+}
+
 // "The Dunwich Legacy 12" — the set name plus the card's collection number.
 // `packName` overrides the set name for localized card data.
 export const cardSetText = (card: CardDef, packName?: string) => {
@@ -93,8 +148,14 @@ export const cardSetText = (card: CardDef, packName?: string) => {
     return typeof name === 'string' && name ? name : 'Custom'
   }
 
+  const homebrew = homebrewArt(card.art)
+  if (homebrew) {
+    const name = homebrewBoxName(homebrew.box)
+    return name ? `${name} ${homebrew.number}` : 'Homebrew'
+  }
+
   const setNumber = parseInt(card.art.slice(2))
-  const setName = packName || cardSet(card)?.name
+  const setName = packName || localizedDbCard(card)?.pack_name || cardSet(card)?.name
 
   if (setName) return `${setName} ${setNumber % 500}`
   return 'Unknown'

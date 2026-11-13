@@ -126,6 +126,23 @@ getResolvableHauntedAbilities iid lid = do
     withActiveInvestigator iid
       $ passesCriteria iid Nothing (toSource ability) ability.requestor [] criteria
 
+{- | The custom-keyword abilities @iid@ may resolve, for the keyword's own trigger
+to prompt with. As with 'getResolvableHauntedAbilities' the normal ability path
+has nothing to say about these, plus the use limit: a keyword clause may print
+one and nothing else would enforce it.
+-}
+getResolvableKeywordAbilities :: HasGame m => Text -> InvestigatorId -> [Window] -> m [Ability]
+getResolvableKeywordAbilities keyword iid ws = do
+  abilities <- select $ Matcher.AbilityWithCustomKeyword keyword
+  flip filterM abilities \ability -> do
+    abilityModifiers <- getModifiers (AbilityTarget iid ability.ref)
+    let criteria = foldr applyCriteriaOverride (abilityCriteria ability) abilityModifiers
+    andM
+      [ getCanAffordUse iid ability ws
+      , withActiveInvestigator iid
+          $ passesCriteria iid Nothing (toSource ability) ability.requestor ws criteria
+      ]
+
 getCanPerformAbility
   :: (HasCallStack, HasGame m) => InvestigatorId -> [Window] -> Ability -> m Bool
 getCanPerformAbility !iid !ws !ability = do
@@ -248,6 +265,7 @@ meetsActionRestrictions iid ws ab@Ability {..} = go abilityType
  where
   go = \case
     Haunted -> pure False
+    CustomKeywordAbility {} -> pure False
     Cosmos -> pure False
     Objective aType -> go aType
     DelayedAbility aType -> go aType
@@ -410,16 +428,31 @@ getCanAffordAbility iid ability ws = do
     , getCanAffordAbilityCost iid ability ws
     ]
 
+{- | Whether this ability puts off its additional costs until the thing they attach to
+has been chosen.
+
+Every additional cost is deferred, the 'ActionCost 0' surcharge sentinel included: the
+surcharge is read off the union of an 'OrActions' ability's branches, so Summoned Hound
+(1)'s Fight/Investigate was charged for a fight before the player chose to investigate
+(#5990). A delaying ability's branches each charge their own.
+
+Three callers and they must agree -- 'getCanAffordAbilityCost' here,
+'Arkham.Game.Runner''s PayForAbility, and 'Arkham.ActiveCost.startAbilityPayment' -- or
+what is offered, what is charged and what is recorded drift apart (#5895).
+-}
+abilityDelaysAdditionalCosts :: HasGame m => InvestigatorId -> Ability -> m Bool
+abilityDelaysAdditionalCosts iid ability = case abilityDelayAdditionalCosts ability of
+  Nothing -> pure False
+  Just DelayAdditionalCosts -> pure True
+  Just (DelayAdditionalCostsWhen c) ->
+    passesCriteria iid Nothing ability.source ability.source [] c
+
 getCanAffordAbilityCost
   :: (HasCallStack, HasGame m) => InvestigatorId -> Ability -> [Window] -> m Bool
 getCanAffordAbilityCost iid a@Ability {..} ws = do
   modifiers <- getModifiers (AbilityTarget iid a.ref)
   imods <- getModifiers iid
-  doDelayAdditionalCosts <- case abilityDelayAdditionalCosts of
-    Nothing -> pure False
-    Just delay -> case delay of
-      DelayAdditionalCosts -> pure True
-      DelayAdditionalCostsWhen c -> passesCriteria iid Nothing abilitySource abilitySource [] c
+  doDelayAdditionalCosts <- abilityDelaysAdditionalCosts iid a
   investigateCosts <-
     if #investigate `elem` abilityActions a
       then do
@@ -514,13 +547,17 @@ getCanAffordAbilityCost iid a@Ability {..} ws = do
       abilityAdditionalCosts <> flip mapMaybe modifiers \case
         AdditionalCost x -> Just x
         _ -> Nothing
+    -- Mirrors the sentinel in 'Arkham.Game.Runner''s PayForAbility, and is skipped on
+    -- the same condition: what is charged and what is checked must not drift (#5895).
+    actionSentinel = if doDelayAdditionalCosts then id else (ActionCost 0 <>)
   go
-    ((fold additionalCosts <>) . (ActionCost 0 <>) . costF . (`applyCostModifiers` modifiers))
+    ((fold additionalCosts <>) . actionSentinel . costF . (`applyCostModifiers` modifiers))
     abilityType
  where
   go f = \case
     ServitorAbility _ -> pure True
     Haunted -> pure True
+    CustomKeywordAbility {} -> pure True
     Cosmos -> pure True
     -- 'a.actions', not the bare designators: payment charges against the list that
     -- includes #activate, so checking affordability without it offered an [action]
@@ -631,6 +668,7 @@ getCanAffordUseWith f canIgnoreAbilityLimit iid ability ws = do
             Objective {} -> pure True
             DelayedAbility inner -> go inner
             Haunted -> pure True
+            CustomKeywordAbility {} -> pure True
             Cosmos -> pure True
             ServitorAbility _ -> pure True -- should be disabled by the servitor
             ConstantAbility -> pure False
@@ -791,6 +829,7 @@ isForcedAbilityType iid source = \case
   AbilityEffect {} -> pure False
   ServitorAbility {} -> pure False
   Haunted {} -> pure True -- Maybe? we wanted this to basically never be valid but still take forced precedence
+  CustomKeywordAbility {} -> pure True
   Cosmos {} -> pure True -- Maybe? we wanted this to basically never be valid but still take forced precedence
   ForcedWhen c _ -> passesCriteria iid Nothing source source [] c
   ConstantAbility {} -> pure False

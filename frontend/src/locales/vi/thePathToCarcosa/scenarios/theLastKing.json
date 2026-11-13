@@ -1,0 +1,29 @@
+{
+  "heading": "Màn II",
+  "intro": {
+    "title": "Màn II: Vị Vua Cuối Cùng",
+    "body": "<p>Nếu có ai có câu trả lời cho những câu hỏi đang nung nấu trong đầu bạn thì đó chính là dàn diễn viên và đoàn làm vở kịch Vị Vua Áo Vàng. Không có hướng đi nào khác, bạn mặc bộ quần áo đẹp nhất của mình và đi đến địa điểm 1452 Đại lộ Atlantic, nơi một người phụ nữ tên là Constance Dumaine đang tổ chức một sự kiện kỷ niệm buổi diễn một đêm của vở kịch ở thị trấn Arkham.</p>"
+  },
+  "setup": {
+    "bystanders": {
+      "note": "*Lưu ý: Những lá bài này có hai mặt và có câu chuyện ở mặt bên kia. Để có trải nghiệm tốt nhất, đừng nhìn vào mặt bên kia trừ khi có hiệu ứng hướng dẫn bạn làm như vậy.*",
+      "instructions": "Xào 5 lá tài sản Bystander (Constance Dumaine, Jordan Perry, Ishimaru Haruko, Sebastien Moreau, và Ashleigh Clarke) và đặt ngẫu nhiên mỗi lá vào trong mỗi vị trí, ngoại trừ vị trí Foyer (phòng giải lao). Đặt 1 manh mối vào trong mỗi lá tài sản, và thêm manh mối tương ứng số lượng điều tra viên."
+    },
+    "setAside": "Đặt kẻ địch Dianne Devine sang một bên, ngoài khu vực chơi.",
+    "sickeningReality": {
+      "instructions": "Đặt 5 lá bài câu chuyện “Sickening Reality” bên dưới lá bài scenario.",
+      "note": "*Lưu ý: Những lá bài này có hai mặt và có mặt encounter ở mặt bên kia. Để có trải nghiệm tốt nhất, đừng nhìn vào mặt bên kia trừ khi có hiệu ứng hướng dẫn bạn làm như vậy.*"
+    }
+  },
+  "resolutions": {
+    "resolution1": {
+      "title": "Kết thúc thứ nhất"
+    },
+    "resolution2": {
+      "title": "Kết thúc thứ hai"
+    },
+    "resolution3": {
+      "title": "Kết thúc thứ ba"
+    }
+  }
+}
