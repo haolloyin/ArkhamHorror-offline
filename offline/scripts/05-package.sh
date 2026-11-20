@@ -125,6 +125,92 @@ die() {
     exit "$code"
 }
 
+# ── Schema migrations ────────────────────────────────────────────────────────
+# setup.sql installs the schema as of the build, and `arkham_schema_migrations`
+# records which migrations that schema already contains. Anything newer in the
+# shipped plan is applied here, so a database made by an older package catches
+# up on the next launch instead of erroring on a column that does not exist yet.
+#
+# Mirrors migrate.sh (the docker one-shot) so both paths behave the same.
+MIGRATIONS_DIR_NAME="migrations"
+# The last migration a setup.sql from before the stamping block contained. A
+# database with no tracking table is assumed to be one of those.
+BASELINE_THROUGH="add_step_constraint"
+
+apply_migrations() {
+    local mdir="$DATA_DIR/$MIGRATIONS_DIR_NAME"
+    local plan="$mdir/sqitch.plan"
+    local log="$DATA_DIR/migrate.log"
+
+    if [ ! -f "$plan" ]; then
+        # Older package, or a build where migrations were not bundled. The
+        # shipped setup.sql is still self-consistent, so this is not fatal.
+        warn "No migration plan in the package; skipping schema migrations."
+        return 0
+    fi
+
+    local names
+    names="$(grep -vE '^[[:space:]]*(%|#|$)' "$plan" | awk '{print $1}')"
+    [ -n "$names" ] || return 0
+
+    local q_existed
+    q_existed="$(psql_cmd -qtA -d "$PG_DB" \
+        -c "SELECT to_regclass('public.arkham_schema_migrations') IS NOT NULL" \
+        2>>"$log" || echo "")"
+    if [ -z "$q_existed" ]; then
+        die 2011 "Could not read the schema migration table" "$log"
+    fi
+
+    psql_cmd -qtA -d "$PG_DB" -c "CREATE TABLE IF NOT EXISTS arkham_schema_migrations (
+        name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());" \
+        >> "$log" 2>&1 || die 2011 "Could not create the schema migration table" "$log"
+
+    # No tracking table means a database built from a setup.sql that predates
+    # the stamping block. Credit it with the migrations that dump contained;
+    # guessing high would skip migrations it genuinely needs, so this stops at
+    # the known baseline and lets the rest apply.
+    if [ "$q_existed" != "t" ]; then
+        info "No migration history; seeding baseline through '$BASELINE_THROUGH'."
+        local vals="" n
+        while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            vals="${vals:+$vals,}('$n')"
+            if [ "$n" = "$BASELINE_THROUGH" ]; then break; fi
+        done <<< "$names"
+        if [ -n "$vals" ]; then
+            psql_cmd -qtA -d "$PG_DB" \
+                -c "INSERT INTO arkham_schema_migrations(name) VALUES $vals ON CONFLICT DO NOTHING;" \
+                >> "$log" 2>&1 || die 2011 "Could not seed the migration baseline" "$log"
+        fi
+    fi
+
+    local applied
+    applied="$(psql_cmd -qtA -d "$PG_DB" \
+        -c "SELECT coalesce(string_agg(name, ' '), '') FROM arkham_schema_migrations" \
+        2>>"$log")" || die 2011 "Could not read applied migrations" "$log"
+
+    local count=0 n
+    while IFS= read -r n; do
+        [ -n "$n" ] || continue
+        case " $applied " in *" $n "*) continue ;; esac
+        if [ ! -f "$mdir/deploy/$n.sql" ]; then
+            warn "Plan names '$n' but the package has no deploy script for it; skipping."
+            continue
+        fi
+        info "Applying migration $n ..."
+        psql_cmd -v ON_ERROR_STOP=1 -q -d "$PG_DB" -f "$mdir/deploy/$n.sql" \
+            >> "$log" 2>&1 || die 2011 "Migration '$n' failed" "$log"
+        psql_cmd -qtA -d "$PG_DB" \
+            -c "INSERT INTO arkham_schema_migrations(name) VALUES ('$n') ON CONFLICT DO NOTHING;" \
+            >> "$log" 2>&1 || die 2011 "Could not record migration '$n'" "$log"
+        count=$((count + 1))
+    done <<< "$names"
+
+    if [ "$count" -gt 0 ]; then
+        info "Schema updated ($count migration(s) applied)."
+    fi
+}
+
 # Open a URL in the default browser (cross-platform, silently ignore failures)
 open_browser() {
     local url="$1"

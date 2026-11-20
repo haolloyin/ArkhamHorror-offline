@@ -2,7 +2,9 @@
 import { useDbCardStore } from '@/stores/dbCards'
 import { chaosTokenImage, type ChaosToken } from '@/arkham/types/ChaosToken';
 import { useI18n } from 'vue-i18n';
+import { localizedInvestigatorName } from '@/arkham/investigatorName'
 import { handleEmbeddedI18n, parseInput } from '@/arkham/i18n';
+import { localizeEngineText } from '@/arkham/engineText';
 import { formatCost } from '@/arkham/cost';
 import { abilityNeedsGhostModal } from '@/arkham/ghostAbility';
 import { choiceRequiresModal, MessageType, CardLabel, ChaosTokenLabel, type Message, type TargetLabel } from '@/arkham/types/Message';
@@ -170,7 +172,7 @@ const cardOwner = (card: ArkhamCard): string | null => toCardContents(card).owne
 
 function ownerName(owner: string): string {
   const inv = props.game.investigators[owner] ?? props.game.otherInvestigators[owner]
-  return inv?.name.title ?? owner
+  return inv ? localizedInvestigatorName(inv.name.title) : owner
 }
 
 function ownerZoneLabel(owner: string, zone: string): string {
@@ -396,14 +398,14 @@ const focusedCardGroups = computed<SearchedCardGroup[]>(() => {
     return [{
       key: 'focused-summit-deck',
       zone: 'SummitDeck',
-      label: t('cards'),
+      label: t('gameUi.cards'),
       cards: focusedCardsForGroups.value,
     }]
   }
 
   const grouped = new Map<string, ArkhamCard[]>()
   for (const card of focusedCardsForGroups.value) {
-    const label = focusedCardSourceLabel(toCardContents(card).id) ?? t('cards')
+    const label = focusedCardSourceLabel(toCardContents(card).id) ?? t('gameUi.cards')
     grouped.set(label, [...(grouped.get(label) ?? []), card])
   }
 
@@ -679,12 +681,22 @@ const doneLabel = computed(() => {
 
 const doneIsFooter = computed(() => !questionChoices.value.some(([c]) => c.tag === MessageType.DONE))
 
+/* Amount rows are titled by the engine in English: a fixed phrase ("Charges"),
+ * or the name of the investigator, asset or enemy the amount is for. */
+const localizeAmountTitle = (text: string): string => {
+  const phrase = localizeEngineText(text)
+  if (phrase !== text) return phrase
+  const investigator = localizedInvestigatorName(text)
+  if (investigator !== text) return investigator
+  return (localStorage.getItem('language') || 'en') === 'en' ? text : useDbCardStore().getCardName(text)
+}
+
 const paymentChoiceLabel = function(text: string): string {
   if (text.startsWith("$")) {
     return label(`$choice.${text.slice(1)}`)
   }
 
-  return formatContent(text)
+  return formatContent(localizeAmountTitle(text))
 }
 
 const traumaKind = (text: string) => {
@@ -1090,7 +1102,7 @@ const useCardPicker = computed(() => cardLabels.value.every(({ choice }) => !cho
                           class="amount-choice-icon"
                           :style="traumaIconStyle(amountChoice.title)"
                         ></span>
-                        <span>{{ amountChoice.title }}</span>
+                        <span>{{ localizeAmountTitle(amountChoice.title) }}</span>
                       </label>
                       <input
                         :id="`payment-choice-${amountChoice.choiceId}`"

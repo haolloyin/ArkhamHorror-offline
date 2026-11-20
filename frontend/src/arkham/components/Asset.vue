@@ -35,6 +35,7 @@ import * as Arkham from '@/arkham/types/Asset';
 import { useSettings } from '@/stores/settings';
 import { isManifestedSpiritAsset } from '@/arkham/spiritVisuals';
 import { useDbCardStore } from '@/stores/dbCards'
+import { useI18n } from 'vue-i18n'
 import { useCardStore } from '@/stores/cards'
 
 const props = withDefaults(defineProps<{
@@ -54,6 +55,7 @@ const cardFlightStyle = useCardFlight(() => props.asset.cardId)
 const debugging = ref(false)
 const frame = ref(null)
 const dbCardStore = useDbCardStore()
+const { t } = useI18n()
 
 const emits = defineEmits<{
   choose: [value: number]
@@ -115,7 +117,7 @@ const marketDeckCardImageId = (card: ArkhamCard) => toCardContents(card).art ?? 
 const marketDeckCardName = (card: ArkhamCard) => {
   const contents = toCardContents(card)
   const dbCard = dbCardStore.getDbCard(contents.art ?? marketDeckCardCode(card))
-  if (!dbCard) return 'Unknown card'
+  if (!dbCard) return t('gameUi.unknownCard')
   return dbCard.subname ? `${dbCard.name}: ${dbCard.subname}` : dbCard.name
 }
 const marketDeckSize = computed(() => props.asset.marketDeck?.length ?? 0)
@@ -423,7 +425,7 @@ function startDrag(event: DragEvent) {
               type="button"
               class="market-helper-button"
               :aria-label="$t('gameUi.viewUnderworldMarket')"
-              v-tooltip="'View Underworld Market known order'"
+              v-tooltip="$t('gameUi.viewUnderworldMarket')"
               @click.stop.prevent="marketPopoverShown = !marketPopoverShown"
             >
               <font-awesome-icon icon="store" />
@@ -461,7 +463,7 @@ function startDrag(event: DragEvent) {
         </div>
         <div class="card-wrapper" :class="{ 'asset--can-interact': canInteract, 'asset--pending': pending, 'asset--doomed': doomed }">
           <MissingCardBadge :card-code="cardCode" />
-          <span v-if="doomed && !showDiscardMark" class="doomed-mark" v-tooltip="'Will be defeated'">
+          <span v-if="doomed && !showDiscardMark" class="doomed-mark" v-tooltip="$t('gameUi.willBeDefeated')">
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 2C7 2 3.6 5.3 3.6 9.7c0 2.4 1 4.1 2.4 5.2.5.4.8.9.8 1.5v1.2c0 .8.7 1.5 1.5 1.5h.6v1.4c0 .3.2.5.5.5h1c.3 0 .5-.2.5-.5v-1.4h2v1.4c0 .3.2.5.5.5h1c.3 0 .5-.2.5-.5v-1.4h.6c.8 0 1.5-.7 1.5-1.5v-1.2c0-.6.3-1.1.8-1.5 1.4-1.1 2.4-2.8 2.4-5.2C20.4 5.3 17 2 12 2Zm-3.4 9.6a1.9 1.9 0 1 1 0-3.8 1.9 1.9 0 0 1 0 3.8Zm6.8 0a1.9 1.9 0 1 1 0-3.8 1.9 1.9 0 0 1 0 3.8ZM12 13.4l1.2 2.2h-2.4L12 13.4Z" />
             </svg>

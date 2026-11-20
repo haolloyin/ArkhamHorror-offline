@@ -1,4 +1,5 @@
 import { useDbCardStore } from '@/stores/dbCards'
+import { localizeEngineText } from '@/arkham/engineText'
 
 export const handleI18n = (body: string, t: (key: string, params: { [key: string]: any }) => string) => {
   const {key, params} = parseInput(body)
@@ -16,7 +17,13 @@ export const handleI18n = (body: string, t: (key: string, params: { [key: string
     if (card) { params.iname = card.name }
   }
 
-  return t(key, params)
+  const text = t(key, params)
+  if (text !== key) return text
+  // A key naming a section rather than a message ("…resolutions.resolution1" is
+  // { title, body }) prints as the bare key; its title is what was meant.
+  const titleKey = `${key}.title`
+  const title = t(titleKey, params)
+  return title !== titleKey ? title : text
 }
 
 export const handleEmbeddedI18n = (body: string, t: (key: string, params: { [key: string]: any }) => string) => {
@@ -25,6 +32,9 @@ export const handleEmbeddedI18n = (body: string, t: (key: string, params: { [key
   if (isWholeI18nToken(trimmed)) {
     return handleI18n(trimmed, t)
   }
+
+  // No key at all: the engine wrote this text out in English.
+  if (!body.includes('$')) return localizeEngineText(body)
 
   return body.replace(/\$[A-Za-z0-9_.]+(?!\s+[A-Za-z0-9_]+=[is]:)/g, (token) => {
     const localized = handleI18n(token, t)

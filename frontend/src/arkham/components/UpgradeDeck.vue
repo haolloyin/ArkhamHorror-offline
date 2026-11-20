@@ -102,13 +102,13 @@ const error = computed(() => {
     })
 
     if (alreadyTaken) {
-      return 'This investigator is already taken'
+      return t('deckUi.investigatorTaken')
     }
 
     const killedOrInsane = killedInvestigators.value.includes(`c${deckInvestigator.value}`)
 
     if (killedOrInsane) {
-      return 'This investigator was killed or driven insane'
+      return t('deckUi.investigatorKilledOrInsane')
     }
   }
 
@@ -516,7 +516,7 @@ const tabooList = function (investigator: Investigator) {
         </div>
         <div v-else class="content">
           <div v-if="tabooList(investigator)" class="taboo-list">
-            Taboo List: {{tabooList(investigator)}}
+            {{ $t('deckUi.tabooList', { list: tabooList(investigator) }) }}
           </div>
         </div>
       </template>

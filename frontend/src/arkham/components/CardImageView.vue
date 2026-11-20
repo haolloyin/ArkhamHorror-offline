@@ -1,5 +1,7 @@
 <script lang="ts" setup>
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { useDbCardStore } from '@/stores/dbCards'
 import * as Arkham from '@/arkham/types/CardDef'
 import { localizeArkhamDBBaseUrl } from '@/arkham/helpers'
 import { cardGroupKey as groupKey, groupCards } from '@/arkham/cardDetails'
@@ -96,11 +98,14 @@ const isAncestralKnowledgeCard = (card: Arkham.CardDef) => ancestralKnowledgeCar
 const isBewitchingCard = (card: Arkham.CardDef) => bewitchingCardCount(card) > 0
 const isEldritchBrandCard = (card: Arkham.CardDef) => eldritchBrandCardCount(card) > 0
 
+const { t } = useI18n()
+const dbCardStore = useDbCardStore()
+
 const attachmentTitle = (card: Arkham.CardDef) => {
-  if (card.art === '90052') return 'Spirit deck'
-  if (card.art === '09077') return 'Underworld Market'
-  if (card.art === '11080') return 'Eldritch Brand'
-  return 'Attached cards'
+  if (card.art === '90052') return t('gameUi.spiritDeckTitle')
+  if (card.art === '09077') return t('gameUi.underworldMarket')
+  if (card.art === '11080') return dbCardStore.getDbCard('11080')?.name ?? 'Eldritch Brand'
+  return t('gameUi.attachedCards')
 }
 
 const cardName = (card: Arkham.CardDef) => {
@@ -116,7 +121,7 @@ const cardName = (card: Arkham.CardDef) => {
       :key="groupKey(card)"
       class="card-tile"
       :class="{ 'has-attachments': attachedCards(card).length > 0, 'card-tile--unimplemented': isUnimplemented(card), 'card-tile--out': isOut(card) }"
-      v-tooltip="isUnimplemented(card) ? 'Not yet implemented' : undefined"
+      v-tooltip="isUnimplemented(card) ? $t('cardDetails.notImplemented') : undefined"
     >
       <a target="_blank" :href="`${localizeArkhamDBBaseUrl()}/card/${card.art}`" @click="onCardClick($event, card)">
         <CardImage :card="card" />
@@ -149,10 +154,10 @@ const cardName = (card: Arkham.CardDef) => {
         </span>
       </a>
       <div v-if="overlayEditing" class="overlay-controls">
-        <button type="button" title="Take one out" @click="emit('overlay-take', card)">−</button>
+        <button type="button" :title="$t('deckUi.takeOneOut')" @click="emit('overlay-take', card)">−</button>
         <button
           type="button"
-          title="Put one back"
+          :title="$t('deckUi.putOneBack')"
           :disabled="overlayRemoved(card) === 0"
           @click="emit('overlay-restore', card)"
         >+</button>
@@ -172,7 +177,7 @@ const cardName = (card: Arkham.CardDef) => {
           >
             <CardImage :card="entry.card" />
             <span class="attachment-label">
-              <span class="attachment-name">{{ cardName(entry.card) }}{{ card.art === '11080' ? ' was branded' : '' }}</span>
+              <span class="attachment-name">{{ card.art === '11080' ? $t('deckUi.wasBranded', { name: cardName(entry.card) }) : cardName(entry.card) }}</span>
               <span v-if="card.art !== '11080' || entry.count > 1" class="attachment-count">x {{ entry.count }}</span>
             </span>
           </a>

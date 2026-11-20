@@ -283,6 +283,12 @@ onlyCampaignAbilities UsedAbility {..} = case abilityLimitType (abilityLimit use
   Just PerCampaign -> True
   _ -> False
 
+{- | A "once per window" record, in any of the three buckets 'EndCheckWindow' prunes.
+Dropped wholesale at every turn boundary; see the @EndTurn@ handlers.
+-}
+isPerWindowRecord :: UsedAbility -> Bool
+isPerWindowRecord UsedAbility {..} = abilityLimitType (abilityLimit usedAbility) == Just PerWindow
+
 {- | Under the Chapter 2 "as if" ruling (Grimoire) the altered game state applies
 only to the ability being resolved; other abilities triggering during it see the
 actual game state. Bracket the windows where those other abilities get offered.
@@ -950,6 +956,12 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     let allowedMulligans = max 0 . (1 +) $ sumOf (traverse . _Mulligans) mods
     let startingHandAmount = max 0 . (5 +) $ sumOf (traverse . _StartingHand) mods
     let additionalStartingCards = concat $ mapMaybe (preview _AdditionalStartingCards) mods
+    -- This runs once per mulligan, so an extra opening-hand card still in hand
+    -- from an earlier round must not be minted (or counted) a second time.
+    let extraIds = map toCardId additionalStartingCards
+    let extraCodes = map toCardCode investigatorStartsWithInHand
+    let isCarriedOverExtra c = toCardId c `elem` extraIds || toCardCode c `elem` extraCodes
+    let carriedOverExtras = filter isCarriedOverExtra investigatorHand
     -- investigatorHand is dangerous, but we want to use it here because we're
     -- only affecting cards actually in hand [I think]
     let excludedCount = length $ filter (\c -> toCardId c `elem` investigatorExcludeFromMulligan) investigatorHand
@@ -957,13 +969,22 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
       if any (`elem` mods) [CannotDrawCards, CannotManipulateDeck]
         then pure (investigatorDiscard, investigatorHand, unDeck investigatorDeck)
         else drawOpeningHand a (startingHandAmount - (length investigatorHand - excludedCount))
-    startsWithInHandCards <- traverse genCard investigatorStartsWithInHand
+    let carriedOverCodes = map toCardCode carriedOverExtras
+    let carriedOverIds = map toCardId carriedOverExtras
+    startsWithInHandCards <-
+      traverse genCard $ filter ((`notElem` carriedOverCodes) . toCardCode) investigatorStartsWithInHand
     for_ startsWithInHandCards \card -> push $ ReplaceCard card.id card
-    let additionalHandCards = additionalStartingCards <> startsWithInHandCards
+    let additionalHandCards =
+          filter ((`notElem` carriedOverIds) . toCardId) additionalStartingCards <> startsWithInHandCards
 
     -- need the virtual hand to get correct length
     hand' <- field InvestigatorHand iid
-    let moreMulligans = (a ^. mulligansTakenL + 1) < allowedMulligans && startingHandAmount - length hand' > 0
+    -- cards excluded from the mulligan are extras on top of the starting hand,
+    -- so they must not count towards it
+    let mulliganableRemaining =
+          length $ filter (\c -> toCardId c `notElem` investigatorExcludeFromMulligan) hand'
+    let needsMoreCards = startingHandAmount > mulliganableRemaining
+    let moreMulligans = (a ^. mulligansTakenL + 1) < allowedMulligans && needsMoreCards
 
     -- Starting keyword: offer search before mulligan cards are shuffled back in
     unless moreMulligans do
@@ -991,6 +1012,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
       & (discardL .~ discard)
       & (handL .~ hand <> additionalHandCards)
       & (deckL .~ Deck deck)
+      & (excludeFromMulliganL %~ (<> map toCardId additionalHandCards))
       & (mulligansTakenL +~ 1)
   ForInvestigator iid BeginGame | iid == investigatorId -> do
     -- if we have any cards with revelations on them, we need to trigger them
@@ -3122,12 +3144,32 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
       & usedAbilitiesL
       %~ filter (\UsedAbility {..} -> abilityLimitType (abilityLimit usedAbility) /= Just PerRound)
       & (usedAdditionalActionsL .~ mempty)
+  {- A "once per window" bucket cannot outlive the window it was recorded in, and no
+  window spans a turn boundary -- so every seat drops its PerWindow records here, not
+  just the one whose turn it was.
+
+  'EndCheckWindow' is supposed to prune them, but it keeps a record whenever
+  `depth >= usedDepth` and a use answered from a player window is not inside a
+  CheckWindows, so it is stamped `usedDepth = 0` and that test is true forever. The
+  record then blacklists window *values*, which 'getCanAffordUseWith' compares
+  structurally -- and `When FastPlayerWindow` / `When TurnBegins <iid>` recur verbatim
+  every turn. Safeguard (2), whose DuringTurn matcher deliberately matches every window
+  of another investigator's turn (#5784), could be armed once in each shape and then
+  never again: its `nonBlockingExcept (TurnBegins #when Anyone)` prompt was permanently
+  dead and the only offers left rode along in move windows, after the mover had already
+  gone (#5999).
+
+  Deliberately not fixed at the depth-0 test itself: dropping those records on any
+  nested window close would let a reaction used from a player window be re-offered
+  inside that same still-open player window. -}
   EndTurn iid | iid == toId a -> do
     pure
       $ a
       & (endedTurnL .~ True)
       & usedAbilitiesL
       %~ filter (\UsedAbility {..} -> abilityLimitType (abilityLimit usedAbility) /= Just PerTurn)
+      & (usedAbilitiesL %~ filter (not . isPerWindowRecord))
+  EndTurn _ -> pure $ a & usedAbilitiesL %~ filter (not . isPerWindowRecord)
   UseCardAbility iid (isSource a -> True) 500 _ _ -> handleUseCardAbility a iid
   UseCardAbility iid (isSource a -> True) 501 _ _ -> handleUseCardAbilityV2 a iid
   UseCardAbility iid (isSource a -> True) 502 _ _ -> handleUseCardAbilityV3 a iid
