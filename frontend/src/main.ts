@@ -10,7 +10,7 @@ import { useUserStore } from '@/stores/user'
 import { FontAwesomeIcon } from "@fortawesome/vue-fontawesome";
 import { library } from "@fortawesome/fontawesome-svg-core";
 import { faExpeditedssl } from "@fortawesome/free-brands-svg-icons";
-import { faCode, faFilter, faGear, faLayerGroup, faBan, faCircleExclamation, faGhost, faLocationDot, faSearch, faList, faImage, faAngleDown, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronLeft, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faArrowUp, faStore, faTriangleExclamation, faShuffle, faTrophy, faDownload, faUpload, faCheckDouble, faFlask, faBug, faPen, faThumbsUp, faHourglassHalf, faCircleXmark, faCircleCheck, faClipboardCheck, faChartSimple, faRectangleList, faCircleQuestion, faBullhorn, faBoxArchive, faUserGear, faPlus, faLink, faLinkSlash, faUsers, faLock, faUnlock } from '@fortawesome/free-solid-svg-icons'
+import { faCode, faFilter, faGear, faLayerGroup, faBan, faCircleExclamation, faGhost, faLocationDot, faSearch, faList, faImage, faAngleDown, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronLeft, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faArrowUp, faStore, faTriangleExclamation, faShuffle, faTrophy, faDownload, faUpload, faCheckDouble, faFlask, faBug, faPen, faThumbsUp, faHourglassHalf, faCircleXmark, faCircleCheck, faClipboardCheck, faChartSimple, faRectangleList, faCircleQuestion, faBullhorn, faBoxArchive, faUserGear, faPlus, faLink, faLinkSlash, faUsers, faLock, faUnlock, faLightbulb, faPenToSquare, faMagnifyingGlass, faComment, faDiceD20, faTableColumns, faArrowRightArrowLeft, faEllipsis } from '@fortawesome/free-solid-svg-icons'
 import * as VueI18n from 'vue-i18n'
 import { loadLocaleMessages, normalizeLocale } from '@/locales/messages'
 import { setI18n } from '@/locales/i18n'
@@ -19,7 +19,7 @@ import mitt from 'mitt';
 import { installChunkRecovery, reloadIfStaleChunk } from '@/chunkRecovery'
 import { hideAppLoading } from '@/appLoading'
 
-library.add(faCode, faFilter, faBan, faLocationDot, faCircleExclamation, faGhost, faSearch, faList, faImage, faAngleDown, faExpeditedssl, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronLeft, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faArrowUp, faStore, faTriangleExclamation, faShuffle, faTrophy, faGear, faLayerGroup, faDownload, faUpload, faCheckDouble, faFlask, faBug, faPen, faThumbsUp, faHourglassHalf, faCircleXmark, faCircleCheck, faClipboardCheck, faChartSimple, faRectangleList, faCircleQuestion, faBullhorn, faBoxArchive, faUserGear, faPlus, faLink, faLinkSlash, faUsers, faLock, faUnlock)
+library.add(faCode, faFilter, faBan, faLocationDot, faCircleExclamation, faGhost, faSearch, faList, faImage, faAngleDown, faExpeditedssl, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronLeft, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faArrowUp, faStore, faTriangleExclamation, faShuffle, faTrophy, faGear, faLayerGroup, faDownload, faUpload, faCheckDouble, faFlask, faBug, faPen, faThumbsUp, faHourglassHalf, faCircleXmark, faCircleCheck, faClipboardCheck, faChartSimple, faRectangleList, faCircleQuestion, faBullhorn, faBoxArchive, faUserGear, faPlus, faLink, faLinkSlash, faUsers, faLock, faUnlock, faLightbulb, faPenToSquare, faMagnifyingGlass, faComment, faDiceD20, faTableColumns, faArrowRightArrowLeft, faEllipsis)
 
 installChunkRecovery()
 
@@ -78,6 +78,9 @@ async function bootstrap() {
         'cards-under-popover': {
           $extend: 'dropdown',
         },
+        'modifier-popover': {
+          $extend: 'dropdown',
+        },
       },
     }).
     use(vfm).
@@ -94,10 +97,17 @@ async function bootstrap() {
   api.interceptors.response.use(undefined, (error) => {
     const path = window.location.hash.replace(/^#/, '') || '/'
     const onAuthPage = path.startsWith('/sign-in') || path.startsWith('/sign-up')
-    if (error.response?.status === 401 && !onAuthPage) {
+    /* A 403 from `whoami` is the other way a session can be refused: the token
+     * is good and the account is not. 403 alone cannot be treated this way --
+     * it is also every feature and admin gate -- so it is pinned to the one
+     * call whose only job is to ask whether this session may continue. */
+    const status = error.response?.status
+    const dormant = status === 403 && (error.config?.url ?? '').endsWith('whoami')
+    if ((status === 401 || dormant) && !onAuthPage) {
       const store = useUserStore()
       store.logout()
-      store.sessionExpired = true
+      if (dormant) store.accountDormant = true
+      else store.sessionExpired = true
       void router.push({ path: '/sign-in', query: { nextUrl: path } })
     }
     return Promise.reject(error)

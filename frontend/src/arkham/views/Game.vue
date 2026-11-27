@@ -513,6 +513,15 @@ watch(processing, (busy) => {
 const storyAnswerPending = ref(false)
 const oldQuestion = ref<Record<string, Question> | null>(null)
 const skipAllPending = ref<Set<string>>(new Set())
+/* A newly arrived trigger window has to be visible before a key can decline it.
+ * Space advances apply-results and lone forced prompts too, so one held key --
+ * there is no auto-repeat on a keydown listener to stop it -- or a habitual
+ * extra tap answered the reaction window queued behind them before it had
+ * rendered, and the player's own reaction vanished unseen (#6073). Only the
+ * Skip Triggers path is gated: the other Space fallbacks resolve forced prompts
+ * with no alternative, and holding them off would make advancing sticky. */
+const questionArrivedAt = ref(0)
+const SKIP_TRIGGERS_DWELL_MS = 250
 const { t, te } = useI18n()
 const phaseNotification = ref<Phase | null>(null)
 const phaseNotificationQueue = ref<Phase[]>([])
@@ -1172,6 +1181,17 @@ const skipAllAvailable = computed(() => {
 })
 
 const skipAllInProgress = computed(() => skipAllPending.value.size > 0)
+
+/* Keyed on what this seat is actually being asked, not on object identity: every
+ * update decodes a fresh question object, so watching the object would restart
+ * the dwell on unrelated table activity. `scenarioSteps` alone is not enough
+ * either -- simultaneous asks can park two prompts on one version. */
+watch(
+  () => `${game.value?.scenarioSteps ?? ''}:${choices.value.map((c) => c.tag).join(',')}`,
+  () => {
+    questionArrivedAt.value = performance.now()
+  },
+)
 
 function setGameQuestion(question: Record<string, Question>) {
   if (!game.value) return
@@ -2009,7 +2029,10 @@ const runHoverShortcut = (event: KeyboardEvent): boolean => {
 
 const canUndoScenario = computed(() => {
   if (!game.value) return false
-  return game.value.scenarioSteps > 1
+  // Not a flat 1: a game whose scenario handed off to a second part inside the
+  // same game (Fortune and Folly, Part II) starts that part partway up the
+  // scenarioSteps count. Older games have no boundary and fall back to 1.
+  return game.value.scenarioSteps > (game.value.undoScenarioStep ?? 1)
 })
 
 const canUndoBoundary = (boundary: number | null): boolean => {
@@ -2187,6 +2210,10 @@ const handleKeyPress = (event: KeyboardEvent) => {
 
   if (isKey('continue', event) || event.code === 'Space') {
     event.preventDefault()
+    /* Auto-repeat fans one held key out across every question that arrives while
+     * it is down, which is how a reaction window got declined before it rendered
+     * (#6073). A press advances one question. */
+    if (event.repeat) return
 
     // Dismissing the draw spotlight runs the flight to the hand, so it cannot go
     // through continueUI's blunt teardown.
@@ -2204,6 +2231,7 @@ const handleKeyPress = (event: KeyboardEvent) => {
       (c) => c.tag === Message.MessageType.SKIP_TRIGGERS_BUTTON,
     )
     if (skipTriggers !== -1) {
+      if (performance.now() - questionArrivedAt.value < SKIP_TRIGGERS_DWELL_MS) return
       choose(skipTriggers)
       return
     }
@@ -2428,28 +2456,50 @@ const bugDescription = ref('')
 function fileBugFromError() {
   bugDescription.value = error.value ?? ''
   error.value = null
+  openBugForm()
+}
+
+/* Files into the site's own tracker. The server takes the game export itself,
+ * so there is nothing to paste and no GitHub account to have -- and so the
+ * whole thing happens in this one panel, over the game, rather than handing
+ * the player off to a site that then has to hand them back. */
+const filedReport = ref<number | null>(null)
+const bugBlocking = ref(false)
+const bugError = ref<string | null>(null)
+
+function openBugForm() {
+  filedReport.value = null
+  bugError.value = null
   filingBug.value = true
+}
+
+function closeBugPanel() {
+  filingBug.value = false
+  filedReport.value = null
 }
 
 async function fileBug() {
   submittingBug.value = true
-  filingBug.value = false
-  Api.fileBug(props.gameId)
-    .then((response) => {
-      const title = encodeURIComponent(bugTitle.value)
-      const body = encodeURIComponent(
-        `${bugDescription.value}\n\ngame: ${window.location.href}\nfile: ${response.data}`,
-      )
-      window.open(
-        `https://github.com/halogenandtoast/ArkhamHorror/issues/new?labels=bug&title=${title}&body=${body}&assignee=halogenandtoast&projects=halogenandtoast/2`,
-        '_blank',
-      )
-      submittingBug.value = false
+  bugError.value = null
+  try {
+    const detail = await Api.createReport({
+      kind: 'bug',
+      title: bugTitle.value,
+      body: bugDescription.value,
+      blocking: bugBlocking.value,
+      gameId: props.gameId,
     })
-    .catch(() => {
-      alert(t('gameBar.bugSubmittingFail'))
-      submittingBug.value = false
-    })
+    bugTitle.value = ''
+    bugDescription.value = ''
+    bugBlocking.value = false
+    filedReport.value = detail.report.number
+  } catch {
+    /* In the panel, with what they wrote still in the fields: an alert over a
+     * form whose contents have just been thrown away is how a report is lost. */
+    bugError.value = t('gameBar.bugSubmittingFail')
+  } finally {
+    submittingBug.value = false
+  }
 }
 
 const clearRevealState = () => {
@@ -2888,15 +2938,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="submittingBug" class="column page-container">
-    <div class="page-content column">
-      <h2 class="title">{{ $t('gameBar.bugSubmittingTitle') }}</h2>
-      <section class="box">
-        {{ $t('gameBar.bugSubmittingContent') }}
-      </section>
-    </div>
-  </div>
-  <div id="game" v-else-if="ready && game && playerId" :class="{ 'game--inline-modals': inlineModals }" :style="{ '--epic-bar-height': epicBarHeight + 'px' }">
+  <div id="game" v-if="ready && game && playerId" :class="{ 'game--inline-modals': inlineModals }" :style="{ '--epic-bar-height': epicBarHeight + 'px' }">
     <dialog v-if="roomAbandoned" class="error-dialog">
       <h2>{{ $t('gameAbandonedTitle') }}</h2>
       <p>{{ $t('gameAbandoned') }}</p>
@@ -3068,28 +3110,60 @@ onUnmounted(() => {
     </Draggable>
     <Draggable v-if="filingBug">
       <template #handle>
-        <header>
-          <h2>{{ $t('gameBar.fileABug') }}</h2>
-        </header>
+        <h2 class="bug-title">{{ filedReport === null ? $t('gameBar.fileABug') : $t('gameBar.bugFiled') }}</h2>
       </template>
-      <form @submit.prevent="fileBug" class="column bug-form box">
-        <p>{{ $t('gameBar.fileBugPart1') }}</p>
-        <p class="info">{{ $t('gameBar.fileBugPart2') }}</p>
-        <p class="warning">{{ $t('gameBar.fileBugPart3') }}</p>
-        <input
-          required
-          type="text"
-          v-model="bugTitle"
-          v-bind:placeholder="$t('gameBar.bugTitleholder')"
-        />
-        <textarea
-          required
-          v-model="bugDescription"
-          v-bind:placeholder="$t('gameBar.bugDescriptionholder')"
-        ></textarea>
-        <div class="buttons">
-          <button type="submit">{{ $t('submit') }}</button>
-          <button @click="filingBug = false">{{ $t('cancel') }}</button>
+      <div v-if="filedReport !== null" class="bug-form">
+        <div class="bug-body">
+          <p class="bug-filed">{{ $t('gameBar.bugFiledBody', { number: filedReport }) }}</p>
+        </div>
+        <div class="bug-actions">
+          <a class="ghost" :href="`#/reports/${filedReport}`" target="_blank" rel="noreferrer">
+            {{ $t('gameBar.bugFiledOpen') }}
+          </a>
+          <button type="button" @click="closeBugPanel">{{ $t('close') }}</button>
+        </div>
+      </div>
+      <form v-else class="bug-form" @submit.prevent="fileBug">
+        <div class="bug-body">
+          <p class="bug-note">{{ $t('gameBar.fileBugPart3') }}</p>
+          <p v-if="bugError" class="bug-error">{{ bugError }}</p>
+
+          <label class="field">
+            <span>{{ $t('reports.new.summary') }}</span>
+            <input
+              required
+              type="text"
+              v-model="bugTitle"
+              :disabled="submittingBug"
+              :placeholder="$t('gameBar.bugTitleholder')"
+            />
+          </label>
+
+          <label class="field">
+            <span>{{ $t('reports.new.whatHappened') }}</span>
+            <textarea
+              required
+              rows="6"
+              v-model="bugDescription"
+              :disabled="submittingBug"
+              :placeholder="$t('gameBar.bugDescriptionholder')"
+            ></textarea>
+          </label>
+
+          <label class="check">
+            <input type="checkbox" v-model="bugBlocking" :disabled="submittingBug" />
+            {{ $t('gameBar.bugBlocking') }}
+          </label>
+        </div>
+
+        <div class="bug-actions">
+          <!-- Without a type this is a submit button, and cancelling filed the bug. -->
+          <button type="button" class="ghost" :disabled="submittingBug" @click="closeBugPanel">
+            {{ $t('cancel') }}
+          </button>
+          <button type="submit" :disabled="submittingBug">
+            {{ submittingBug ? $t('gameBar.bugFiling') : $t('submit') }}
+          </button>
         </div>
       </form>
     </Draggable>
@@ -3237,7 +3311,7 @@ onUnmounted(() => {
         </Menu>
       </div>
       <div>
-        <button @click="filingBug = true">
+        <button @click="openBugForm">
           <ExclamationTriangleIcon aria-hidden="true" /> {{ $t('fileBug') }}
         </button>
       </div>
@@ -4939,14 +5013,145 @@ button:hover .shortcut {
   background-color: var(--box-border);
 }
 
+/* A game window titles its handle at 2em, which over this 14px form came out
+   at 38px and left the minimize button stranded below it. The site's own
+   panels title themselves at 20px -- see .shortcuts-title. */
+.bug-title {
+  font-family: Teutonic, serif;
+  font-size: 20px;
+  font-weight: normal;
+  letter-spacing: 0.04em;
+  margin: 0;
+}
+
+/* The site's form language, not the game's: this is the same form as
+   /reports/new, open over a game. Modals are teleported to #modal, which is
+   outside #app, so the face has to be named here -- inherited, it is the
+   browser's Times. */
 .bug-form {
-  padding: 10px;
-  font-size: 1.2em;
-  input,
-  textarea,
-  button {
-    font-size: 1.2em;
-    padding: 5px 10px;
+  background: var(--background);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  font-family: 'Noto Sans', Avenir, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  width: 100%;
+
+  .bug-body {
+    display: grid;
+    gap: 14px;
+    padding: 18px 20px;
+  }
+
+  /* A caveat about the attached export, not an error: coloured on the edge
+     rather than filled red, which this form reserves for a failure. */
+  .bug-note {
+    background: var(--background-dark);
+    border-left: 3px solid var(--survivor);
+    border-radius: 0 4px 4px 0;
+    color: var(--title);
+    font-size: 0.85em;
+    line-height: 1.45;
+    margin: 0;
+    padding: 10px 12px;
+  }
+
+  .bug-error {
+    color: var(--survivor);
+    margin: 0;
+  }
+
+  .bug-filed {
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  .field {
+    color: var(--title);
+    display: grid;
+    gap: 5px;
+
+    > span {
+      font-family: Teutonic, serif;
+      font-size: 13px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+  }
+
+  input[type='text'],
+  textarea {
+    background: var(--background-dark);
+    border: 1px solid var(--box-border);
+    border-radius: 4px;
+    box-sizing: border-box;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 14px;
+    padding: 8px 10px;
+    width: 100%;
+
+    &:focus {
+      border-color: var(--button-1);
+      outline: none;
+    }
+  }
+
+  textarea {
+    resize: vertical;
+  }
+
+  .check {
+    align-items: center;
+    color: var(--title);
+    display: flex;
+    font-size: 0.9em;
+    gap: 8px;
+  }
+
+  .bug-actions {
+    align-items: center;
+    background: var(--background-dark);
+    border-top: 1px solid var(--box-border);
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    padding: 10px 16px;
+
+    button,
+    a {
+      background: var(--button-1);
+      border: none;
+      border-radius: 4px;
+      color: var(--text);
+      cursor: pointer;
+      font-family: Teutonic, serif;
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      padding: 8px 16px;
+      text-decoration: none;
+      text-transform: uppercase;
+
+      &:hover:not(:disabled) {
+        background: var(--button-1-highlight);
+      }
+
+      &:disabled {
+        cursor: default;
+        opacity: 0.5;
+      }
+    }
+
+    .ghost {
+      background: none;
+      border: 1px solid var(--box-border);
+      color: var(--title);
+
+      &:hover:not(:disabled) {
+        background: var(--box-background);
+        color: var(--text);
+      }
+    }
   }
 }
 

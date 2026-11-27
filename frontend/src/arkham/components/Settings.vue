@@ -52,6 +52,11 @@ const hideInertCards = computed({
   set: (value: boolean) => settings.setHideInertCards(value),
 })
 
+const autoScaleCards = computed({
+  get: () => settings.autoScaleCards,
+  set: (value: boolean) => settings.setAutoScaleCards(value),
+})
+
 // Same global / per-game pairing as extraAnimations above, tri-state for the
 // same reason: "not in this scenario" and "not ever" are different wishes.
 const drawSpotlightGlobal = computed<string>({
@@ -340,6 +345,20 @@ onBeforeUnmount(() => {
 
           <div class="toggle-row">
             <div class="toggle-text">
+              <div class="toggle-name">{{$t('gameBar.settings.autoScaleCardsTitle')}}</div>
+              <div class="toggle-desc">{{$t('gameBar.settings.autoScaleCards')}}</div>
+              <div class="toggle-scope">{{$t('gameBar.settings.scope.browser')}}</div>
+            </div>
+            <div class="segmented toggle-control">
+              <input type="radio" id="opt-autoScaleCards-on" name="opt-autoScaleCards" :checked="autoScaleCards" @change="autoScaleCards = true" />
+              <label for="opt-autoScaleCards-on">{{ $t('On') }}</label>
+              <input type="radio" id="opt-autoScaleCards-off" name="opt-autoScaleCards" :checked="!autoScaleCards" @change="autoScaleCards = false" />
+              <label for="opt-autoScaleCards-off">{{ $t('Off') }}</label>
+            </div>
+          </div>
+
+          <div class="toggle-row">
+            <div class="toggle-text">
               <div class="toggle-name">{{$t('gameBar.settings.hideInertCardsTitle')}}</div>
               <div class="toggle-desc">{{$t('gameBar.settings.hideInertCards')}}</div>
               <div class="toggle-scope">{{$t('gameBar.settings.scope.browser')}}</div>
@@ -471,13 +490,19 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
+      <!-- Two independent blocks, so this panel stacks sections itself rather
+           than leaning on .settings-body's gap the way the single-section tabs do. -->
       <div
+        class="settings-stack"
         role="tabpanel"
         id="settings-panel-cards"
         aria-labelledby="settings-tab-cards"
         v-show="activeTab === 'cards'"
       >
-        <CustomWeaknessPool v-if="settings.customCardsEnabled" :game="game" :playerId="playerId" />
+        <section class="settings-section" v-if="settings.customCardsEnabled">
+          <h3 class="section-title">{{$t('gameBar.settings.customCardsTitle')}}</h3>
+          <CustomWeaknessPool :game="game" :playerId="playerId" />
+        </section>
         <CardOptionsSettings :game="game" :playerId="playerId" />
       </div>
 
@@ -654,6 +679,25 @@ onBeforeUnmount(() => {
 .settings-section {
   display: flex;
   flex-direction: column;
+}
+
+/* A tab holding more than one section spaces them the way .settings-body
+   spaces the single-section tabs. */
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.section-title {
+  margin: 0 0 10px;
+  padding-bottom: 6px;
+  font-family: Teutonic, serif;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--title);
+  border-bottom: 1px solid var(--box-border);
 }
 
 .toggle-list {

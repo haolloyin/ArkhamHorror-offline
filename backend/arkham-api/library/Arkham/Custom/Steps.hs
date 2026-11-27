@@ -444,7 +444,7 @@ runCustomize env spec = do
   offers = \case
     CustomizationTraitChoice -> [(displayTrait t, ChosenTrait t) | t <- allTraits]
     CustomizationSkillChoice -> [(tshow st, ChosenSkill st) | st <- [minBound ..]]
-    CustomizationIndexChoice zs -> [(tshow z, ChosenIndex n) | (n, z) <- withIndex zs]
+    CustomizationIndexChoice zs -> [(z, ChosenIndex n) | (n, z) <- withIndex zs]
     CustomizationCardChoice matcher ->
       [ (title, ChosenCard title)
       | title <-
@@ -885,16 +885,15 @@ runDiscover env spec = do
     source = stepSource env
     isInvestigate =
       if KeyMap.lookup "via" o == Just (String "investigate") then IsInvestigate else NotInvestigate
-    action = guard (isInvestigate == IsInvestigate) $> #investigate
   when (n > 0) $ case KeyMap.lookup "location" o >>= decodeWith env of
     Nothing -> do
       discovery <- discoverAtYourLocation source n
-      push $ Msg.DiscoverClues iid discovery {discoverAction = action}
+      push $ Msg.DiscoverClues iid discovery {discoverVia = isInvestigate}
     Just lid -> whenM (getCanDiscoverClues isInvestigate iid lid) do
       did <- getRandom
       push
         $ Msg.DiscoverClues iid
-        $ (discoverPure did (lid :: LocationId) source n) {discoverAction = action}
+        $ (discoverPure did (lid :: LocationId) source n) {discoverVia = isInvestigate}
 
 {- | Put copies of named cards into the set-aside zone, owned by an investigator.
 
@@ -1404,7 +1403,7 @@ runModify env spec = case spec of
             push
               $ CreateWindowModifierEffect
                 window
-                (EffectModifiers [Modifier source modifier False Nothing Nothing | modifier <- modifiers])
+                (EffectModifiers [Modifier source modifier False Nothing Nothing False False | modifier <- modifiers])
                 source
                 target
       _ -> reportBadPayload env "modify" spec

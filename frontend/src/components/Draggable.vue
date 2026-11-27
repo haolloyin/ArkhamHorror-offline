@@ -493,8 +493,12 @@ function moveUp() {
     max-width: 92vw;
   }
 
+  /* Site UI rather than a game prompt: a settings sheet, the shortcut list and
+     the bug form are pages of the site that happen to be open over a game, so
+     they take the site's solid chrome instead of the translucent green one. */
   &:has(> .content > .settings),
-  &:has(> .content > .shortcuts-modal) {
+  &:has(> .content > .shortcuts-modal),
+  &:has(> .content > .bug-form) {
     width: min(640px, 92vw);
     max-width: 92vw;
     background: var(--background);
@@ -506,6 +510,24 @@ function moveUp() {
       background: var(--background);
       overflow: hidden;
       height: auto;
+    }
+  }
+
+  /* The settings sheet and the shortcut list title themselves inside their own
+     body, so their handle is a bare drag strip. The bug form titles the handle
+     itself, and a game window hangs the minimize button off the bottom of the
+     handle to clear a tall banner title -- here the title is one short line, so
+     the button belongs on its centre line, and the strip takes the same dark
+     bar as the form's own footer. */
+  &:has(> .content > .bug-form) > header {
+    padding: 8px 14px;
+    background: var(--background-dark);
+    border-bottom: 1px solid var(--box-border);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+
+    .minimize-btn {
+      align-self: center;
     }
   }
 

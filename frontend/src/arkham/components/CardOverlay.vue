@@ -22,8 +22,15 @@ import type { CardDef } from '@/arkham/types/CardDef'
 import KeyToken from '@/arkham/components/Key.vue'
 import { type ArkhamKey, keyToId } from '@/arkham/types/Key'
 import PoolItem from '@/arkham/components/PoolItem.vue'
+import ModifierPanel from '@/arkham/components/ModifierPanel.vue'
+import {
+  groupModifierRows,
+  wireModifierRows,
+  type ModifierRow,
+  type StatReading,
+  type WireModifier,
+} from '@/arkham/modifierDisplay'
 import { useDbCardStore, ArkhamDBCard } from '@/stores/dbCards'
-import { useI18n } from 'vue-i18n'
 
 /* =============================================================================
  * Constants, basic helpers, and caches
@@ -31,6 +38,33 @@ import { useI18n } from 'vue-i18n'
 
 const CARD_RATIO = 0.705        // width / height (portrait)
 const OVERLAY_W = 300           // base width (portrait) or height (sideways)
+/* Must match `.card-modifiers` in this file's styles. The panel is a flex
+   sibling of the card, so its width is part of the overlay's real width. */
+const MODIFIER_PANEL_W = 236
+const MODIFIER_PANEL_GAP = 4
+/* Mirrors the `max-width: 800px` rule on `.card-modifiers` below, where the
+   panel stops sitting beside the card and goes underneath it: beside, it adds
+   to the overlay's width; underneath, to its height. */
+const PANEL_STACKS_BELOW_CARD = '(max-width: 800px)'
+
+/* How much of a modifier list the magnified card may show.
+ *
+ * The overlay is `pointer-events: none`, so the panel inside it cannot be
+ * scrolled -- whatever does not fit is unreachable, and a list long enough
+ * makes the overlay taller than the window, which grows the document and lets
+ * the board be scrolled away under it. So the preview cuts the list to what
+ * fits and says how much it cut; the pip's panel does scroll, and keeps all of
+ * it.
+ *
+ * All measured off the rendered panel. A row is taller on the stacked
+ * breakpoint, where the source thumbnails are bigger. */
+const MAGNIFIER_ROW_PX = 37           // a row and the gap below it
+const MAGNIFIER_ROW_PX_STACKED = 45
+const MAGNIFIER_HEADING_PX = 26       // a group heading and the gap above its section
+const MAGNIFIER_STAT_PX = 30          // one "5 -> 8" line above the list
+const MAGNIFIER_CHROME_PX = 53        // the panel's own padding and the "+N more" line
+/* A tall window should still not turn the magnifier into the whole list. */
+const MAGNIFIER_MAX_ROWS = 10
 const TAROT_H = 500             // fixed tarot height
 const VIEW_W = 1000             // stable viewBox width for percent → px mapping
 
@@ -77,7 +111,6 @@ type Pct = { top: number; left: number }
 
 const store = useDbCardStore()
 const debug = useDebug()
-const { t } = useI18n()
 
 const cardOverlay = ref<HTMLElement | null>(null)
 const hoveredElement = ref<HTMLElement | null>(null)
@@ -97,12 +130,6 @@ type CosmicEmissaryTimerContext = {
   playerId: string
 }
 let cosmicEmissaryTimerContext: CosmicEmissaryTimerContext | null = null
-type CosmicEmissaryPrompt = {
-  gameId: string
-  playerId: string
-  agendaImage: string | null
-}
-const cosmicEmissaryPrompt = ref<CosmicEmissaryPrompt | null>(null)
 const COSMIC_EMISSARY_CARD_CODES = new Set([
   '10662a',
   '10662b',
@@ -127,33 +154,6 @@ const cosmicEmissaryData = (el: HTMLElement | null | undefined): CosmicEmissaryT
 
 const sameCosmicEmissaryContext = (a: CosmicEmissaryTimerContext | null, b: CosmicEmissaryTimerContext | null) =>
   !!a && !!b && a.gameId === b.gameId && a.playerId === b.playerId
-
-const currentCosmicEmissaryAgendaImage = (): string | null => {
-  const agendaCard = document.querySelector<HTMLImageElement>('.agenda-card img.card--agenda')
-  const src = agendaCard?.src
-  if (!src) return null
-
-  const match = src.match(/^(.*\/cards\/)(\d+)b(\.avif(?:\?.*)?)$/)
-  if (!match) return src
-
-  const [, prefix, code, suffix] = match
-  return `${prefix}${code}${suffix}`
-}
-
-function showCosmicEmissaryPrompt(gameId: string, playerId: string) {
-  cosmicEmissaryPrompt.value = {
-    gameId,
-    playerId,
-    agendaImage: currentCosmicEmissaryAgendaImage(),
-  }
-}
-
-function confirmCosmicEmissaryPrompt() {
-  const prompt = cosmicEmissaryPrompt.value
-  if (!prompt) return
-  debug.send(prompt.gameId, { tag: 'KonamiCode', contents: prompt.playerId })
-  cosmicEmissaryPrompt.value = null
-}
 
 watch(hoveredElement, (el) => {
   playabilityData.value = null
@@ -199,6 +199,22 @@ const updateIsMobile = () => (isMobile.value = mq.matches)
 updateIsMobile()
 onMounted(() => mq.addEventListener?.('change', updateIsMobile))
 onUnmounted(() => mq.removeEventListener?.('change', updateIsMobile))
+
+/* Both of these decide how much of the overlay fits, so they have to be
+   reactive rather than read off `window` inside a computed. */
+const panelStacked = ref(window.matchMedia(PANEL_STACKS_BELOW_CARD).matches)
+const stackMq = window.matchMedia(PANEL_STACKS_BELOW_CARD)
+const updatePanelStacked = () => (panelStacked.value = stackMq.matches)
+const viewportH = ref(window.innerHeight)
+const updateViewportH = () => (viewportH.value = window.innerHeight)
+onMounted(() => {
+  stackMq.addEventListener?.('change', updatePanelStacked)
+  window.addEventListener('resize', updateViewportH)
+})
+onUnmounted(() => {
+  stackMq.removeEventListener?.('change', updatePanelStacked)
+  window.removeEventListener('resize', updateViewportH)
+})
 
 /* =============================================================================
  * Pointer/hover handling
@@ -375,7 +391,6 @@ const clearOverlay = () => {
   playabilityTimer = clearTimer(playabilityTimer)
   cosmicEmissaryTimer = clearTimer(cosmicEmissaryTimer)
   cosmicEmissaryTimerContext = null
-  cosmicEmissaryPrompt.value = null
   hoveredElement.value = null
 }
 
@@ -576,14 +591,27 @@ watch(card, (src) => { if (src) loadAR(src) })
 const overlayPosition = ref<{ top: number; left: number }>({ top: 0, left: 0 })
 let posRAF: number | null = null
 
+const cardHeight = computed(() => (sideways.value ? OVERLAY_W : Math.round(OVERLAY_W / CARD_RATIO)))
+
 const getPosition = (el: HTMLElement): { top: number; left: number } => {
   const rect = el.getBoundingClientRect()
   const width = sideways.value ? OVERLAY_W / CARD_RATIO : OVERLAY_W
-  const height = sideways.value ? OVERLAY_W : Math.round(OVERLAY_W / CARD_RATIO)
+  /* The CARD's height, not the overlay's. The magnified card is the thing
+     being looked at, and it belongs beside the card it came from -- so a
+     modifier panel too long to fit cuts itself off against this placement
+     (`magnifierMaxRows`) rather than shifting the card up the screen. */
+  const height = cardHeight.value
 
   const gap = 2
   const hasCust = !!customizationsCard.value
-  const totalWidth = hasCust ? (width * 2 + gap) : width
+  /* A customizable card draws its customization sheet beside itself, and the
+     modifier panel is a third column after both. All of it has to be in the
+     width, or the right-edge clamp below puts the tail off-screen -- it was
+     measuring the cards only, so the panel always hung over by its own
+     width. */
+  const panelWidth =
+    modifierRows.value.length > 0 && !panelStacked.value ? MODIFIER_PANEL_W + MODIFIER_PANEL_GAP : 0
+  const totalWidth = (hasCust ? width * 2 + gap : width) + panelWidth
 
   if (el.dataset.overlayPosition === 'cursor-right' && lastPointer.value) {
     const cursorGap = 18
@@ -601,10 +629,13 @@ const getPosition = (el: HTMLElement): { top: number; left: number } => {
   const bottom = top + height
   const newTop = Math.max(0, bottom > window.innerHeight ? rect.bottom - height + window.scrollY - 40 : top)
 
+  const viewportPad = 10
   const rightSide = rect.left + window.scrollX + rect.width + 10
-  return (rightSide + totalWidth >= window.innerWidth)
-    ? { top: newTop, left: rect.left - totalWidth - 10 }
-    : { top: newTop, left: rightSide }
+  if (rightSide + totalWidth < window.innerWidth) return { top: newTop, left: rightSide }
+  return {
+    top: newTop,
+    left: Math.max(window.scrollX + viewportPad, rect.left - totalWidth - 10),
+  }
 }
 
 watch([hoveredElement, sideways], ([el]) => {
@@ -688,6 +719,52 @@ const checkmarks = computed<Checkmark[] | null>(() => {
 
 const spentKeys = computed<ArkhamKey[]>(() => jsonDs<ArkhamKey[]>('spentKeys'))
 const overlay = ds('overlay')
+
+/* Modifiers travel on the hovered card's `data-modifiers` because this overlay
+ * is global -- mounted once per view, with no game to read. Hover on a desktop
+ * and the existing 200ms long press on a touch screen both land here, so the
+ * full list needs no gesture of its own. */
+const modifierRows = computed<ModifierRow[]>(() => wireModifierRows(jsonDs<WireModifier[]>('modifiers')))
+const modifierStats = computed<StatReading[]>(() => jsonDs<StatReading[]>('stats'))
+
+/* Rows the panel may draw before it cuts the list off -- see the constants.
+ *
+ * Measured from where the overlay already is down to the bottom of the window,
+ * because the panel takes the placement as given: the card sits beside the
+ * card it magnifies, and a long list is cut to the room that leaves rather
+ * than pushing the card somewhere else to make space for itself.
+ *
+ * Walked the way the panel will draw it, rather than divided by an average
+ * row: each group pays for its heading before its first row, and how the rows
+ * fall into groups is known here. Stacked under the card the panel gets only
+ * what the card leaves; beside it, everything below the overlay's top edge. */
+const magnifierMaxRows = computed(() => {
+  const rowPx = panelStacked.value ? MAGNIFIER_ROW_PX_STACKED : MAGNIFIER_ROW_PX
+  const stacked = panelStacked.value ? cardHeight.value + MODIFIER_PANEL_GAP : 0
+  /* On a touch screen the overlay ignores this placement and centres itself
+     (`.isMobile` below), so there it has the whole window to work with. */
+  const top = isMobile.value ? 0 : Math.max(0, overlayPosition.value.top - window.scrollY)
+  let left =
+    viewportH.value
+    - top
+    - stacked
+    - MAGNIFIER_CHROME_PX
+    - modifierStats.value.length * MAGNIFIER_STAT_PX
+
+  let rows = 0
+  for (const section of groupModifierRows(modifierRows.value)) {
+    left -= MAGNIFIER_HEADING_PX
+    for (let i = 0; i < section.rows.length && left >= rowPx; i++) {
+      left -= rowPx
+      rows++
+    }
+  }
+  /* Zero is a real answer, and the panel is left out entirely for it: under a
+     card low on a narrow window there is no room to cut a list down TO, and a
+     panel that only fits by hanging off the bottom is the thing being fixed.
+     The card's own pip still has all of it. */
+  return Math.min(MAGNIFIER_MAX_ROWS, rows)
+})
 
 const tarot = computed<boolean>(() => !!hoveredElement.value?.classList.contains('tarot-card'))
 
@@ -829,6 +906,17 @@ const customizationSkills = computed<string[]>(() => {
   const out: string[] = []
   for (const [, [, arr]] of customizations.value) {
     arr.forEach(a => { if (a.tag === 'ChosenSkill') out.push(`skill-${cardCode.value}-${a.contents}`) })
+  }
+  return out
+})
+
+// Each ChosenIndex as [customization row, chosen index]. The row is needed because
+// the index means nothing on its own -- see DOMINANCE_SLOT_ORDER below.
+const customizationIndexes = computed<[number, number][]>(() => {
+  if (!cardCode.value || !customizations.value) return []
+  const out: [number, number][] = []
+  for (const [row, [, arr]] of customizations.value) {
+    arr.forEach(a => { if (a.tag === 'ChosenIndex') out.push([row, Number(a.contents)]) })
   }
   return out
 })
@@ -1070,6 +1158,33 @@ const skillItems = computed<SkillRender[]>(() => {
     const cx = (pos.left / 100) * vbW + r
     const cy = (pos.top  / 100) * vbH + r
     return [{ cx, cy, r, name: skillName }]
+  })
+})
+
+/** ---------- "(circle one)" rings (09080 Summoned Servitor, Dominance) ----------
+ * Same wash-and-ring treatment as Living Ink's skill circles above, stretched to
+ * an ellipse because the thing circled is a word rather than an icon. */
+/* The sheet prints "(circle one): arcane / ally", but ChosenIndex is an index into
+ * the card's PRINTED SLOT order, which is the other way round -- the same trap that
+ * made the engine free the wrong slot (#6016). Resolve the index to a slot name
+ * first, then look the word up by name, so the two orders can never be confused. */
+const DOMINANCE_ROW = 5
+const DOMINANCE_SLOT_ORDER = ['ally', 'arcane'] as const
+const DOMINANCE_WORDS: Record<string, LabelGeom> = {
+  arcane: { top: 69.5, left: 36.2, width: 12.0, height: 3.6 },
+  ally:   { top: 69.5, left: 49.8, width: 7.1,  height: 3.6 },
+}
+
+type ChoiceRing = { cx: number; cy: number; rx: number; ry: number; name: string }
+const choiceRings = computed<ChoiceRing[]>(() => {
+  if (cardCode.value !== '09080') return []
+  return customizationIndexes.value.flatMap(([row, n]) => {
+    if (row !== DOMINANCE_ROW) return []
+    const slot = DOMINANCE_SLOT_ORDER[n]
+    const geom = slot ? DOMINANCE_WORDS[slot] : undefined
+    if (!geom) return []
+    const px = rectFromPct(geom)
+    return [{ cx: px.x + px.w / 2, cy: px.y + px.h / 2, rx: px.w / 2, ry: px.h / 2, name: slot }]
   })
 })
 
@@ -1417,6 +1532,10 @@ watchEffect(() => {
           <template v-for="s in skillItems" :key="`skill-09079-${s.name}`">
             <circle :cx="s.cx" :cy="s.cy" :r="s.r" fill="rgba(0,0,0,0.4)" stroke="var(--neutral-extra-dark)" stroke-width="2" />
           </template>
+
+          <template v-for="c in choiceRings" :key="`choice-${cardCode}-${c.name}`">
+            <ellipse :cx="c.cx" :cy="c.cy" :rx="c.rx" :ry="c.ry" fill="rgba(0,0,0,0.4)" stroke="var(--neutral-extra-dark)" stroke-width="2" />
+          </template>
         </g>
       </svg>
 
@@ -1450,6 +1569,12 @@ watchEffect(() => {
           <p v-html="dbCardFlavor"></p>
         </div>
       </div>
+    </div>
+
+    <!-- Read-only: the overlay is pointer-events:none, and a hoverable source
+         thumbnail here would re-target the magnifier at that card. -->
+    <div class="card-modifiers" v-if="modifierRows.length > 0 && magnifierMaxRows > 0">
+      <ModifierPanel :rows="modifierRows" :stats="modifierStats" :max-rows="magnifierMaxRows" />
     </div>
 
     <span class="swarm" v-if="swarm"><BugAntIcon aria-hidden="true" /></span>
@@ -1492,25 +1617,6 @@ watchEffect(() => {
         </li>
       </ul>
     </div>
-    </div>
-  </Teleport>
-  <Teleport to="body">
-    <div v-if="cosmicEmissaryPrompt" class="cosmic-emissary-prompt-backdrop">
-      <div class="cosmic-emissary-prompt" role="dialog" aria-modal="true" aria-labelledby="cosmic-emissary-prompt-title">
-        <img
-          v-if="cosmicEmissaryPrompt.agendaImage"
-          class="cosmic-emissary-prompt__agenda"
-          :src="cosmicEmissaryPrompt.agendaImage"
-          :alt="t('theFeastOfHemlockVale.fateOfTheVale.cosmicEmissary.prompt.agendaAlt')"
-        />
-        <div class="cosmic-emissary-prompt__body">
-          <h2 id="cosmic-emissary-prompt-title">{{ t('theFeastOfHemlockVale.fateOfTheVale.cosmicEmissary.prompt.title') }}</h2>
-          <p>{{ t('theFeastOfHemlockVale.fateOfTheVale.cosmicEmissary.prompt.body') }}</p>
-          <div class="cosmic-emissary-prompt__actions">
-            <button type="button" class="cosmic-emissary-prompt__confirm" @click="confirmCosmicEmissaryPrompt">{{ t('theFeastOfHemlockVale.fateOfTheVale.cosmicEmissary.prompt.continue') }}</button>
-          </div>
-        </div>
-      </div>
     </div>
   </Teleport>
 </template>
@@ -1690,6 +1796,47 @@ watchEffect(() => {
   pointer-events: none;
   animation: fadeIn 0.5s;
 }
+/* A third column beside the card and its text, so the magnified card keeps its
+   full size and the list grows downward instead of over it. */
+.card-modifiers {
+  align-self: flex-start;
+  width: 236px;
+  max-width: 44vw;
+  margin-left: 4px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(14, 15, 19, 0.93);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 1px 1px 6px rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(8px);
+
+  /* No max-height here, and nothing to scroll: the list is cut to a counted
+     number of rows before it is drawn (`magnifierMaxRows`), because a cap on
+     this copy of the panel can only hide rows -- the overlay around it is
+     pointer-events: none, so its scrollbar can never be used. */
+  :deep(.modifier-panel__body) {
+    overflow: hidden;
+  }
+}
+
+/* On a phone the card already fills the width, so the list goes under it. */
+@media (max-width: 800px) {
+  .card-overlay {
+    flex-wrap: wrap;
+    /* The panel below takes its width from this one, and `width: max-content`
+       let it resolve wider than the screen -- which grows the document
+       sideways, the same way an over-long list grew it downwards. */
+    max-width: calc(100vw - 20px);
+  }
+
+  .card-modifiers {
+    width: 100%;
+    max-width: none;
+    margin-left: 0;
+    margin-top: 4px;
+  }
+}
+
 .card-overlay.overPopover {
   z-index: var(--z-card-hover-overlay-over-popover);
 }
@@ -1833,78 +1980,4 @@ watchEffect(() => {
 .check-body { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .check-name { word-break: break-word; }
 .check-detail { font-style: italic; color: #ffb74d; word-break: break-word; }
-
-.cosmic-emissary-prompt-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-modal-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: rgba(0, 0, 0, 0.65);
-}
-
-.cosmic-emissary-prompt {
-  display: flex;
-  gap: 18px;
-  max-width: min(760px, 100%);
-  padding: 18px;
-  border: 1px solid rgba(79, 224, 214, 0.65);
-  border-radius: 14px;
-  background: linear-gradient(135deg, rgba(5, 29, 35, 0.98), rgba(12, 75, 82, 0.98));
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.7), 0 0 28px rgba(79, 224, 214, 0.38);
-  color: #d8fffb;
-}
-
-.cosmic-emissary-prompt__agenda {
-  width: min(280px, 34vw);
-  border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
-}
-
-.cosmic-emissary-prompt__body {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  max-width: 360px;
-  font-family: Arial, sans-serif;
-}
-
-.cosmic-emissary-prompt__body h2 {
-  margin: 0 0 10px;
-  font-family: Teutonic, Georgia, serif;
-  font-size: 1.7rem;
-  color: #bffff8;
-}
-
-.cosmic-emissary-prompt__body p {
-  margin: 0;
-  line-height: 1.45;
-}
-
-.cosmic-emissary-prompt__actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 18px;
-}
-
-.cosmic-emissary-prompt__actions button {
-  padding: 8px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  border-radius: 8px;
-  color: white;
-  cursor: pointer;
-}
-
-.cosmic-emissary-prompt__confirm {
-  background: rgba(12, 112, 119, 0.95);
-  box-shadow: 0 0 12px rgba(79, 224, 214, 0.28);
-}
-
-@media (max-width: 650px) {
-  .cosmic-emissary-prompt { flex-direction: column; align-items: center; }
-  .cosmic-emissary-prompt__agenda { width: min(280px, 72vw); }
-}
 </style>

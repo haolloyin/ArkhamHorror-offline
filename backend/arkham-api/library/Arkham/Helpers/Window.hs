@@ -2142,10 +2142,17 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
             , defeatedByMatches defeatedBy defeatedByMatcher
             ]
         _ -> noMatch
-    Matcher.EnemyFlipped timing enemyMatcher ->
+    Matcher.EnemyFlipped timing whoMatcher enemyMatcher ->
       guardTiming timing $ \case
-        Window.EnemyFlipped enemyId ->
-          matches enemyId enemyMatcher
+        Window.EnemyFlipped (Just who) enemyId ->
+          andM [matchWho iid who whoMatcher, matches enemyId enemyMatcher]
+        {- No flipper: an act or a card turned the enemy over, so there is no "you"
+        for the window to be about and only a seat-agnostic matcher can fire. Without
+        this split a Forced "after you flip this enemy" matches every seat and the
+        GroupLimit PerWindow default silently hands it to an arbitrary one. #6062 -}
+        Window.EnemyFlipped Nothing enemyId
+          | whoMatcher == Matcher.Anyone ->
+              matches enemyId enemyMatcher
         _ -> noMatch
     Matcher.EnemyEnters timing whereMatcher enemyMatcher ->
       guardTiming timing $ \case
@@ -2460,6 +2467,13 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
       _ -> noMatch
     Matcher.AssetEntersPlay timing assetMatcher -> guardTiming timing $ \case
       Window.EnterPlay (AssetTarget aid) -> elem aid <$> select assetMatcher
+      _ -> noMatch
+    -- The WHO comes from the payload. Running an investigator matcher over the
+    -- asset instead would offer a location-only `Who` to every seat (#5685/#6013),
+    -- and the asset has already left play by the time this fires.
+    Matcher.AssetFlippedFacedown timing whoMatcher assetMatcher -> guardTiming timing $ \case
+      Window.AssetFlippedFacedown who aid ->
+        andM [matchWho iid who whoMatcher, elem aid <$> select assetMatcher]
       _ -> noMatch
     Matcher.AssetLeavesPlay timing assetMatcher -> guardTiming timing $ \case
       Window.LeavePlay (AssetTarget aid) -> elem aid <$> select assetMatcher

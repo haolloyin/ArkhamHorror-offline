@@ -52,6 +52,7 @@ import Arkham.GameEnv
 import Arkham.Helpers.Card
 import Arkham.Helpers.GameLog
 import Arkham.Helpers.GameValue
+import Arkham.Helpers.History (getAllHistoryField)
 import Arkham.Helpers.Investigator
 import Arkham.Helpers.Location (getLocationOf, placementLocation, withLocationOf)
 import Arkham.Helpers.Modifiers hiding (ModifierType (..))
@@ -335,6 +336,45 @@ defeatBlockedBySource :: HasGame m => Source -> [ModifierType] -> m Bool
 defeatBlockedBySource source = anyM \case
   CannotBeDefeatedBy sm -> sourceMatches source sm
   _ -> pure False
+
+{- | Queue this enemy's attack against whoever it attacks right now: the body of
+@Do EnemiesAttack@, shared by the enemy-phase sweep and by the targeted "attack
+again" senders (Relentless, 'resolveEnemyPhaseOf').
+-}
+queueEnemyPhaseAttack :: Lifted.ReverseQueue m => EnemyAttrs -> m ()
+queueEnemyPhaseAttack a = do
+  mods <- getModifiers (EnemyTarget a.id)
+  cannotAttack <- getCannotAttackNow mods
+  unless cannotAttack do
+    let mOverride = getFirst $ mconcat [First (Just override) | EnemyAttacksOverride override <- mods]
+    iids <-
+      select (fromMaybe (enemyAttacks a) mOverride) >>= filterM \iid' -> do
+        imods <- getModifiers iid'
+        flip allM imods \case
+          CannotBeAttackedBy matcher -> notElem a.id <$> select matcher
+          CannotBeAttacked -> pure False
+          _ -> pure True
+    case iids of
+      [] -> do
+        whenAny (locationWithEnemy a.id <> LocationWithModifier CountsAsInvestigatorForHunterEnemies) do
+          scenarioSpecific "enemyAttackedAtLocation" a.id
+          scenarioSpecific "enemyAttacked" a.id
+      [x] ->
+        push
+          $ EnemyWillAttack
+          $ (enemyAttack a.id a x)
+            { attackDamageStrategy = enemyDamageStrategy a
+            , attackExhaustsEnemy = True
+            }
+      (x : xs) ->
+        push
+          $ EnemyWillAttack
+          $ (enemyAttack a.id a x)
+            { attackDamageStrategy = enemyDamageStrategy a
+            , attackExhaustsEnemy = True
+            , attackTarget = MassiveAttackTargets (map toTarget $ x : xs)
+            , attackOriginalTarget = MassiveAttackTargets (map toTarget $ x : xs)
+            }
 
 instance RunMessage EnemyAttrs where
   runMessage msg a@EnemyAttrs {..} = runQueueT $ case msg of
@@ -774,7 +814,15 @@ instance RunMessage EnemyAttrs where
             traverse
               (\(iid', eid') -> checkWindows [mkAfter (Window.EnemyEntersYourLocation iid' eid' lid)])
               [(iid', eid') | iid' <- iidsHere, eid' <- entries]
-          pushAll (afterWindows <> yourLocationAfters)
+          -- An engaged enemy dragged along by the investigator it is engaged
+          -- with has moved, so "after this enemy moves" abilities owe their
+          -- window. The generic `EnemyMove` path raises this itself; this path
+          -- never reaches it, which left Cats from Saturn's printed Forced
+          -- ability dead -- once engaged, following is the only way a hunter
+          -- enemy ever moves (#6025). Swarming X moves "as a single entity", so
+          -- the window is raised once for the host, not per swarm card.
+          movedWindow <- checkAfter $ Window.EnemyMoves eid lid
+          pushAll (afterWindows <> yourLocationAfters <> [movedWindow])
       pure a
     Ready (isTarget a -> True) -> do
       whenM (getCanReady a) do
@@ -1272,40 +1320,26 @@ instance RunMessage EnemyAttrs where
                   , attackOriginalTarget = MassiveAttackTargets (map toTarget $ x : xs)
                   }
       pure a
+    -- A targeted "attack again" -- Relentless after framework 3.3,
+    -- 'resolveEnemyPhaseOf' -- deliberately re-attacks an enemy that already
+    -- attacked this phase, so it skips the sweep's guard below. These two must
+    -- stay above the generic SendMessage/ForTarget unwraps, which would
+    -- otherwise re-dispatch them as a bare 'Do EnemiesAttack'.
+    ForTarget (isTarget a -> True) (Do EnemiesAttack) | not enemyExhausted && not enemyDefeated -> do
+      queueEnemyPhaseAttack a
+      pure a
+    SendMessage (isTarget a -> True) (Do EnemiesAttack) | not enemyExhausted && not enemyDefeated -> do
+      queueEnemyPhaseAttack a
+      pure a
+    -- Framework 3.3 runs a per-investigator pass and then this broadcast
+    -- catch-all, for an enemy whose 'attacks' matcher is not an engaged
+    -- investigator. Exhausting after the attack is what normally keeps the
+    -- catch-all from attacking a second time -- but a CANCELLED attack never
+    -- exhausts, so Dodge let The Thing That Follows attack twice (#6066). Phase
+    -- history is the guard instead: it records a cancelled attack too.
     Do EnemiesAttack | not enemyExhausted && not enemyDefeated -> do
-      mods <- getModifiers (EnemyTarget enemyId)
-      cannotAttack <- getCannotAttackNow mods
-      unless cannotAttack do
-        let mOverride = getFirst $ mconcat [First (Just override) | EnemyAttacksOverride override <- mods]
-        iids <-
-          select (fromMaybe enemyAttacks mOverride) >>= filterM \iid' -> do
-            imods <- getModifiers iid'
-            flip allM imods \case
-              CannotBeAttackedBy matcher -> notElem enemyId <$> select matcher
-              CannotBeAttacked -> pure False
-              _ -> pure True
-        case iids of
-          [] -> do
-            whenAny (locationWithEnemy enemyId <> LocationWithModifier CountsAsInvestigatorForHunterEnemies) do
-              scenarioSpecific "enemyAttackedAtLocation" enemyId
-              scenarioSpecific "enemyAttacked" enemyId
-            pure ()
-          [x] ->
-            push
-              $ EnemyWillAttack
-              $ (enemyAttack enemyId a x)
-                { attackDamageStrategy = enemyDamageStrategy
-                , attackExhaustsEnemy = True
-                }
-          (x : xs) ->
-            push
-              $ EnemyWillAttack
-              $ (enemyAttack enemyId a x)
-                { attackDamageStrategy = enemyDamageStrategy
-                , attackExhaustsEnemy = True
-                , attackTarget = MassiveAttackTargets (map toTarget $ x : xs)
-                , attackOriginalTarget = MassiveAttackTargets (map toTarget $ x : xs)
-                }
+      attacked <- elem enemyId <$> getAllHistoryField PhaseHistory HistoryEnemiesAttackedBy
+      unless attacked $ queueEnemyPhaseAttack a
       pure a
     AttackEnemy eid choose | eid == enemyId -> do
       let iid = choose.investigator
@@ -1366,6 +1400,7 @@ instance RunMessage EnemyAttrs where
                 ]
           , kind = OriginalOptionKind
           , criteria = Nothing
+          , whenUnmet = Nothing
           }
       pure a
     Successful (Action.Fight, _) iid source target n | isTarget a target -> do
@@ -1509,6 +1544,7 @@ instance RunMessage EnemyAttrs where
                 ]
           , kind = OriginalOptionKind
           , criteria = Nothing
+          , whenUnmet = Nothing
           }
       pure a
     Successful (Action.Evade, _) iid source target n | isTarget a target -> do
@@ -1653,8 +1689,14 @@ instance RunMessage EnemyAttrs where
     -- Clearing 'attacking' is load-bearing: 'Entities.clearRemovedEntities' keeps
     -- a RemovedZone enemy in the map while it is set, so the corpse would stay on
     -- the board and keep matching 'AttackingEnemy' forever.
-    PerformEnemyAttack eid | eid == enemyId && enemyDefeated -> do
-      pure $ a & attackingL .~ Nothing
+    --
+    -- A defeat whose /disposal/ is replaced ('insteadOfDiscarding': The Conductor
+    -- attaching itself to the agenda, La Comtesse going hidden in hand, ...) is still
+    -- a defeat, but it cancels the 'Do (Defeated ...)' that would set the flag, so the
+    -- helper marks the in-flight attack cancelled on its way past instead (#6050).
+    PerformEnemyAttack eid
+      | eid == enemyId && (enemyDefeated || any (.cancelled) enemyAttacking) -> do
+          pure $ a & attackingL .~ Nothing
     PerformEnemyAttack eid | eid == enemyId -> do
       let details = fromJustNote "missing attack details" enemyAttacking
       modifiers <- maybe (pure []) getModifiers details.singleTarget
@@ -2643,7 +2685,15 @@ instance RunMessage EnemyAttrs where
           PlayerCard pc -> case enemyBearer of
             Nothing -> push (RemoveFromGame $ EnemyTarget a.id)
             -- The Man in the Pallid Mask has not bearer in Curtain Call
-            Just iid' -> push (AddToDiscard iid' pc)
+            Just iid' -> do
+              -- A side-deck card (parallel Jim's spirit deck) never reaches the
+              -- discard pile: The Beyond hears this same Discarded and returns it
+              -- to the bottom of the spirit deck. 'handleDiscarded' already guards
+              -- the asset spirits this way; without the same guard here Vengeful
+              -- Shade landed in the discard pile *and* the spirit deck (#6067).
+              sideDeck <- fieldMap InvestigatorSideDeck (fromMaybe []) iid'
+              unless (any ((== toCardId pc) . toCardId) sideDeck)
+                $ push (AddToDiscard iid' pc)
           EncounterCard _ -> pure ()
           VengeanceCard _ -> error "Vengeance card"
 

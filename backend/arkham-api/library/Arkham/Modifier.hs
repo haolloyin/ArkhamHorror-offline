@@ -100,12 +100,28 @@ data ModifierType
     -}
     AdditionalRevelations Int
   | AdditionalSlot SlotType
+  | {- | Raises the number of dreaming cards an investigator may control above
+    the default 3. Mirrors 'AdditionalSlot': the limit gates like a slot limit,
+    so folding these is the whole of the formula
+    ('Arkham.Helpers.Dreaming.getDreamingCardLimit').
+    -}
+    AdditionalDreamingCard Int
   | AdditionalStartingCards [Card]
   | AdditionalStartingUses Int
   | AdditionalTargets Int
   | AlternateEvadeField (SomeField Enemy)
   | AlternateFightField (SomeField Enemy)
   | AlternateResourceCost CardMatcher Cost
+  | {- | "Dreams may be moved to and from this as if it were a dreaming card
+    under your control" (Idol of Bokrug). The 'Maybe Int' is how many dreams it
+    may hold at once; 'Nothing' is no limit of its own.
+
+    The limit is enforced where the destination is OFFERED, so an illegal move is
+    never presented; a handler clamp is only a backstop.
+    -}
+    IsDreamEndpoint (Maybe Int)
+  | -- | Reduce a card's dreaming value by n, clamped at 0 ("reducing its cost or dreaming value by 1").
+    ReduceDreaming Int
   | AlternateSuccess Target
   | AlternateSuccessfullInvestigation Target
   | AlternateUpkeepDraw Target
@@ -330,6 +346,21 @@ data ModifierType
   | CommitCost Cost
   | ConnectedToWhen LocationMatcher LocationMatcher
   | ForMovementConnectedToWhen LocationMatcher LocationMatcher
+  | {- | "You may initiate a move even if there are no connecting locations in play."
+    (Ages Unwound's /On the Lam/.) The location counts as accessible to itself, but
+    only while nothing else is accessible from it, so a move to where you already
+    stand becomes offerable exactly where the card's permission is the only thing
+    that could produce a move -- for a reaction that then retargets it.
+
+    Honored in three places, all of which otherwise drop the mover's own location:
+    the 'Arkham.Matcher.AccessibleFrom' branch of 'Arkham.Game.getLocationsMatching',
+    which is the single source of truth and is asked by the other two;
+    'Arkham.Helpers.Location.getCanMoveToLocationsWith'(@_@); and
+    'Arkham.Message.Lifted.Move.moveToEdit'. Each short-circuits to its previous
+    behavior when no location carries this, so a board where anything is accessible
+    -- i.e. every scenario that does not grant it -- is untouched.
+    -}
+    ConnectsToSelfWhenIsolated
   | {- | On the MOVER (investigator or enemy), not on a location: "while moving, treat
     your location as if it were connected to ...". Connection queries read the start
     location's modifiers, so a mover-scoped connection cannot be expressed as a
@@ -605,6 +636,13 @@ data ModifierType
   | -- | Player cards that would be discarded are placed beneath the target instead
     PlaceUnderneathInsteadOfDiscard Target
   | PlaySource Source
+  | {- | This play IS the action, though the card itself costs no action: the action
+    was already spent elsewhere (Bob Jenkins' additional action pays for the play his
+    ability grants). Without it 'Arkham.ActiveCost' reads a zero action cost as "not an
+    action" and skips the attack of opportunity -- and with it the played card's own
+    'DoesNotProvokeAttacksOfOpportunity'.
+    -}
+    PlayProvokesAttacksOfOpportunity
   | PlayUnderControlOf InvestigatorId
   | PlayableCardOf InvestigatorId Card
   | PlayableModifierContexts [(CardMatcher, [ModifierType])]
@@ -781,6 +819,27 @@ data Modifier = Modifier
   {- ^ Stamped on by 'HasModifiersFor Effect', so the client can tell which
   modifiers a 'DisableEffect' can take back off.
   -}
+  , modifierPrinted :: Bool
+  {- ^ True when the card gave this to ITSELF unconditionally -- i.e. 'modifySelf'
+  rather than 'modifySelfWhen'. Such a modifier is just the card's own printed
+  text restated, so the client drops it from the modifier panel: a card reading
+  "Cannot leave play" beside a row reading "Cannot leave play" tells a player
+  nothing they are not already looking at.
+
+  A CONDITIONAL self-modifier is not printed in this sense and stays visible,
+  because its presence is the news -- it says the condition is currently met.
+  -}
+  , modifierSubsumed :: Bool
+  {- ^ True when this exists only so a COMPOSITE entity and the cards it stands
+  for behave as one -- Cthulhu and the three facets on the Cthulhu Board. It
+  runs both ways: the facets get @CannotAttackDuringEnemyPhase@ because Cthulhu
+  does the attacking, and Cthulhu gets @CannotBeAttacked@ because you attack a
+  facet. Neither is news about the card it sits on; it is the encounter's own
+  shape, which the player can see on the board. The client drops these.
+
+  Distinct from 'modifierPrinted', which says the card's own text already reads
+  this. Nothing is printed on a facet about not attacking.
+  -}
   }
   deriving stock (Show, Eq, Ord, Data)
 
@@ -891,4 +950,6 @@ instance FromJSON Modifier where
     modifierActiveDuringSetup <- o .: "activeDuringSetup"
     modifierCard <- o .:? "card"
     modifierEffect <- o .:? "effect"
+    modifierPrinted <- o .:? "printed" .!= False
+    modifierSubsumed <- o .:? "subsumed" .!= False
     pure Modifier {..}

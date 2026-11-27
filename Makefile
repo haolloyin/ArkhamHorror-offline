@@ -31,8 +31,15 @@ V2_KUBECONFIG  ?= $(CURDIR)/terraform/kubeconfig
 V2_NAMESPACE   ?= arkham
 V2_DEPLOYMENT  ?= arkham-web
 V2_PLATFORM    ?= linux/amd64
+# Where the frontend fetches its hashed bundles. The CDN is CloudFront and
+# speaks HTTP/2; the app's own origin is a DigitalOcean LB that does not, which
+# on a cold load costs more than everything else put together. Safe because
+# V2_PUBLISH_ASSETS runs before the rollout (see below), so the bucket always
+# has a bundle before any index.html names it. Set V2_ASSET_BASE= (empty) to
+# serve them from the pod again.
+V2_ASSET_BASE  ?= https://assets.arkhamhorror.app/
 # the sign-in cookie covers every subdomain, so 3ed.arkhamhorror.app shares it
-V2_BUILD_ARGS  ?= --build-arg AUTH_COOKIE_DOMAIN=.arkhamhorror.app
+V2_BUILD_ARGS  ?= --build-arg AUTH_COOKIE_DOMAIN=.arkhamhorror.app --build-arg ASSET_BASE=$(V2_ASSET_BASE)
 V2_BUILDER     ?= arkham-multiarch
 V2_BUILDKITD_CONFIG ?= $(CURDIR)/infra/buildkitd.toml
 V2_BUILDKITD_FLAGS  ?= --allow-insecure-entitlement=network.host
@@ -54,7 +61,9 @@ V2_CACHE_SETUP = CACHE_ARGS="--cache-to type=local,dest=$(V2_CACHE_NEXT),mode=ma
 # Deliberately BEFORE the rollout: for the length of the rollout the backend pool
 # holds both builds, so the old pods need the new bundles reachable before the
 # first new pod starts handing out an index.html that names them.
-V2_PUBLISH_ASSETS = ASSET_BUCKET="$(V2_ASSET_BUCKET)" V2_BUILDER="$(V2_BUILDER)" V2_CACHE_DIR="$(V2_CACHE_DIR)" BUILD_ARGS="$(V2_BUILD_ARGS)" ./scripts/publish-frontend-assets.sh
+# ASSET_BASE is passed so the script can refuse to be skipped when index.html
+# has been built to name the bucket -- see the guard at the top of it.
+V2_PUBLISH_ASSETS = ASSET_BUCKET="$(V2_ASSET_BUCKET)" V2_BUILDER="$(V2_BUILDER)" V2_CACHE_DIR="$(V2_CACHE_DIR)" BUILD_ARGS="$(V2_BUILD_ARGS)" ASSET_BASE="$(V2_ASSET_BASE)" ./scripts/publish-frontend-assets.sh
 
 V2_CACHE_PROMOTE = if [ -d "$(V2_CACHE_NEXT)" ]; then rm -rf "$(V2_CACHE_PREV)"; if [ -d "$(V2_CACHE_DIR)" ]; then mv "$(V2_CACHE_DIR)" "$(V2_CACHE_PREV)"; fi; if mv "$(V2_CACHE_NEXT)" "$(V2_CACHE_DIR)"; then rm -rf "$(V2_CACHE_PREV)"; else if [ -d "$(V2_CACHE_PREV)" ]; then mv "$(V2_CACHE_PREV)" "$(V2_CACHE_DIR)"; fi; exit 1; fi; fi
 
@@ -209,6 +218,19 @@ v2-logs: v2-kubeconfig-ensure
 	KUBECONFIG=$(V2_KUBECONFIG) kubectl -n $(V2_NAMESPACE) logs \
 	  -l app=$(V2_DEPLOYMENT) --tail=200 -f
 .PHONY: v2-logs
+
+## Deprovision the whole prod stack (nodes, LB, Valkey, VPC); Postgres untouched
+app-down:
+	@./scripts/app-shutdown.sh down
+
+## Reprovision the prod stack and repoint DNS at the new load balancer
+app-up:
+	@./scripts/app-shutdown.sh up
+
+## Show whether the prod stack is provisioned, and any leftover DO resources
+app-status:
+	@./scripts/app-shutdown.sh status
+.PHONY: app-down app-up app-status
 
 ## Report Postgres backends stuck idle-in-transaction blocking others
 db-unstick:

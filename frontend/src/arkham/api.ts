@@ -21,6 +21,8 @@ import {
 import * as NewGame from '@/arkham/types/NewGame'
 import * as JsonDecoder from 'ts.data.json';
 import { registerArtVariants } from '@/arkham/artVariants'
+import { loadCampaignMessages } from '@/locales/campaigns'
+import { campaignIdToI18n, scenarioToKeyI18n } from '@/arkham/types/Scenario'
 
 interface FetchData {
   playerId: string
@@ -36,9 +38,36 @@ interface FetchReplay {
   game: Game
 }
 
+/* A game's narrative text is no longer in the startup bundle -- it is fetched
+ * per campaign (locales/campaigns.ts). This is where that fetch belongs: every
+ * way into a game comes through one of the three calls below, and awaiting it
+ * here means a view is never handed a game whose prose has not arrived.
+ *
+ * Doing it in the views instead would mean four call sites and a window, after
+ * the game resolves and before the messages land, in which the board renders
+ * raw i18n keys. `useNarrative` in particular reads the campaign's scope the
+ * moment it mounts.
+ *
+ * A campaign names its own scope; a standalone has no campaign, and its
+ * scenario's scope root is the file its prose lives in ("standalone"). A
+ * homebrew campaign falls out of the same call, since `campaignIdToI18n`
+ * forwards a ":"-prefixed id to `homebrewCampaignScope`. */
+const withCampaignMessages = async <T extends { game: Game }>(result: T): Promise<T> => {
+  await loadCampaignMessages(campaignScopeOf(result.game))
+  return result
+}
+
+const campaignScopeOf = (game: Game): string | null => {
+  if (game.campaign) return campaignIdToI18n(game.campaign.id)
+  if (game.scenario) return scenarioToKeyI18n(game.scenario)
+  return null
+}
+
 export const fetchJoinGame = async (gameId: string): Promise<Game> => {
   const { data } = await api.get(`arkham/games/${gameId}/join`)
-  return gameDecoder.decodePromise(data);
+  const game = await gameDecoder.decodePromise(data);
+  await loadCampaignMessages(campaignScopeOf(game))
+  return game
 }
 
 export const fetchGame = async (gameId: string, spectate = false): Promise<FetchData> => {
@@ -49,7 +78,7 @@ export const fetchGame = async (gameId: string, spectate = false): Promise<Fetch
   })
   const { playerId, game, multiplayerMode, eventId } = data
   const gameData = await gameDecoder.decodePromise(game)
-  return { playerId, game: gameData, multiplayerMode, eventId: eventId ?? null }
+  return withCampaignMessages({ playerId, game: gameData, multiplayerMode, eventId: eventId ?? null })
 }
 
 /* The "did anything happen?" probe: a single Int column, no game JSON, no lock.
@@ -64,12 +93,20 @@ export const fetchGameReplay = async (gameId: string, step: number): Promise<Fet
   const { data } = await api.get(`arkham/games/${gameId}/replay/${step}`)
   const { totalSteps, game } = data
   const gameData = await gameDecoder.decodePromise(game)
-  return { game: gameData, totalSteps }
+  return withCampaignMessages({ game: gameData, totalSteps })
 }
+
+/* What kind of announcement it is, which is what the home page stamps it with.
+ * `null` is an ordinary announcement and carries no stamp -- including every
+ * one written before categories existed. The server checks the value against
+ * the same three names; a fourth would arrive here as an unknown string and
+ * simply go unstamped rather than break the feed. */
+export type NotificationCategory = 'important' | 'feature' | 'content'
 
 export interface AppNotification {
   id: number;
   body: string;
+  category: NotificationCategory | null;
   createdAt: string;
 }
 
@@ -80,10 +117,10 @@ export const fetchNotifications = async (): Promise<AppNotification[]> => {
 
 /* --------------------------------------------------- admin: notifications ---
 
-   The home-page banner everybody sees. There is no draft state on the server --
-   the public read has no filter -- so creating one publishes it, and taking one
-   down is a delete. Editing reaches whoever is still seeing it, but not anybody
-   who already dismissed it: dismissal is per-browser and keyed by row id. */
+   The home-page announcements everybody sees. There is no draft state on the
+   server -- the public read has no filter -- so creating one publishes it, and
+   taking one down is a delete. Nobody can dismiss one, so an edit reaches every
+   player who loads the page next. */
 
 export const fetchAdminNotifications = async (): Promise<AppNotification[]> => {
   const { data } = await api.get('admin/notifications')
@@ -94,16 +131,18 @@ export const fetchAdminNotifications = async (): Promise<AppNotification[]> => {
  * is no way to put a new notification above one that is already up. */
 export const createNotification = async (
   body: string,
+  category: NotificationCategory | null,
   createdAt?: string,
 ): Promise<AppNotification> => {
-  const { data } = await api.post('admin/notifications', { body, createdAt })
+  const { data } = await api.post('admin/notifications', { body, category, createdAt })
   return data
 }
 
-// Only what is sent is written, so re-dating one does not resend its body.
+/* Only what is sent is written, so re-dating one does not resend its body. A
+ * `category` of null is a value and not an omission: it takes the stamp off. */
 export const updateNotification = async (
   id: number,
-  changes: { body?: string; createdAt?: string },
+  changes: { body?: string; category?: NotificationCategory | null; createdAt?: string },
 ): Promise<AppNotification> => {
   const { data } = await api.put(`admin/notifications/${id}`, changes)
   return data
@@ -111,6 +150,211 @@ export const updateNotification = async (
 
 export const deleteNotification = async (id: number): Promise<void> => {
   await api.delete(`admin/notifications/${id}`)
+}
+
+/* ---------------------------------------------------------------- reports ---
+
+   The tracker: bugs and feature requests, which used to be GitHub issues on a
+   GitHub project board. A report is public and has a public number, the number
+   continues the issue numbering, and everything about one -- replies and moves
+   between board columns alike -- is a single ordered log.
+
+   `status` is a board column. The server sends the vocabulary with every list
+   rather than the client keeping a copy that drifts from it. */
+
+export type ReportKind = 'bug' | 'feature'
+
+/* The six open columns and the three endings. Mirrors `reportStatuses` on the
+ * server; a status this does not know still renders, as its own raw name. */
+export type ReportStatus =
+  | 'new'
+  | 'todo'
+  | 'in-progress'
+  | 'ready-for-deploy'
+  | 'pending-deploy'
+  | 'blocked'
+  | 'done'
+  | 'declined'
+  | 'duplicate'
+
+export const OPEN_REPORT_STATUSES: ReportStatus[] = [
+  'new', 'todo', 'in-progress', 'ready-for-deploy', 'pending-deploy', 'blocked',
+]
+
+/* The game a report was filed from, as far as it can still be told. `step` is
+ * where the game was at filing and `currentStep` where it is now -- a reporter
+ * who played on has given the fix a moving target. `id` and `currentStep` are
+ * null once the game is gone; `exportUrl` is only sent to an admin. */
+export interface ReportGame {
+  id: string | null
+  name: string | null
+  step: number | null
+  currentStep: number | null
+  exportUrl: string | null
+}
+
+export interface Report {
+  id: string
+  number: number
+  kind: ReportKind
+  title: string
+  status: ReportStatus
+  /* The account's name, or the recorded one on an imported report; null when
+   * neither is left. `authorAccount` says which of the two it is. */
+  author: string | null
+  authorAccount: boolean
+  blocking: boolean
+  hidden: boolean
+  duplicateOf: number | null
+  comments: number
+  /* Something has happened since you last looked -- only ever true on a report
+   * you follow, which is one you filed or replied to. */
+  unread: boolean
+  following: boolean
+  game: ReportGame | null
+  createdAt: string
+  updatedAt: string
+}
+
+/* One entry of the communication log: a reply (`body`) or a move between
+ * columns (`status`). `admin` marks the replies from whoever is fixing it. */
+export interface ReportLogEntry {
+  id: string
+  kind: 'comment' | 'status'
+  author: string | null
+  authorAccount: boolean
+  admin: boolean
+  body: string | null
+  status: ReportStatus | null
+  createdAt: string
+}
+
+export interface ReportDetail {
+  report: Report
+  body: string
+  log: ReportLogEntry[]
+}
+
+export interface ReportsPage {
+  reports: Report[]
+  total: number
+  page: number
+  pageSize: number
+  statuses: ReportStatus[]
+  kinds: ReportKind[]
+}
+
+export interface ReportFilters {
+  kind?: ReportKind
+  /* A single column, `open` (the default), `closed`, or `all`. */
+  status?: ReportStatus | 'open' | 'closed' | 'all'
+  q?: string
+  sort?: 'recent' | 'new'
+  page?: number
+}
+
+export const fetchReports = async (filters: ReportFilters = {}): Promise<ReportsPage> => {
+  const { data } = await api.get('reports', { params: filters })
+  return data
+}
+
+/* The reports you follow, newest activity first, closed ones included: "your
+ * bug is fixed" only reaches someone if it stays on their list. Drives the nav
+ * badge and the home-page panel. */
+export const fetchMyReports = async (): Promise<Report[]> => {
+  const { data } = await api.get('reports/mine')
+  return data
+}
+
+/* Reports that look like the one being filed, for the "already reported?"
+ * panel on the filing form. Ranked on the server by how many of the typed
+ * words each report uses, and closed ones are included: "fixed already" is an
+ * answer, and it is not on the open list. */
+export const fetchSimilarReports = async (q: string): Promise<Report[]> => {
+  const { data } = await api.get('reports/similar', { params: { q } })
+  return data
+}
+
+export const fetchReport = async (number: number): Promise<ReportDetail> => {
+  const { data } = await api.get(`reports/${number}`)
+  return data
+}
+
+/* File one. The server takes the game export itself when `gameId` is given --
+ * it is the part of a report nobody can retype, and a second call to fetch it
+ * is a call that can fail on its own. Only a game you have a seat at. */
+export const createReport = async (report: {
+  kind: ReportKind
+  title: string
+  body: string
+  blocking?: boolean
+  gameId?: string
+}): Promise<ReportDetail> => {
+  const { data } = await api.post('reports', report)
+  return data
+}
+
+export const commentOnReport = async (number: number, body: string): Promise<ReportDetail> => {
+  const { data } = await api.post(`reports/${number}/comments`, { body })
+  return data
+}
+
+/* Clear the unread mark. Separate from reading the page: anyone can open a
+ * report, and only the people it is addressed to have a badge to clear. */
+export const markReportSeen = async (number: number): Promise<void> => {
+  await api.post(`reports/${number}/seen`)
+}
+
+/* ---------------------------------------------------------- admin: board ---
+
+   The board that replaced the GitHub project. Every open card comes in one
+   read, plus the last of the finished ones -- the endings only ever grow, and
+   nobody scrolls them. */
+
+export interface ReportBoard {
+  reports: Report[]
+  statuses: ReportStatus[]
+  openStatuses: ReportStatus[]
+}
+
+export const fetchReportBoard = async (): Promise<ReportBoard> => {
+  const { data } = await api.get('admin/reports')
+  return data
+}
+
+/* Only what is sent is written. `duplicateOf` is a report number, and null is a
+ * value rather than an omission: it takes the link off. */
+export const updateReport = async (
+  id: string,
+  changes: {
+    status?: ReportStatus
+    kind?: ReportKind
+    duplicateOf?: number | null
+    hidden?: boolean
+    blocking?: boolean
+  },
+): Promise<Report> => {
+  const { data } = await api.put(`admin/reports/${id}`, changes)
+  return data
+}
+
+/* A whole column in its new order, which is also how a card moves between two:
+ * every id named here lands in `status`. Positions are rewritten 1..n, so the
+ * same list sent twice is the same column. */
+export const orderReports = async (status: ReportStatus, ids: string[]): Promise<void> => {
+  await api.put('admin/reports/order', { status, ids })
+}
+
+/* For spam. A report that was read and turned down is `declined`, which keeps
+ * the answer where the person who asked it can find it. */
+export const deleteReport = async (id: string): Promise<void> => {
+  await api.delete(`admin/reports/${id}`)
+}
+
+/* Take a reply down. A status change cannot be deleted: it is a record of
+ * something that happened. */
+export const deleteReportComment = async (id: string): Promise<void> => {
+  await api.delete(`admin/report-events/${id}`)
 }
 
 /* ----------------------------------------------------------- admin: users ---
@@ -1334,9 +1578,6 @@ export const deckErrorMessage = (e: unknown): string | null => {
   const msg = (e as { response?: { data?: { errorMsg?: string } } })?.response?.data?.errorMsg
   return typeof msg === 'string' && msg.length > 0 ? msg : null
 }
-
-export const fileBug = (gameId: string): Promise<{ data: string }> =>
-  api.post(`arkham/games/${gameId}/file-bug`)
 
 export const upgradeDeck = (gameId: string, investigatorId: string, deckUrl?: string, deckList?: ArkhamDbDecklist | null): Promise<void> =>
   api.put(`arkham/games/${gameId}/decks`, { deckUrl, investigatorId, deckList });

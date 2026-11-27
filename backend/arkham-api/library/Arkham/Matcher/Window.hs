@@ -157,6 +157,8 @@ data WindowMatcher
   | ActAdvances Timing ActMatcher
   | AgendaWouldAdvance Timing AgendaAdvancementReason AgendaMatcher
   | AssetDefeated Timing DefeatedByMatcher AssetMatcher
+  | -- | The 'Who' is checked against the payload's investigator, not re-derived from the asset.
+    AssetFlippedFacedown Timing Who AssetMatcher
   | AttemptToEvade Timing Who EnemyMatcher
   | AttemptToFight Timing Who EnemyMatcher
   | AttachCard Timing (Maybe Who) CardMatcher TargetMatcher
@@ -263,7 +265,7 @@ data WindowMatcher
   | EnemyAttemptsToSpawnAt Timing EnemyMatcher LocationMatcher
   | EnemyWouldSpawnAt EnemyMatcher LocationMatcher
   | EnemySpawns Timing PlacementMatcher EnemyMatcher
-  | EnemyFlipped Timing EnemyMatcher
+  | EnemyFlipped Timing Who EnemyMatcher
   | EnemyPlaced Timing Placement EnemyMatcher
   | EnemyEntersPlay Timing EnemyMatcher
   | EnemyMovedTo Timing Where MovesViaMatcher EnemyMatcher
@@ -421,6 +423,11 @@ instance FromJSON WindowMatcher where
         case econtents of
           Left (a, b) -> pure $ AddedToVictory a Nothing b
           Right (a, b, c) -> pure $ AddedToVictory a b c
+      "EnemyFlipped" -> do
+        econtents <- (Right <$> o .: "contents") <|> (Left <$> o .: "contents")
+        case econtents of
+          Left (a, b) -> pure $ EnemyFlipped a Anyone b
+          Right (a, b, c) -> pure $ EnemyFlipped a b c
       "CommittedCard" -> do
         econtents <- (Left <$> o .: "contents") <|> (Right <$> o .: "contents")
         case econtents of

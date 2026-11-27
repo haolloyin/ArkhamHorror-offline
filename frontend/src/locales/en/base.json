@@ -11,7 +11,8 @@
     "cards": "Cards",
     "myDecks": "Decks",
     "support": "Patreon",
-    "cardBuilder": "Custom Cards"
+    "cardBuilder": "Custom Cards",
+    "reports": "Reports"
   },
   "activeGames": "Active Games",
   "checkCampaignLog": "Check your Campaign Log.",
@@ -47,6 +48,7 @@
   "finishedGames": "Finished Games",
   "forgotPassword": "Forgot Password",
   "invalidEmailOrPassword": "Invalid email or password",
+  "accountDormant": "This server is invite only, and this account has been inactive too long to sign in.",
   "language": "Language",
   "logIn": "Log in",
   "newGame": "New Game",
@@ -61,6 +63,10 @@
   "updatePassword": "Update Password",
   "username": "Username",
   "usernameOrEmailAlreadyTaken": "Username or Email already taken",
+  "registrationClosed": {
+    "title": "Registration is closed",
+    "body": "This server is invite only and is not accepting new accounts right now."
+  },
   "tooltips": {
     "attacksYou": "{name} attacks you",
     "takeControlOfKey": "Take control of {key} key",
@@ -121,6 +127,7 @@
     "Depth": "Depth",
     "Doom": "Doom",
     "Dose": "Dose",
+    "Dream": "Dream",
     "Durability": "Durability",
     "Eclipse": "Eclipse",
     "Empowerment": "Empowerment",
@@ -604,6 +611,8 @@
     "signOfTheGods": "Sign of the Gods",
     "cthulhuRage": "Cthulhu's Rage",
     "distortion": "Distortion",
+    "dreamZone": "Dreaming",
+    "dreamsRemaining": "No room left for another dreaming card | Room for {count} more dreaming card | Room for {count} more dreaming cards",
     "spiritualDisturbance": "Spiritual Disturbance",
     "cthulhuDeckResolving": "Cthulhu deck card currently resolving",
     "scenarioReminders": "Scenario reminders",
@@ -949,6 +958,10 @@
     "cannotSpendCluesBecause": "{source} is preventing you from spending clues",
     "cannotDiscoverOrSpendClues": "An effect is preventing you from discovering or spending clues",
     "cannotDiscoverOrSpendCluesBecause": "{source} is preventing you from discovering or spending clues",
+    "cannotGainResources": "An effect is preventing you from gaining resources",
+    "cannotGainResourcesBecause": "{source} is preventing you from gaining resources",
+    "cannotGainResourcesFromCards": "An effect is preventing you from gaining resources from card effects",
+    "cannotGainResourcesFromCardsBecause": "{source} is preventing you from gaining resources from card effects",
     "silenceCard": "Silence — skip this card's free triggers and reactions while it is hidden",
     "unsilenceCard": "Unsilence — offer this card's triggers again"
   },
@@ -1072,7 +1085,13 @@
     "loading": "Loading…"
   },
   "home": {
-    "dismiss": "Dismiss",
+    "announcements": "Announcements",
+    "categories": {
+      "important": "Important",
+      "feature": "New Feature",
+      "content": "New Content"
+    },
+    "feedLabel": "Announcements and news",
     "noActiveGames": "No active games.",
     "loadGame": "Load Game",
     "loadingGame": "Loading…",
@@ -1150,6 +1169,7 @@
     "title": "Admin",
     "toggleSidebar": "Toggle sidebar",
     "dashboard": "Dashboard",
+    "board": "Board",
     "rooms": "Rooms",
     "archives": "Archives",
     "users": "Users",
@@ -2010,7 +2030,6 @@
     "notConnected": "not connected"
   },
   "adminArchives": {
-    "title": "Archived Games",
     "disabled": "disabled — no bucket configured",
     "schedule": "nightly · {months}mo retention · {batch} games every {pause}s until done",
     "manualOnly": "manual only — the nightly job is off",
@@ -2063,7 +2082,6 @@
     }
   },
   "adminSubmissions": {
-    "title": "Card Set Submissions",
     "filterLabel": "Filter submissions",
     "tab": {
       "pending": "Pending",
@@ -2135,7 +2153,6 @@
     "showing": "{first}\u2013{last} of {total}"
   },
   "adminUsers": {
-    "title": "Users",
     "note": "Find an account by name or email \u2014 granting a feature here is the only way into it",
     "loading": "Loading accounts\u2026",
     "loadFailed": "Could not load the accounts.",
@@ -2167,14 +2184,16 @@
     }
   },
   "adminNotifications": {
-    "title": "Site Notifications",
     "liveWarning": "Writing one publishes it \u2014 there is no draft state",
     "loading": "Loading notifications\u2026",
     "loadFailed": "Could not load the notifications.",
-    "empty": "No notifications. The home page shows no banner.",
+    "empty": "No notifications. The home page shows no announcements feed.",
     "newLabel": "New notification",
     "bodyPlaceholder": "What everybody should see on the home page\u2026",
     "htmlHint": "Rendered as HTML, so <a href=\"\u2026\">links</a> and <strong>emphasis</strong> work.",
+    "categoryLabel": "File it under",
+    "noCategory": "No stamp",
+    "categoryHint": "The category is the stamp on the card and the colour down its edge. Leave it unstamped for an announcement that is none of the three.",
     "preview": "Preview",
     "dateLabel": "Posted at",
     "dateHint": "Leave the date empty to post it now. It is only there because the list is ordered by it, so it is how you put a notification above one that is already up.",
@@ -2183,7 +2202,7 @@
     "published": "Published. It is on the home page now.",
     "createFailed": "Could not publish that notification.",
     "edit": "Edit",
-    "editHint": "An edit reaches anybody still seeing this. It does not bring it back for anybody who dismissed it \u2014 dismissal is per-browser and keyed by the notification's id, so re-announcing something means publishing a new one.",
+    "editHint": "An edit reaches every player who loads the home page after it. Nobody can dismiss an announcement, so this is what they are all looking at until you take it down.",
     "save": "Save",
     "saved": "Saved.",
     "saveFailed": "Could not save that notification.",
@@ -2213,7 +2232,6 @@
     "restoreFailed": "That game's undo history could not be fetched. Nothing else is affected \u2014 you can keep playing."
   },
   "adminStats": {
-    "title": "Game Stats",
     "loading": "Loading stats…",
     "loadFailed": "Could not load the stats.",
     "refreshFailed": "Could not rebuild the stats.",
@@ -2303,6 +2321,129 @@
     "ofWhichUncertain": "{n} stated as \u201c\u2026?\u201d",
     "resolutionN": "Resolution {n}",
     "nPlayerPlus": "{n}+ players"
+  },
+  "reports": {
+    "title": "Reports",
+    "file": "File a report",
+    "loading": "Loading\u2026",
+    "loadFailed": "That list could not be loaded. Try again in a moment.",
+    "notFound": "There is no report with that number.",
+    "none": "Nothing here. Either everything is fixed, or nothing has been filed yet.",
+    "by": "by {who}",
+    "byGithub": "by {who} on GitHub",
+    "byNobody": "filed on GitHub",
+    "blocking": "Blocks a game",
+    "blockingLong": "The reporter cannot carry on playing",
+    "hiddenFlag": "Hidden",
+    "news": "Something has happened since you last looked",
+    "duplicateOf": "Duplicate of #{number}",
+    "searchPlaceholder": "Search titles and descriptions",
+    "previous": "Previous",
+    "next": "Next",
+    "pageOf": "Page {page} of {pages} \u2014 {total} reports",
+    "reply": "Reply",
+    "replyPlaceholder": "Anything else that would help: what you were doing, what you expected",
+    "replyFailed": "That reply could not be sent.",
+    "send": "Send",
+    "sending": "Sending\u2026",
+    "confirmDeleteReply": "Take this reply down?",
+    "kind": {
+      "bug": "Bug",
+      "feature": "Feature request"
+    },
+    "filter": {
+      "everything": "Everything",
+      "open": "Still open",
+      "closed": "Finished",
+      "all": "All"
+    },
+    "sort": {
+      "recent": "Latest activity",
+      "new": "Newest first"
+    },
+    "status": {
+      "new": "Filed",
+      "todo": "To do",
+      "in-progress": "In progress",
+      "blocked": "Blocked",
+      "ready-for-deploy": "Ready to deploy",
+      "pending-deploy": "Deploying",
+      "done": "Done",
+      "declined": "Not planned",
+      "duplicate": "Duplicate"
+    },
+    "game": {
+      "title": "The game it came from",
+      "name": "Game",
+      "step": "Reported at step",
+      "playedOn": "{steps} steps have been played since",
+      "gone": "Game",
+      "goneBody": "This game no longer exists.",
+      "open": "Open the game",
+      "export": "Download the export"
+    },
+    "log": {
+      "title": "Conversation",
+      "moved": "{who} moved this to {column}",
+      "somebody": "Someone",
+      "dev": "Dev",
+      "fromGithub": "GitHub"
+    },
+    "admin": {
+      "title": "Triage",
+      "status": "Status",
+      "kind": "Kind",
+      "duplicate": "Duplicate of",
+      "markDuplicate": "Mark",
+      "hide": "Hide from the list",
+      "unhide": "Put back on the list",
+      "delete": "Delete this report",
+      "confirmDelete": "Delete report #{number} outright? Declining it keeps the answer where the reporter can read it."
+    },
+    "board": {
+      "title": "Board",
+      "bugs": "Bugs",
+      "features": "Features",
+      "cardMenu": "What to do with this report",
+      "scrollLeft": "Earlier columns",
+      "scrollRight": "Later columns",
+      "showClosed": "Show finished columns",
+      "moveTo": "Move to",
+      "emptyColumn": "Nothing here.",
+      "markDeployed": "Deployed",
+      "markDeployedLong": "Move every report in this column to Done",
+      "confirmDeployed": "Mark {n} report done? Whoever filed it hears that it is out. | Mark {n} reports done? Whoever filed them hears that they are out."
+    },
+    "panel": {
+      "title": "Your reports",
+      "all": "All reports \u2192",
+      "more": "Show {count} more",
+      "fewer": "Show fewer",
+      "archive": "Archived ({count})",
+      "archiveTitle": "Archived"
+    },
+    "new": {
+      "title": "File a report",
+      "kind": "What is this?",
+      "bugHint": "Something the site got wrong",
+      "featureHint": "Something you would like it to do",
+      "summary": "In one line",
+      "summaryPlaceholder": "What went wrong, briefly",
+      "whatHappened": "What happened",
+      "whatYouWant": "What you would like",
+      "bugPlaceholder": "What you did, what you expected, and what happened instead.",
+      "featurePlaceholder": "What you would like to be able to do, and why.",
+      "game": "Which game",
+      "noGame": "Not about a particular game",
+      "gameHint": "Attaching the game sends its last 30 steps along, which is usually the difference between a bug that can be fixed and one that cannot.",
+      "similar": "Already reported?",
+    "similarHint": "If one of these is the same thing, say so there instead \u2014 a reply on the report that exists reaches the same people, and keeps the answer in one place.",
+    "similarDismiss": "These are all different",
+    "blocking": "I cannot carry on playing until this is fixed",
+      "submit": "File it",
+      "filing": "Filing\u2026",
+      "failed": "That report could not be filed."
+    }
   },
   "toasts": {
     "dismiss": "Dismiss"

@@ -8,6 +8,13 @@ ARG ASSET_HOST=""
 # ".arkhamhorror.app" in production, so the 3ed subdomain shares the sign-in
 # cookie; empty for self-hosting, where the cookie stays on the host serving it
 ARG AUTH_COOKIE_DOMAIN=""
+# Where the hashed bundles are fetched from. Empty means same-origin, which is
+# what self-hosting and docker-compose want. Set to the CDN
+# ("https://assets.arkhamhorror.app/", with the trailing slash) the app pulls
+# them from CloudFront, which speaks HTTP/2 where the origin LB does not -- see
+# the `base` comment in frontend/vite.config.js, and note that it makes
+# publish-frontend-assets.sh's upload load-bearing rather than a fallback.
+ARG ASSET_BASE=""
 
 RUN mkdir -p /opt/arkham/src/frontend
 
@@ -17,6 +24,7 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 COPY ./frontend /opt/arkham/src/frontend
 ENV VITE_ASSET_HOST=${ASSET_HOST}
 ENV VITE_AUTH_COOKIE_DOMAIN=${AUTH_COOKIE_DOMAIN}
+ENV VITE_ASSET_BASE=${ASSET_BASE}
 RUN npm run build
 
 # Third edition frontend, served from 3ed.arkhamhorror.app (see prod.nginxconf)
@@ -51,6 +59,17 @@ RUN npm run build
 FROM scratch AS frontend-dist
 COPY --from=frontend /opt/arkham/src/frontend/dist/assets /frontend/assets
 COPY --from=frontend-3ed /opt/arkham/src/frontend-3ed/dist/assets /frontend-3ed/assets
+# The handful of dist-root files index.html names. vite rewrites those URLs
+# against `base` too, so with ASSET_BASE set they are fetched from the CDN and
+# have to be in the bucket -- publish-frontend-assets.sh's `upload_root` puts
+# them there, and can only do that if they are exported here. Named one by one
+# for the reason in the comment above: the rest of the dist root is the card
+# JSON.
+COPY --from=frontend /opt/arkham/src/frontend/dist/favicon.ico \
+     /opt/arkham/src/frontend/dist/favicon-16.png \
+     /opt/arkham/src/frontend/dist/favicon-32.png \
+     /opt/arkham/src/frontend/dist/robots.txt \
+     /frontend/
 
 FROM ubuntu:22.04 AS base
 
@@ -116,13 +135,11 @@ FROM base AS dependencies
 RUN mkdir -p \
   /opt/arkham/bin \
   /opt/arkham/src/backend/arkham-api \
-  /opt/arkham/src/backend/validate \
   /opt/arkham/src/backend/cards-discover
 
 WORKDIR /opt/arkham/src/backend
 COPY ./backend/stack.yaml ./backend/stack.yaml.lock /opt/arkham/src/backend/
 COPY ./backend/arkham-api/package.yaml /opt/arkham/src/backend/arkham-api/package.yaml
-COPY ./backend/validate/package.yaml /opt/arkham/src/backend/validate/package.yaml
 COPY ./backend/cards-discover/package.yaml /opt/arkham/src/backend/cards-discover/package.yaml
 COPY ./backend/ah3e/package.yaml /opt/arkham/src/backend/ah3e/package.yaml
 RUN --mount=type=cache,id=stack-home-${CACHE_ID},target=/root/.stack \
@@ -149,7 +166,10 @@ WORKDIR /opt/arkham/src/backend/arkham-api
 # RUN a bare script invocation: BuildKit keys a cache mount's *contents* by the
 # text of the RUN that mounts it, so editing the command here throws away the
 # cached .stack-work and forces a cold rebuild of all ~9400 modules. Editing the
-# script does not.
+# script does not. That is also why the two stack-validate* mounts below survive
+# the removal of the validate package: they now mount a cache into a directory
+# nothing builds, which is harmless, and deleting the lines would cost that cold
+# rebuild. Drop them the next time this RUN has to change for another reason.
 RUN --mount=type=cache,id=stack-home-${CACHE_ID},target=/root/.stack \
     --mount=type=cache,id=stack-work-shared-${CACHE_ID},target=/opt/arkham/src/backend/.stack-work \
     --mount=type=cache,id=stack-api-${CACHE_ID},target=/opt/arkham/src/backend/arkham-api/.stack-work \
@@ -184,8 +204,11 @@ FROM ubuntu:22.04 AS app
 
 ENV LC_ALL=C.UTF-8
 
-RUN apt-get update && \
-  apt-get install -y --assume-yes --no-install-recommends libpq-dev ca-certificates nginx curl cron python3 && \
+# Acquire::Retries because security.ubuntu.com is round-robin and a mirror caught
+# mid-sync serves an index of the wrong size, failing the whole build; a retry
+# generally lands on a different IP that has finished.
+RUN apt-get -o Acquire::Retries=3 update && \
+  apt-get -o Acquire::Retries=3 install -y --assume-yes --no-install-recommends libpq-dev ca-certificates nginx curl python3 && \
   rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p \

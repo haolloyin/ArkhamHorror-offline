@@ -262,6 +262,11 @@ data WindowType
   | AmongSearchedCards BatchId InvestigatorId
   | AnyPhaseBegins
   | AssetDefeated AssetId DefeatedBy
+  | {- | An asset an investigator controlled was flipped facedown into their dream
+    zone. Its own window because 'LeavePlay' carries no reason and would fire on
+    every asset discard.
+    -}
+    AssetFlippedFacedown InvestigatorId AssetId
   | AssignedHorror Source InvestigatorId [Target]
   | AtBeginningOfRound
   | AtEndOfRound
@@ -337,7 +342,10 @@ data WindowType
   | EnemyLeaves EnemyId LocationId
   | EnemyWouldSpawnAt EnemyId LocationId
   | EnemySpawns EnemyId Placement
-  | EnemyFlipped EnemyId
+  | {- | The flipper, when an investigator did it. 'Nothing' when an act or a card
+    flipped the enemy, in which case a @You@ matcher has nothing to bind to.
+    -}
+    EnemyFlipped (Maybe InvestigatorId) EnemyId
   | EnemyPlaced EnemyId Placement
   | EnemyWouldAttack EnemyAttackDetails
   | EnemyWouldBeDefeated EnemyId
@@ -548,6 +556,11 @@ mconcat
               case contents of
                 Left c -> pure $ AddedToVictory Nothing c
                 Right (i, c) -> pure $ AddedToVictory i c
+            "EnemyFlipped" -> do
+              contents <- (Right <$> o .: "contents") <|> (Left <$> o .: "contents")
+              case contents of
+                Left e -> pure $ EnemyFlipped Nothing e
+                Right (i, e) -> pure $ EnemyFlipped i e
             "Moves" -> do
               contents <- (Right <$> o .: "contents") <|> (Left <$> o .: "contents")
               case contents of

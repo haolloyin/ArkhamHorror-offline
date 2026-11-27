@@ -9,6 +9,7 @@ import { LogRef, logRefDecoder } from '@/arkham/types/GameLog';
 import { ArkhamKey, arkhamKeyDecoder } from '@/arkham/types/Key';
 import { Seal, sealDecoder } from '@/arkham/types/Seal';
 import { Tokens, tokensDecoder } from '@/arkham/types/Token';
+import { DreamingCard, dreamingCardsDecoder } from '@/arkham/types/DreamingCard';
 import { Placement, placementDecoder } from '@/arkham/types/Placement';
 import { TabooList, tabooListDecoder } from '@/arkham/types/TabooList';
 import type { OptionValue } from '@/arkham/types/CardDef';
@@ -164,6 +165,14 @@ export type Investigator = {
   intellect: number;
   combat: number;
   agility: number;
+  /* The four above are the BASE values. These are what a test would actually
+   * use, resolved by the engine's `skillValueFor` (the only copy of the
+   * formula) with the current test's action applied. Never re-derive them from
+   * `modifiers` -- that handles a handful of tags and misses the clamps. */
+  modifiedWillpower: number | null;
+  modifiedIntellect: number | null;
+  modifiedCombat: number | null;
+  modifiedAgility: number | null;
   tokens: Tokens;
   assignedHealthDamage: number;
   assignedHealthHeal: number;
@@ -212,6 +221,13 @@ export type Investigator = {
   meta: any;
   settings: CardSettings;
   handSize?: number | null;
+  /* The dream zone, in the engine's order: append-only, removed by `CardId`,
+   * never re-sorted. Do not sort it here either -- the order is the contract. */
+  dreamingCards: DreamingCard[];
+  /* The resolved cap, granted by the engine the way `handSize` is. Not derived
+   * from modifiers: the UI never recomputes it. May be exceeded (a cap-raising
+   * asset leaving play), so render, do not clip. */
+  dreamingCardLimit?: number | null;
 }
 
 type SlotType = 'HeadSlot' | 'HandSlot' | 'BodySlot' | 'AccessorySlot' | 'ArcaneSlot' | 'TarotSlot' | 'AllySlot'
@@ -283,6 +299,13 @@ export const investigatorDecoder = JsonDecoder.object({
   intellect: JsonDecoder.number(),
   combat: JsonDecoder.number(),
   agility: JsonDecoder.number(),
+  /* null, not 0: a server older than these fields sends no key, and showing a
+     flat 0 for every skill is worse than showing the unmodified base. The
+     component substitutes the base value when these are null. */
+  modifiedWillpower: JsonDecoder.failover(null, JsonDecoder.nullable(JsonDecoder.number())),
+  modifiedIntellect: JsonDecoder.failover(null, JsonDecoder.nullable(JsonDecoder.number())),
+  modifiedCombat: JsonDecoder.failover(null, JsonDecoder.nullable(JsonDecoder.number())),
+  modifiedAgility: JsonDecoder.failover(null, JsonDecoder.nullable(JsonDecoder.number())),
   tokens: tokensDecoder,
   assignedHealthDamage: JsonDecoder.number(),
   assignedHealthHeal: JsonDecoder.array(JsonDecoder.tuple([JsonDecoder.succeed(), JsonDecoder.number()], '[any, number]'), '[any, number][]').map((arr) => arr.reduce((acc, [_source, heal]) => acc + heal, 0)),
@@ -343,6 +366,8 @@ export const investigatorDecoder = JsonDecoder.object({
   meta: JsonDecoder.succeed(),
   settings: cardSettingsDecoder,
   handSize: v2Optional(JsonDecoder.number()),
+  dreamingCards: dreamingCardsDecoder,
+  dreamingCardLimit: v2Optional(JsonDecoder.number()),
 }, 'Investigator').map(({search, placement, usedAbilities, ...rest}) => ({
   foundCards: search,
   usedAbilityCardCodes: usedAbilities,

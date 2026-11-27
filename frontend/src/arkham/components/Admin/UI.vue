@@ -22,6 +22,7 @@ const sections = [
   { key: 'stats', path: '/admin/stats', label: 'admin.gameStats', icon: 'chart-simple' },
   { key: 'notifications', path: '/admin/notifications', label: 'admin.notifications', icon: 'bullhorn' },
   { key: 'submissions', path: '/admin/submissions', label: 'admin.submissions', icon: 'clipboard-check' },
+  { key: 'board', path: '/admin/board', label: 'admin.board', icon: 'table-columns' },
   { key: 'users', path: '/admin/users', label: 'admin.users', icon: 'user-gear' },
 ] as const
 
@@ -31,14 +32,11 @@ const byRouteName: Record<string, string> = {
   AdminGameStats: 'stats',
   AdminNotifications: 'notifications',
   AdminSubmissions: 'submissions',
+  AdminBoard: 'board',
   AdminUsers: 'users',
 }
 
 const selected = computed(() => byRouteName[String(route.name)] ?? 'dashboard')
-
-const selectedLabel = computed(
-  () => sections.find((s) => s.key === selected.value)?.label ?? 'admin.dashboard',
-)
 
 /* Only ever used at narrow widths, where the rail is off-canvas. Closed again on
  * every navigation: the thing you opened it to reach is now on screen behind it. */
@@ -92,6 +90,9 @@ async function navigateTo(path: string) {
       <div v-if="railOpen" class="rail-scrim" @click="railOpen = false"></div>
 
       <div class="admin-main">
+        <!-- Nothing but the rail toggle, and only where the rail is off-canvas:
+             the active entry in the rail is what says where you are, and a
+             heading over every page said it a second time. -->
         <header class="admin-header">
           <button
             type="button"
@@ -102,15 +103,12 @@ async function navigateTo(path: string) {
           >
             <font-awesome-icon icon="bars" />
           </button>
-          <Transition name="admin-title-fade" mode="out-in">
-            <h1 :key="selected">{{ $t(selectedLabel) }}</h1>
-          </Transition>
         </header>
 
         <div class="admin-scroll">
           <RouterView v-slot="{ Component }">
             <Transition name="admin-route" mode="out-in">
-              <main class="admin-content" :key="route.fullPath">
+              <main class="admin-content" :class="{ fills: selected === 'board' }" :key="selected">
                 <Suspense>
                   <component :is="Component" />
                   <template #fallback>
@@ -148,7 +146,11 @@ async function navigateTo(path: string) {
 }
 
 /* Rail then page, both full height. The rail column is a fixed width so the
-   content does not change width between sections either. */
+   content does not change width between sections either.
+
+   The admin takes the whole window rather than the site's reading column: none
+   of it is prose. It is tables, lists and a board, and all three are worth more
+   the more of them fits on screen at once. */
 .admin-layout {
   display: grid;
   gap: 20px;
@@ -158,7 +160,7 @@ async function navigateTo(path: string) {
   padding-top: 0;
   padding-bottom: 0;
   position: relative;
-  width: min(1240px, calc(100vw - 32px));
+  width: calc(100vw - 32px);
 }
 
 /* The rail is the one thing on this page that does not change between sections,
@@ -247,21 +249,10 @@ async function navigateTo(path: string) {
 
 .admin-header {
   align-items: center;
-  border-bottom: 1px solid var(--box-border);
-  display: flex;
+  display: none;
   flex: none;
   gap: 12px;
-  min-height: 44px;
   padding-bottom: 12px;
-}
-
-h1 {
-  color: var(--title);
-  font-family: teutonic, sans-serif;
-  font-size: 2.3rem;
-  line-height: 1;
-  margin: 0;
-  text-transform: uppercase;
 }
 
 /* Only shown where the rail is off-canvas. */
@@ -284,21 +275,18 @@ h1 {
   display: none;
 }
 
-.admin-title-fade-enter-active,
-.admin-title-fade-leave-active {
-  transition: opacity 130ms ease-in-out;
-}
-
-.admin-title-fade-enter-from,
-.admin-title-fade-leave-to {
-  opacity: 0;
-}
-
 .admin-content {
   display: flex;
   flex-direction: column;
   gap: 16px;
   view-transition-name: admin-content;
+}
+
+/* A section that is a board rather than a document: it fills the scroll area
+   exactly and scrolls inside itself, so the page behind it never does. */
+.admin-content.fills {
+  height: 100%;
+  min-height: 0;
 }
 
 .admin-loading {
@@ -491,12 +479,12 @@ h1 {
     z-index: 29;
   }
 
-  .rail-toggle {
-    display: block;
+  .admin-header {
+    display: flex;
   }
 
-  h1 {
-    font-size: 1.8rem;
+  .rail-toggle {
+    display: block;
   }
 }
 
